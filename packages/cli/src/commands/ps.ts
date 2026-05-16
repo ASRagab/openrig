@@ -14,6 +14,14 @@ interface PsEntry {
   rigName?: string;
   nodeCount: number;
   runningCount: number;
+  /** Slice 15 — subset of nodes producing tmux output within the silence
+   *  window. Sourced from the daemon's SeatActivityService; NEVER derived
+   *  from queue/assignment state. */
+  activeCount?: number;
+  /** Slice 15 — subset of nodes with at least one pending qitem assigned
+   *  to their canonical session name. Sourced from queue_items; NEVER
+   *  derived from tmux output. */
+  hasWorkCount?: number;
   status: "running" | "partial" | "stopped";
   lifecycleState?: "running" | "recoverable" | "stopped" | "degraded" | "attention_required";
   uptime: string | null;
@@ -36,6 +44,15 @@ interface NodeEntry {
   tmuxAttachCommand: string | null;
   resumeCommand: string | null;
   latestError: string | null;
+  /** Slice 15 — `terminal-active` primitive. true=producing output,
+   *  false=silent past threshold, null=no signal. NEVER derived from
+   *  hasAssignedWork (non-inference contract). */
+  terminalActive?: boolean | null;
+  /** Slice 15 — `has-work-to-do` primitive. Derived from queue_items;
+   *  NEVER derived from terminalActive. */
+  hasAssignedWork?: boolean;
+  /** Slice 15 — pending qitem count for this seat (cheap aggregate). */
+  pendingWorkCount?: number;
   agentActivity?: {
     state: "running" | "needs_input" | "idle" | "unknown";
     reason: string;
@@ -110,6 +127,8 @@ const ALLOWED_RIG_FIELDS = new Set([
   "rigName",
   "nodeCount",
   "runningCount",
+  "activeCount",
+  "hasWorkCount",
   "status",
   "lifecycleState",
   "uptime",
@@ -131,6 +150,9 @@ const ALLOWED_NODE_FIELDS = new Set([
   "tmuxAttachCommand",
   "resumeCommand",
   "latestError",
+  "terminalActive",
+  "hasAssignedWork",
+  "pendingWorkCount",
   "agentActivity",
   "contextUsage",
 ]);
@@ -608,13 +630,16 @@ Exit codes:
       const humanList = (opts.full || limit !== null) ? limited : limited.slice(0, HUMAN_RIG_BUDGET);
       const humanTruncated = !opts.full && limit === null && filtered.length > HUMAN_RIG_BUDGET;
 
-      const header = padRigRow("RIG", "NODES", "RUNNING", "STATUS", "LIFECYCLE", "UPTIME", "SNAPSHOT");
+      const header = padRigRow("RIG", "NODES", "RUNNING", "ACTIVE", "WORK", "STATUS", "LIFECYCLE", "UPTIME", "SNAPSHOT");
       console.log(header);
       for (const e of humanList as PsEntry[]) {
         console.log(padRigRow(
           e.rigName ?? e.name,
           String(e.nodeCount),
           String(e.runningCount),
+          // Slice 15 — "—" when daemon predates the field; honest absence.
+          e.activeCount !== undefined ? String(e.activeCount) : "—",
+          e.hasWorkCount !== undefined ? String(e.hasWorkCount) : "—",
           e.status,
           abbrevRigLifecycle(e.lifecycleState),
           e.uptime ?? "—",
@@ -704,7 +729,7 @@ async function handleNodes(
   const humanList = (opts.full || limit !== null) ? limited : limited.slice(0, HUMAN_NODE_BUDGET);
   const humanTruncated = !opts.full && limit === null && filtered.length > HUMAN_NODE_BUDGET;
 
-  const header = padNodeRow("RIG", "POD", "MEMBER", "SESSION", "RUNTIME", "STATUS", "STARTUP", "LIFECYCLE", "ACTIVITY", "CTX", "RESTORE", "ERROR");
+  const header = padNodeRow("RIG", "POD", "MEMBER", "SESSION", "RUNTIME", "STATUS", "STARTUP", "LIFECYCLE", "TERMINAL", "WORK", "ACTIVITY", "CTX", "RESTORE", "ERROR");
   console.log(header);
   for (const n of humanList as NodeEntry[]) {
     const parts = n.logicalId.split(".");
@@ -720,6 +745,10 @@ async function handleNodes(
       n.sessionStatus ?? "—",
       n.startupStatus ?? "—",
       abbrevNodeLifecycle(n.lifecycleState),
+      // Slice 15 — terminal-active + has-work as DISTINCT columns
+      // (non-inference contract: never collapsed into one signal).
+      formatTerminalActive(n.terminalActive),
+      formatHasWork(n.hasAssignedWork, n.pendingWorkCount),
       formatActivity(n.agentActivity),
       formatContextUsage(n.contextUsage),
       n.restoreOutcome,
@@ -752,11 +781,17 @@ function fitCell(value: string, width: number): string {
   return truncate(value, width).padEnd(width);
 }
 
-function padRigRow(rig: string, nodes: string, running: string, status: string, lifecycle: string, uptime: string, snapshot: string): string {
+function padRigRow(rig: string, nodes: string, running: string, active: string, work: string, status: string, lifecycle: string, uptime: string, snapshot: string): string {
   return [
     fitCell(rig, 24),
     fitCell(nodes, 7),
     fitCell(running, 9),
+    // Slice 15 — distinct columns for the three orthogonal primitives.
+    // RUNNING = process-alive (legacy); ACTIVE = terminal-active (tmux);
+    // WORK = has-assigned-work (queue). UI/CLI render them separately so
+    // operators see which dimension differs at a glance.
+    fitCell(active, 8),
+    fitCell(work, 6),
     fitCell(status, 10),
     fitCell(lifecycle, 11),
     fitCell(uptime, 11),
@@ -764,7 +799,7 @@ function padRigRow(rig: string, nodes: string, running: string, status: string, 
   ].join("");
 }
 
-function padNodeRow(rig: string, pod: string, member: string, session: string, runtime: string, status: string, startup: string, lifecycle: string, activity: string, ctx: string, restore: string, error: string): string {
+function padNodeRow(rig: string, pod: string, member: string, session: string, runtime: string, status: string, startup: string, lifecycle: string, terminal: string, work: string, activity: string, ctx: string, restore: string, error: string): string {
   return [
     fitCell(rig, 30),
     fitCell(pod, 10),
@@ -774,11 +809,34 @@ function padNodeRow(rig: string, pod: string, member: string, session: string, r
     fitCell(status, 10),
     fitCell(startup, 10),
     fitCell(lifecycle, 11),
+    // Slice 15 — distinct TERMINAL + WORK columns.
+    fitCell(terminal, 9),
+    fitCell(work, 6),
     fitCell(activity, 12),
     fitCell(ctx, 6),
     fitCell(restore, 10),
     error,
   ].join("");
+}
+
+// Slice 15 — render the terminal-active primitive honestly.
+// `null` (no signal) is rendered distinctly from `false` (silent past
+// threshold) so an operator can see whether the daemon hasn't observed
+// the seat yet vs has observed and seen no output.
+function formatTerminalActive(t: boolean | null | undefined): string {
+  if (t === true) return "active";
+  if (t === false) return "idle";
+  return "—"; // null / undefined → no signal
+}
+
+// Slice 15 — render has-work with a hint of how much.
+// Pending count appended in parens when known and > 1 keeps the column
+// compact while remaining honest.
+function formatHasWork(has: boolean | undefined, count: number | undefined): string {
+  if (has === undefined) return "—";
+  if (!has) return "no";
+  if (typeof count === "number" && count > 1) return `${count}`;
+  return "yes";
 }
 
 // PL-012: render context-usage as a 5-char cell — "<percent>%" when
