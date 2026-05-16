@@ -313,4 +313,60 @@ export class TmuxAdapter {
       return null;
     }
   }
+
+  /**
+   * Slice 15 — configure tmux's per-window `monitor-silence` option for
+   * the target's containing window. The runtime flips
+   * `pane_silence_flag` to "1" when the pane has been silent past the
+   * threshold; "0" while producing output. This is the v0 source of
+   * the `terminal-active` primitive (README §v0). Window-scoped is the
+   * correct level: tmux's monitor-silence is a window option (see
+   * `man tmux` §OPTIONS); `-w` targets the window containing the pane.
+   *
+   * Validates `seconds` at the adapter boundary so a bad caller can't
+   * inject negative / zero / fractional / NaN values into the shell
+   * command — those would either silently coerce or fail with an
+   * opaque tmux error.
+   */
+  async setMonitorSilence(target: string, seconds: number): Promise<TmuxResult> {
+    if (!Number.isFinite(seconds) || !Number.isInteger(seconds) || seconds < 1) {
+      return {
+        ok: false,
+        code: "validation_error",
+        message: `setMonitorSilence: seconds must be a positive integer, got ${seconds}`,
+      };
+    }
+    const cmd = `tmux set-option -w -t ${shellQuote(target)} monitor-silence ${shellQuote(String(seconds))}`;
+    try {
+      await this.exec(cmd);
+      return { ok: true };
+    } catch (err) {
+      return classifyWriteError(err);
+    }
+  }
+
+  /**
+   * Slice 15 — read the runtime's `pane_silence_flag` for the target
+   * pane. Returns:
+   *   - `true`  → pane has been silent past the configured threshold (idle)
+   *   - `false` → pane has produced output within the threshold (active)
+   *   - `null`  → no signal available (target missing OR unparseable output)
+   *
+   * The caller treats `null` as "no terminal-active observation for this
+   * seat right now" — it is intentionally distinct from `true`/`false`
+   * so consumers don't conflate "we don't know" with "definitely idle".
+   */
+  async readPaneSilenceFlag(paneId: string): Promise<boolean | null> {
+    try {
+      const output = await this.exec(
+        `tmux display-message -p -t ${shellQuote(paneId)} '#{pane_silence_flag}'`,
+      );
+      const trimmed = output.trim();
+      if (trimmed === "1") return true;
+      if (trimmed === "0") return false;
+      return null;
+    } catch {
+      return null;
+    }
+  }
 }
