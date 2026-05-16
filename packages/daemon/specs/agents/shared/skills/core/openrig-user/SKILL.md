@@ -14,12 +14,16 @@ doctrine, or release posture.
 
 ## Runtime-Gated Coordination Primitives
 
-OpenRig v0.2.0 includes the bundled PL-004 Coordination Primitive System: Phase A `rig stream` /
-`rig queue`, Phase B `rig project` / `rig view`, Phase C `rig watchdog`, and Phase D `rig workflow`
-/ `workflow-keepalive`.
+OpenRig v0.3.1 is published publicly as `@openrig/cli@0.3.1` and GitHub Release
+`v0.3.1`. It includes the bundled PL-004 Coordination Primitive System: Phase A
+`rig stream` / `rig queue`, Phase B `rig project` / `rig view`, Phase C
+`rig watchdog`, and Phase D `rig workflow` / `workflow-keepalive`.
 
-Do not confuse package/source truth with active daemon truth. These commands are shipped product
-surfaces in v0.2.0+, but they need a v0.2.0+ daemon and matching SQLite schema at runtime.
+These are shipped product surfaces in v0.3.x, but they require a compatible
+v0.3.x daemon and matching SQLite schema at runtime — the installed package
+version is not automatically the version of the daemon serving you. If a
+coordination command behaves unexpectedly, confirm the running daemon with
+`rig whoami --json` and daemon status before assuming a product bug.
 
 Default posture:
 
@@ -37,6 +41,49 @@ Default posture:
   do not assume the right workaround is to drop back to a config-layer primitive.
 - Do not perform daemon stop/start, production DB copy/mutation, release, publish, or other
   consequence-boundary actions unless the operator/workstream has granted that specific gate.
+
+## v0.3.x Starter, Workspace, And Plugin Surfaces
+
+OpenRig v0.3.0 adds `rig agent-image`, `rig context-pack`, `rig workspace`, and
+`rig config init-workspace`. It also shifts fresh-user starter guidance toward
+`product-team` for human-directed work and `conveyor` for workflow-oriented
+work. Treat `demo` as legacy/test content unless a task specifically asks for
+the old demo spec.
+
+OpenRig v0.3.1 adds public package/source surfaces for Plugin Primitive v0,
+Claude Auto-Compaction Policy, migration `040_workflow_specs_diagnostic`,
+Library Explorer finishing, Settings Destination Explorer, Dashboard/For You
+vellum refresh, storytelling adapter, and action outcome + inline error UX.
+
+`rig plugin` is read-only at v0:
+
+```bash
+rig plugin list
+rig plugin show <id>
+rig plugin used-by <id>
+rig plugin validate <path>
+```
+
+There is no `rig plugin install` verb in v0.3.1. Plugin installation remains
+explicit operator copy/symlink to `$OPENRIG_HOME/plugins/<plugin-id>/`.
+
+Claude auto-compaction policy is opt-in default-off. The v0.3.1 package and
+this host's active daemon ship `policies.claude_compaction.*` ConfigStore keys,
+but no behavior changes unless the operator enables the policy.
+
+Known v0.3.0/v0.3.1 caveats:
+- `rig down <name> --delete` still returns 404 in the known D1 path; use
+  `rig ps` to find the rig ID and then `rig down <rigId> --delete`.
+- `rig queue` / `rig view` JSON and limit compatibility drift is an open
+  follow-up from host-adoption proof; treat it as a compatibility caveat, not a
+  daemon-health failure.
+- Queue/view JSON/limit drift is now refined as a wrapper-layer routing issue,
+  not a daemon-layer issue; use human-readable output for affected wrapper
+  commands until v0.3.2.
+- First v0.3.1 daemon start hit a plugin-vendor fallback health-probe timeout;
+  controlled retry succeeded. Manual retry is the current workaround.
+- Topology mobile drawer restoration and plugin source-label taxonomy are
+  v0.3.2 carry-forwards.
 
 ## Core Loop
 
