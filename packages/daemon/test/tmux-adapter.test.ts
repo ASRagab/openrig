@@ -721,39 +721,46 @@ describe("TmuxAdapter", () => {
     });
   });
 
-  describe("readPaneSilenceFlag", () => {
-    it("constructs `tmux display-message -p -t <pane> '#{pane_silence_flag}'`", async () => {
-      const exec = vi.fn<ExecFn>().mockResolvedValue("0\n");
+  describe("readPaneLastActivity", () => {
+    it("constructs `tmux display-message -p -t <pane> '#{window_activity}'`", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("1716000000\n");
       const adapter = new TmuxAdapter(exec);
 
-      await adapter.readPaneSilenceFlag("dev@rig");
+      await adapter.readPaneLastActivity("dev@rig");
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux display-message -p -t 'dev@rig' '#{pane_silence_flag}'",
+        "tmux display-message -p -t 'dev@rig' '#{window_activity}'",
       );
     });
 
-    it("returns false (active, NOT silent) when tmux says '0'", async () => {
-      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "0\n" } }));
-      expect(await adapter.readPaneSilenceFlag("dev@rig")).toBe(false);
-    });
-
-    it("returns true (silent) when tmux says '1'", async () => {
-      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "1\n" } }));
-      expect(await adapter.readPaneSilenceFlag("dev@rig")).toBe(true);
+    it("returns the Unix-epoch-seconds integer when tmux yields a numeric value", async () => {
+      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "1716000000\n" } }));
+      expect(await adapter.readPaneLastActivity("dev@rig")).toBe(1716000000);
     });
 
     it("returns null on read error / missing session (no signal)", async () => {
       const adapter = new TmuxAdapter(mockExec({
         "display-message": { error: new Error("can't find session: dev@rig") },
       }));
-      expect(await adapter.readPaneSilenceFlag("dev@rig")).toBe(null);
+      expect(await adapter.readPaneLastActivity("dev@rig")).toBe(null);
+    });
+
+    it("returns null when tmux returns a blank value (slice 15 BLOCKING-fix discriminator — observed on tmux 3.6a)", async () => {
+      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "" } }));
+      expect(await adapter.readPaneLastActivity("dev@rig")).toBe(null);
     });
 
     it("returns null on unparseable output (defensive — daemon code should not crash on tmux quirks)", async () => {
       const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "garbage" } }));
-      expect(await adapter.readPaneSilenceFlag("dev@rig")).toBe(null);
+      expect(await adapter.readPaneLastActivity("dev@rig")).toBe(null);
+    });
+
+    it("returns null on zero / negative integers (sentinel from uninitialized window_activity)", async () => {
+      const a = new TmuxAdapter(mockExec({ "display-message": { stdout: "0\n" } }));
+      expect(await a.readPaneLastActivity("dev@rig")).toBe(null);
+      const b = new TmuxAdapter(mockExec({ "display-message": { stdout: "-5\n" } }));
+      expect(await b.readPaneLastActivity("dev@rig")).toBe(null);
     });
   });
 });

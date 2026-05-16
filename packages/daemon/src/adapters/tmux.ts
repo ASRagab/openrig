@@ -346,25 +346,35 @@ export class TmuxAdapter {
   }
 
   /**
-   * Slice 15 — read the runtime's `pane_silence_flag` for the target
-   * pane. Returns:
-   *   - `true`  → pane has been silent past the configured threshold (idle)
-   *   - `false` → pane has produced output within the threshold (active)
-   *   - `null`  → no signal available (target missing OR unparseable output)
+   * Slice 15 — read the timestamp (Unix epoch seconds) of the last
+   * activity on the pane's window. The daemon's SeatActivityService
+   * compares this against the configured silence window: if the
+   * timestamp is within the window the seat is `terminal-active`,
+   * otherwise it's silent past the threshold.
    *
-   * The caller treats `null` as "no terminal-active observation for this
-   * seat right now" — it is intentionally distinct from `true`/`false`
-   * so consumers don't conflate "we don't know" with "definitely idle".
+   * Why not `pane_silence_flag`: tmux 3.6a was observed to return a
+   * blank value for `#{pane_silence_flag}` during slice 15 dogfood
+   * (sticky-alert behavior + version-dependent emit semantics), so
+   * we cannot rely on it as the primary signal. `#{window_activity}`
+   * is reliably populated (the runtime updates it whenever the
+   * window receives output) and is the timestamp the tmux status-line
+   * activity indicators use themselves.
+   *
+   * Returns:
+   *   - a Unix-epoch-seconds integer when the runtime exposed the value
+   *   - `null` when the target is missing OR the value is unparseable
+   *     (consumers treat null as "no signal", distinct from "idle").
    */
-  async readPaneSilenceFlag(paneId: string): Promise<boolean | null> {
+  async readPaneLastActivity(paneId: string): Promise<number | null> {
     try {
       const output = await this.exec(
-        `tmux display-message -p -t ${shellQuote(paneId)} '#{pane_silence_flag}'`,
+        `tmux display-message -p -t ${shellQuote(paneId)} '#{window_activity}'`,
       );
       const trimmed = output.trim();
-      if (trimmed === "1") return true;
-      if (trimmed === "0") return false;
-      return null;
+      if (!/^\d+$/.test(trimmed)) return null;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return n;
     } catch {
       return null;
     }

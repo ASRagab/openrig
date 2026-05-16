@@ -24,7 +24,7 @@ export const DEFAULT_POLL_INTERVAL_MS = 1000;
  * ps/queue projection and never imports this service either.
  */
 export interface SeatActivityServiceDeps {
-  tmux: Pick<TmuxAdapter, "readPaneSilenceFlag">;
+  tmux: Pick<TmuxAdapter, "readPaneLastActivity">;
   defaultWindowSeconds: number;
   eventBus?: EventBus;
   now?: () => Date;
@@ -35,7 +35,7 @@ export interface PollSeatOptions {
 }
 
 export class SeatActivityService {
-  private readonly tmux: Pick<TmuxAdapter, "readPaneSilenceFlag">;
+  private readonly tmux: Pick<TmuxAdapter, "readPaneLastActivity">;
   private readonly defaultWindowSeconds: number;
   private readonly eventBus: EventBus | null;
   private readonly now: () => Date;
@@ -49,25 +49,42 @@ export class SeatActivityService {
   }
 
   /**
-   * Read the silence flag for `paneId` once and record the observation.
+   * Read the window's last-activity timestamp for `paneId` once and
+   * record an `isActiveWithinWindow` observation by comparing it to
+   * the configured silence window.
+   *
    * Returns the new SeatActivity record, or null when no signal is
-   * available (transient tmux error or unparseable output).
+   * available (transient tmux error, blank/unparseable timestamp).
+   *
+   * Slice 15 BLOCKING-fix: pivoted from reading the runtime's
+   * `pane_silence_flag` (observed blank on tmux 3.6a, sticky-alert
+   * behavior on others) to computing active/idle ourselves from
+   * `window_activity` — the same timestamp tmux's own status-line
+   * activity indicators consult.
    */
   async pollSeat(paneId: string, opts?: PollSeatOptions): Promise<SeatActivity | null> {
     const silenceWindowSeconds = opts?.silenceWindowSeconds ?? this.defaultWindowSeconds;
-    let isSilent: boolean | null = null;
+    let lastActivityEpochSeconds: number | null = null;
     try {
-      isSilent = await this.tmux.readPaneSilenceFlag(paneId);
+      lastActivityEpochSeconds = await this.tmux.readPaneLastActivity(paneId);
     } catch {
-      isSilent = null;
+      lastActivityEpochSeconds = null;
     }
-    if (isSilent === null) return null;
+    if (lastActivityEpochSeconds === null) return null;
+
+    const observedAt = this.now();
+    const ageSeconds = observedAt.getTime() / 1000 - lastActivityEpochSeconds;
+    // Active when the most recent activity is within the silence window.
+    // Negative ageSeconds (clock skew) defensively reads as active too —
+    // it means tmux reports activity in the (very near) future, which
+    // happens when the daemon's monotonic clock lags briefly.
+    const isActiveWithinWindow = ageSeconds < silenceWindowSeconds;
 
     const record: SeatActivity = {
       paneId,
-      isActiveWithinWindow: !isSilent,
+      isActiveWithinWindow,
       silenceWindowSeconds,
-      lastObservedAt: this.now().toISOString(),
+      lastObservedAt: observedAt.toISOString(),
     };
     this.latestByPaneId.set(paneId, record);
     return record;

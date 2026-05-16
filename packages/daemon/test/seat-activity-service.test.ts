@@ -11,22 +11,30 @@ import { describe, it, expect, vi } from "vitest";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
+// Slice 15 — tmux adapter mock keyed by canonical session name.
+// Map value: Unix epoch seconds of last activity (number), or null to
+// simulate "no signal" (target missing or blank tmux output, e.g.
+// tmux 3.6a behavior observed by velocity-qa).
 function makeTmuxAdapter(
-  silenceFlagBySession: Record<string, boolean | null>,
+  lastActivityBySession: Record<string, number | null>,
 ): TmuxAdapter {
   return {
-    readPaneSilenceFlag: vi.fn(async (paneId: string) => {
-      return Object.prototype.hasOwnProperty.call(silenceFlagBySession, paneId)
-        ? silenceFlagBySession[paneId]!
+    readPaneLastActivity: vi.fn(async (paneId: string) => {
+      return Object.prototype.hasOwnProperty.call(lastActivityBySession, paneId)
+        ? lastActivityBySession[paneId]!
         : null;
     }),
   } as unknown as TmuxAdapter;
 }
 
+const FIXED_NOW = new Date("2026-05-16T10:00:00.000Z");
+const FIXED_NOW_EPOCH = FIXED_NOW.getTime() / 1000;
+
 describe("SeatActivityService", () => {
-  it("pollSeat records an active observation when tmux reports silence flag = 0 (not silent)", async () => {
-    const tmux = makeTmuxAdapter({ "claude@rig": false });
-    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+  it("pollSeat records ACTIVE observation when window_activity is within the silence window", async () => {
+    // Activity 1s ago, window 3s → active
+    const tmux = makeTmuxAdapter({ "claude@rig": FIXED_NOW_EPOCH - 1 });
+    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
 
     const observed = await svc.pollSeat("claude@rig");
 
@@ -37,14 +45,28 @@ describe("SeatActivityService", () => {
     expect(observed!.lastObservedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("pollSeat records an idle observation when tmux reports silence flag = 1 (silent past threshold)", async () => {
-    const tmux = makeTmuxAdapter({ "claude@rig": true });
-    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 5 });
+  it("pollSeat records IDLE observation when window_activity is older than the silence window", async () => {
+    // Activity 10s ago, window 5s → idle (10s ≥ 5s)
+    const tmux = makeTmuxAdapter({ "claude@rig": FIXED_NOW_EPOCH - 10 });
+    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 5, now: () => FIXED_NOW });
 
     const observed = await svc.pollSeat("claude@rig");
 
     expect(observed!.isActiveWithinWindow).toBe(false);
     expect(observed!.silenceWindowSeconds).toBe(5);
+  });
+
+  it("HG-7 DISCRIMINATOR — same activity timestamp, different window: window=3 → idle; window=20 → active", async () => {
+    // Last activity 10s ago. With a 3s window: idle. With a 20s window: active.
+    const tmux = makeTmuxAdapter({ "claude@rig": FIXED_NOW_EPOCH - 10 });
+    const tight = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
+    const loose = new SeatActivityService({ tmux, defaultWindowSeconds: 20, now: () => FIXED_NOW });
+
+    const tightObs = await tight.pollSeat("claude@rig");
+    const looseObs = await loose.pollSeat("claude@rig");
+
+    expect(tightObs!.isActiveWithinWindow).toBe(false); // 10s > 3s
+    expect(looseObs!.isActiveWithinWindow).toBe(true);  // 10s < 20s
   });
 
   it("pollSeat returns null when tmux read returns null (no observation; consumer treats as 'unknown')", async () => {
@@ -55,8 +77,8 @@ describe("SeatActivityService", () => {
   });
 
   it("getSeatActivity returns the latest stored observation for a seat", async () => {
-    const tmux = makeTmuxAdapter({ "claude@rig": false });
-    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+    const tmux = makeTmuxAdapter({ "claude@rig": FIXED_NOW_EPOCH });
+    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
 
     expect(svc.getSeatActivity("claude@rig")).toBeNull();
     await svc.pollSeat("claude@rig");
@@ -67,8 +89,12 @@ describe("SeatActivityService", () => {
   });
 
   it("getSeatActivity is keyed per-seat; observations don't leak across seats", async () => {
-    const tmux = makeTmuxAdapter({ "a@rig": true, "b@rig": false });
-    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+    // a is idle (60s old), b is active (current)
+    const tmux = makeTmuxAdapter({
+      "a@rig": FIXED_NOW_EPOCH - 60,
+      "b@rig": FIXED_NOW_EPOCH,
+    });
+    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
 
     await svc.pollSeat("a@rig");
     await svc.pollSeat("b@rig");
@@ -78,19 +104,22 @@ describe("SeatActivityService", () => {
   });
 
   it("pollSeat with a per-seat override honors the override; default is the fallback", async () => {
-    const tmux = makeTmuxAdapter({ "claude@rig": false });
-    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+    // Activity 5s ago. Default window 3s → idle. Override 10s → active.
+    const tmux = makeTmuxAdapter({ "claude@rig": FIXED_NOW_EPOCH - 5 });
+    const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
 
-    const observed = await svc.pollSeat("claude@rig", { silenceWindowSeconds: 7 });
-    expect(observed!.silenceWindowSeconds).toBe(7);
+    const observed = await svc.pollSeat("claude@rig", { silenceWindowSeconds: 10 });
+    expect(observed!.silenceWindowSeconds).toBe(10);
+    expect(observed!.isActiveWithinWindow).toBe(true); // 5s < 10s
 
-    const observed2 = await svc.pollSeat("claude@rig"); // no override
+    const observed2 = await svc.pollSeat("claude@rig"); // no override → default 3s
     expect(observed2!.silenceWindowSeconds).toBe(3);
+    expect(observed2!.isActiveWithinWindow).toBe(false); // 5s > 3s
   });
 
   it("absorbs tmux errors so polling failures never crash the daemon loop", async () => {
     const tmux = {
-      readPaneSilenceFlag: vi.fn(async () => {
+      readPaneLastActivity: vi.fn(async () => {
         throw new Error("tmux gone");
       }),
     } as unknown as TmuxAdapter;
@@ -132,14 +161,17 @@ describe("SeatActivityService", () => {
         db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES (?, ?, ?, ?, ?)")
           .run("s2", "n2", "qa@rig", "running", ts);
 
-        const tmux = makeTmuxAdapter({ "dev@rig": false, "qa@rig": true });
-        const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+        const tmux = makeTmuxAdapter({
+          "dev@rig": FIXED_NOW_EPOCH,         // active (now)
+          "qa@rig": FIXED_NOW_EPOCH - 60,     // idle (60s old, window 3s)
+        });
+        const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
 
         await svc.pollAllRunningTmuxSeats(db);
 
         expect(svc.getSeatActivity("dev@rig")!.isActiveWithinWindow).toBe(true);
         expect(svc.getSeatActivity("qa@rig")!.isActiveWithinWindow).toBe(false);
-        expect(tmux.readPaneSilenceFlag).toHaveBeenCalledTimes(2);
+        expect(tmux.readPaneLastActivity).toHaveBeenCalledTimes(2);
       } finally {
         db.close();
       }
@@ -157,13 +189,16 @@ describe("SeatActivityService", () => {
         db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES (?, ?, ?, ?, ?)")
           .run("s2", "n2", "qa@rig", "detached", ts);
 
-        const tmux = makeTmuxAdapter({ "dev@rig": false, "qa@rig": false });
-        const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
+        const tmux = makeTmuxAdapter({
+          "dev@rig": FIXED_NOW_EPOCH,
+          "qa@rig": FIXED_NOW_EPOCH,
+        });
+        const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3, now: () => FIXED_NOW });
         await svc.pollAllRunningTmuxSeats(db);
 
         expect(svc.getSeatActivity("dev@rig")).not.toBeNull();
         expect(svc.getSeatActivity("qa@rig")).toBeNull(); // detached → skipped
-        expect(tmux.readPaneSilenceFlag).toHaveBeenCalledTimes(1);
+        expect(tmux.readPaneLastActivity).toHaveBeenCalledTimes(1);
       } finally {
         db.close();
       }
@@ -178,7 +213,7 @@ describe("SeatActivityService", () => {
         db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES (?, ?, ?, ?, ?)")
           .run("s1", "n1", "dev@rig", "running", ts);
 
-        const tmux = makeTmuxAdapter({ "dev@rig": false });
+        const tmux = makeTmuxAdapter({ "dev@rig": FIXED_NOW_EPOCH });
         const svc = new SeatActivityService({ tmux, defaultWindowSeconds: 3 });
         await svc.pollAllRunningTmuxSeats(db);
         expect(svc.getSeatActivity("dev@rig")).not.toBeNull();
