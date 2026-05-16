@@ -52,6 +52,27 @@ export interface OutcomeSummary {
   next: string;
 }
 
+// release-0.3.2 slice 01 BC repair — runtime validator for the
+// project --exit enum. TypeScript types don't enforce at runtime;
+// without this guard `--exit banana` would forward to the daemon
+// transactional-scribe surface. Match the same 3-part error shape
+// used elsewhere in the slice.
+export const PROJECT_EXIT_KINDS = ["handoff", "waiting", "done", "failed"] as const;
+export type ProjectExitKind = (typeof PROJECT_EXIT_KINDS)[number];
+
+export function isProjectExitKind(value: unknown): value is ProjectExitKind {
+  return typeof value === "string" && (PROJECT_EXIT_KINDS as readonly string[]).includes(value);
+}
+
+function emit3PartError(json: boolean, fact: string, consequence: string, action: string): void {
+  if (json) {
+    console.log(JSON.stringify({ ok: false, error: { fact, consequence, action } }, null, 2));
+  } else {
+    process.stderr.write(`Error: ${fact}\n${consequence}\n${action}\n`);
+  }
+  process.exitCode = 1;
+}
+
 export function printOutcomeSummary(json: boolean, status: number, summary: OutcomeSummary | null): void {
   if (json || !summary || status >= 400) return;
   console.log("");
@@ -176,13 +197,27 @@ Examples:
     .action(async (opts: {
       instance: string;
       currentPacket: string;
-      exit: "handoff" | "waiting" | "done" | "failed";
+      exit: string;
       actorSession: string;
       resultNote?: string;
       blockedOn?: string;
       nextOwner?: string;
       json?: boolean;
     }) => {
+      // HG-6 — runtime-validate the --exit enum BEFORE the daemon
+      // call. TypeScript types are erased at runtime; without this
+      // guard `--exit banana` would forward to the transactional
+      // workflow surface.
+      if (!isProjectExitKind(opts.exit)) {
+        emit3PartError(
+          Boolean(opts.json),
+          `--exit must be one of ${PROJECT_EXIT_KINDS.join(" | ")} (got "${opts.exit}").`,
+          "rig workflow project did not run; daemon was not contacted.",
+          `Pass a valid exit kind. Example: --exit handoff.`,
+        );
+        return;
+      }
+      const exitKind: ProjectExitKind = opts.exit;
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const res = await client.post<{
@@ -193,7 +228,7 @@ Examples:
         }>("/api/workflow/project", {
           instanceId: opts.instance,
           currentPacketId: opts.currentPacket,
-          exit: opts.exit,
+          exit: exitKind,
           actorSession: opts.actorSession,
           resultNote: opts.resultNote,
           blockedOn: opts.blockedOn,
