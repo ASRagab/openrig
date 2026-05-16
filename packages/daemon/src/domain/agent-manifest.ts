@@ -433,5 +433,28 @@ function normalizeProfile(raw: Record<string, unknown>): ProfileSpec {
       plugins: Array.isArray(uses?.["plugins"]) ? uses["plugins"] as string[] : [],
       runtimeResources: Array.isArray(uses?.["runtime_resources"]) ? uses["runtime_resources"] as string[] : [],
     },
+    activity: normalizeActivityBlock(raw["activity"]),
   };
+}
+
+/**
+ * Slice 15 — parse the `profile.activity` block. Returns undefined when
+ * the block is absent or the inner `silence_window_seconds` is invalid
+ * (non-integer / out of [1, 3600]); the daemon then uses its default
+ * (3 seconds). Invalid values are dropped silently here; an explicit
+ * validateAgentSpec error path can be added if operators report it as
+ * confusing — for v0 dropping is the safer/simpler choice.
+ *
+ * Accepts both YAML snake_case (`silence_window_seconds`) and the
+ * camelCase form the typed surface uses (`silenceWindowSeconds`).
+ */
+function normalizeActivityBlock(raw: unknown): { silenceWindowSeconds?: number } | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const candidate = obj["silence_window_seconds"] ?? obj["silenceWindowSeconds"];
+  if (typeof candidate !== "number") return undefined;
+  if (!Number.isFinite(candidate)) return undefined;
+  if (!Number.isInteger(candidate)) return undefined;
+  if (candidate < 1 || candidate > 3600) return undefined;
+  return { silenceWindowSeconds: candidate };
 }

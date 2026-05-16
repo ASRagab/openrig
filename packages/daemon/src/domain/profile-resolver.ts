@@ -37,6 +37,14 @@ export interface ResolvedNodeConfig {
   resolvedSpecName: string;
   resolvedSpecVersion: string;
   resolvedSpecHash: string;
+  /**
+   * Slice 15 — per-seat activity-detection tuning. Forwarded verbatim
+   * from `profile.activity` after agent-manifest normalization (which
+   * dropped invalid values). The instantiator passes
+   * `silenceWindowSeconds` to NodeLauncher.launchNode where it overrides
+   * the launcher's default (3s) for the tmux monitor-silence call.
+   */
+  activity?: { silenceWindowSeconds?: number };
 }
 
 export interface ResolutionContext {
@@ -208,6 +216,10 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
       resolvedSpecName: spec.name,
       resolvedSpecVersion: spec.version,
       resolvedSpecHash: baseSpec.hash,
+      // Slice 15 — pass through the parsed activity block (or undefined
+      // when the profile didn't declare one). NodeLauncher applies the
+      // default 3s when this is missing.
+      activity: profile.activity,
     },
   };
 }

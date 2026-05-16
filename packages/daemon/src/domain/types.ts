@@ -604,6 +604,18 @@ export interface ProfileSpec {
     plugins: string[];
     runtimeResources: string[];
   };
+  /**
+   * Slice 15 — per-seat activity-detection tuning. The daemon configures
+   * tmux's `monitor-silence` option for the seat's pane at seat-up.
+   * `silenceWindowSeconds` is the integer threshold (in seconds) below
+   * which an output-producing pane reads as "terminal-active". When
+   * omitted, the daemon's default (3 seconds per slice 15 README) is
+   * applied. Invalid values (non-integer, outside [1, 3600]) are
+   * dropped at normalize time and the default is used.
+   */
+  activity?: {
+    silenceWindowSeconds?: number;
+  };
 }
 
 export interface AgentSpec {
