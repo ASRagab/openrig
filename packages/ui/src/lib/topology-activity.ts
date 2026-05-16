@@ -19,6 +19,23 @@ export interface TopologyActivityBaseline {
   agentActivity?: AgentActivitySummary | null;
   currentQitems?: CurrentQitemSummary[] | null;
   startupStatus?: string | null;
+  /**
+   * Slice 15 — `terminal-active` primitive (tmux byte-stream). When
+   * available, this is the source of truth for the ActivityRing's
+   * active/idle animation. Independent from `hasAssignedWork`.
+   *
+   *   true  → seat producing output within the silence window → "active"
+   *   false → seat silent past the threshold → "idle"
+   *   null/undefined → no signal; fall back to other inputs.
+   */
+  terminalActive?: boolean | null;
+  /**
+   * Slice 15 — `has-work-to-do` primitive (queue-derived). Distinct
+   * from `terminalActive`. The UI renders this as its own affordance
+   * (e.g., "n queued") rather than collapsing into the active animation.
+   */
+  hasAssignedWork?: boolean;
+  pendingWorkCount?: number;
 }
 
 export interface TopologyActivityVisual {
@@ -153,8 +170,22 @@ export function getBaselineActivityState(input: TopologyActivityBaseline | null 
   if (input.startupStatus === "failed") return "blocked";
   if (input.startupStatus === "attention_required") return "needs_input";
   if (input.agentActivity?.state === "needs_input") return "needs_input";
+
+  // Slice 15 — terminal-active drives the active/idle animation.
+  // When the tmux signal is present it is the authoritative source. We
+  // STOPPED inferring "active" from `currentQitems` (queued-work
+  // presence) per IMPL-PRD §2.3 non-inference contract — that
+  // conflation was the founder-flagged bug. Queued work is rendered
+  // separately by the UI (hasAssignedWork affordance).
+  if (input.terminalActive === true) return "active";
+  if (input.terminalActive === false) return "idle";
+
+  // Fallback when there's no terminal-active signal: trust the hook-
+  // based agentActivity if the runtime reports it. This is NOT a
+  // queue-derived inference — agentActivity comes from agent hook
+  // events (UserPromptSubmit etc.), a separate signal.
   if (input.agentActivity?.state === "running") return "active";
-  if ((input.currentQitems?.length ?? 0) > 0) return "active";
+
   return "idle";
 }
 

@@ -28,6 +28,13 @@ export interface RigGroupNodeData {
   status: "running" | "partial" | "stopped";
   nodeCount: number;
   runningCount: number;
+  /**
+   * Slice 15 — terminal-active count for the rig. When provided, the
+   * "active" label reads this primitive instead of the process-alive
+   * `runningCount`. Falls back to runningCount when the daemon does
+   * not yet emit it (honest fallback, not silent conflation).
+   */
+  activeCount?: number;
   podCount?: number; // optional; populated post-graph-fetch when expanded
   recentActivity?: boolean;
   /** Click handler: owner threads through to toggle expand state. */
@@ -41,7 +48,11 @@ function statusToPip(s: RigGroupNodeData["status"]): React.ComponentProps<typeof
 }
 
 function RigGroupNodeInner({ data }: { data: RigGroupNodeData }) {
-  const { rigId, rigName, collapsed, status, nodeCount, runningCount, podCount, recentActivity, onToggle } = data;
+  const { rigId, rigName, collapsed, status, nodeCount, runningCount, activeCount, podCount, recentActivity, onToggle } = data;
+  // Slice 15 — display the terminal-active count when available; fall
+  // back to runningCount for daemons predating the slice. Labelled
+  // honestly: "{N} active" reads the active primitive, not runningCount.
+  const displayedActiveCount = activeCount ?? runningCount;
   return (
     <div
       data-testid={`rig-group-node-${rigId}`}
@@ -102,7 +113,7 @@ function RigGroupNodeInner({ data }: { data: RigGroupNodeData }) {
               {nodeCount} agent{nodeCount === 1 ? "" : "s"}
             </div>
             <div className="font-mono text-[9px] text-on-surface-variant">
-              {runningCount} active
+              {displayedActiveCount} active
             </div>
           </div>
         </div>
@@ -115,7 +126,7 @@ function RigGroupNodeInner({ data }: { data: RigGroupNodeData }) {
           {podCount !== undefined ? <span>/</span> : null}
           <span>{nodeCount} agents</span>
           <span>/</span>
-          <span>{runningCount} active</span>
+          <span>{displayedActiveCount} active</span>
         </div>
       )}
       {/* React-flow handles (invisible): rig groups are containers, not
@@ -146,6 +157,7 @@ export const RigGroupNode = memo(RigGroupNodeInner, (prev, next) => {
     a.status === b.status &&
     a.nodeCount === b.nodeCount &&
     a.runningCount === b.runningCount &&
+    a.activeCount === b.activeCount &&
     a.podCount === b.podCount &&
     a.recentActivity === b.recentActivity &&
     a.onToggle === b.onToggle

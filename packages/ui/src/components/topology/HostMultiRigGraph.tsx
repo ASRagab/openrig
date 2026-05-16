@@ -137,6 +137,8 @@ export function HostMultiRigGraph() {
       status: "running" | "partial" | "stopped";
       nodeCount: number;
       runningCount: number;
+      /** Slice 15 — terminal-active count piped through from PsEntry. */
+      activeCount?: number;
       podCount?: number;
       isExpanded: boolean;
       childNodes: Node[];
@@ -179,6 +181,7 @@ export function HostMultiRigGraph() {
         status: rig.status,
         nodeCount: rig.nodeCount,
         runningCount: rig.runningCount,
+        activeCount: (rig as { activeCount?: number }).activeCount,
         podCount,
         isExpanded,
         childNodes,
@@ -204,6 +207,7 @@ export function HostMultiRigGraph() {
         status: p.status,
         nodeCount: p.nodeCount,
         runningCount: p.runningCount,
+        activeCount: p.activeCount,
         podCount: p.podCount,
         onToggle: toggleRig,
       };

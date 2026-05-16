@@ -32,7 +32,15 @@ export function Dashboard() {
 
   const totalRigs = rigs?.length ?? 0;
   const totalAgents = rigs?.reduce((acc, r) => acc + r.nodeCount, 0) ?? 0;
-  const activeAgents = psEntries?.reduce((acc, p) => acc + p.runningCount, 0) ?? 0;
+  // Slice 15 — "Active" stat reads the terminal-active count from
+  // PsEntry.activeCount (the new primitive, sourced from
+  // SeatActivityService). Falls back to runningCount only when the
+  // daemon predates slice 15 (activeCount undefined) — honest about the
+  // source instead of silently conflating process-alive with active.
+  const activeAgents = psEntries?.reduce(
+    (acc, p) => acc + (p.activeCount ?? p.runningCount),
+    0,
+  ) ?? 0;
   const librarySize = library?.length ?? 0;
   const hostname =
     typeof window === "undefined" ? "localhost" : window.location.hostname || "localhost";
