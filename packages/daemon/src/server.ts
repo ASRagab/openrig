@@ -442,6 +442,10 @@ export function createApp(deps: AppDeps): Hono {
     c.set("contextMonitor" as never, deps.contextMonitor);
     c.set("nodeCmuxService" as never, deps.nodeCmuxService);
     c.set("agentActivityStore" as never, deps.agentActivityStore);
+    // Slice 15 — wire seatActivityService into request context so the
+    // /api/rigs/:id/nodes route can enrich entries with terminalActive +
+    // hasAssignedWork via attachTerminalActivityAndWork.
+    c.set("seatActivityService" as never, deps.seatActivityService);
     c.set("activityHookToken" as never, deps.activityHookToken);
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);

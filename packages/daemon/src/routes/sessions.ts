@@ -7,7 +7,15 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { NodeCmuxService } from "../domain/node-cmux-service.js";
 import type { TranscriptStore } from "../domain/transcript-store.js";
 import type { AgentActivityStore } from "../domain/agent-activity-store.js";
-import { attachAgentActivity, getNodeInventory, getNodeDetail, getNodeInventoryWithContext, getNodeDetailWithContext } from "../domain/node-inventory.js";
+import type { SeatActivityService } from "../domain/seat-activity-service.js";
+import {
+  attachAgentActivity,
+  attachTerminalActivityAndWork,
+  getNodeInventory,
+  getNodeDetail,
+  getNodeInventoryWithContext,
+  getNodeDetailWithContext,
+} from "../domain/node-inventory.js";
 import type { ContextUsageStore } from "../domain/context-usage-store.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SessionTransport } from "../domain/session-transport.js";
@@ -25,6 +33,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     tmuxAdapter: c.get("tmuxAdapter" as never) as TmuxAdapter,
     cmuxAdapter: c.get("cmuxAdapter" as never) as CmuxAdapter,
     agentActivityStore: c.get("agentActivityStore" as never) as AgentActivityStore | undefined,
+    seatActivityService: c.get("seatActivityService" as never) as SeatActivityService | undefined,
     rigLifecycleService: c.get("rigLifecycleService" as never) as RigLifecycleService | undefined,
   };
 }
@@ -64,7 +73,20 @@ nodesRoutes.get("/", async (c) => {
   const inventory = contextUsageStore
     ? getNodeInventoryWithContext(deps.rigRepo.db, rigId, contextUsageStore)
     : getNodeInventory(deps.rigRepo.db, rigId);
-  return c.json(await attachAgentActivity(inventory, { tmuxAdapter: deps.tmuxAdapter, activityStore: deps.agentActivityStore }));
+  // Slice 15 — enrich with the two new orthogonal primitives. Order is
+  // independent (each enrichment reads its own source), so the chain
+  // composes cleanly with attachAgentActivity. The non-inference
+  // contract is preserved at the data layer; this route is purely
+  // assembling the JSON response.
+  const withActivity = await attachAgentActivity(inventory, {
+    tmuxAdapter: deps.tmuxAdapter,
+    activityStore: deps.agentActivityStore,
+  });
+  const withTerminalAndWork = attachTerminalActivityAndWork(withActivity, {
+    db: deps.rigRepo.db,
+    seatActivity: deps.seatActivityService,
+  });
+  return c.json(withTerminalAndWork);
 });
 
 // GET /api/rigs/:rigId/nodes/:logicalId — node detail
