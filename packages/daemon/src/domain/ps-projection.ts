@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { NodeLifecycleState, RigLifecycleState } from "./types.js";
 import { getNodeInventory } from "./node-inventory.js";
+import type { SeatActivityService } from "./seat-activity-service.js";
 
 export interface PsEntry {
   rigId: string;
@@ -17,6 +18,20 @@ export interface PsEntry {
   rigName: string;
   nodeCount: number;
   runningCount: number;
+  /**
+   * Slice 15 — count of nodes whose `terminal-active` primitive
+   * reports `isActiveWithinWindow === true`. PARALLEL to `runningCount`
+   * (which stays `process-alive` semantics). Sourced exclusively from
+   * the SeatActivityService; never from queue/assignment state.
+   */
+  activeCount: number;
+  /**
+   * Slice 15 — count of nodes whose `has-work-to-do` primitive reports
+   * `hasAssignedWork === true`. Derived from the pending queue items
+   * with `destination_session` matching the node's canonical session
+   * name. Independent from `activeCount` (non-inference contract).
+   */
+  hasWorkCount: number;
   status: "running" | "partial" | "stopped";
   /** Always populated. Folded from per-node `lifecycleState` (post-L2);
    * empty rigs derive `stopped`. Never undefined or null. */
@@ -62,9 +77,11 @@ export function deriveRigLifecycleState(nodeStates: NodeLifecycleState[]): RigLi
  */
 export class PsProjectionService {
   readonly db: Database.Database;
+  private readonly seatActivity: SeatActivityService | null;
 
-  constructor(deps: { db: Database.Database }) {
+  constructor(deps: { db: Database.Database; seatActivity?: SeatActivityService }) {
     this.db = deps.db;
+    this.seatActivity = deps.seatActivity ?? null;
   }
 
   getEntries(): PsEntry[] {
@@ -107,12 +124,34 @@ export class PsProjectionService {
       const inventory = getNodeInventory(this.db, r.rig_id);
       const lifecycleState = deriveRigLifecycleState(inventory.map((e) => e.lifecycleState));
 
+      // Slice 15 — `terminal-active` count. Subset of running tmux-bound
+      // seats whose latest SeatActivity observation says
+      // `isActiveWithinWindow === true`. Sourced ONLY from the activity
+      // service; never derived from queue state.
+      let activeCount = 0;
+      if (this.seatActivity) {
+        for (const node of inventory) {
+          if (node.sessionStatus !== "running") continue;
+          if (!node.canonicalSessionName) continue;
+          const obs = this.seatActivity.getSeatActivity(node.canonicalSessionName);
+          if (obs?.isActiveWithinWindow === true) activeCount++;
+        }
+      }
+
+      // Slice 15 — `has-work-to-do` count. Subset of nodes with at
+      // least one pending qitem whose `destination_session` matches the
+      // node's `canonicalSessionName`. Sourced ONLY from the queue
+      // projection; never from tmux output.
+      const hasWorkCount = countNodesWithPendingWork(this.db, r.rig_id);
+
       return {
         rigId: r.rig_id,
         name: r.name,
         rigName: r.name,
         nodeCount: r.node_count,
         runningCount: r.running_count,
+        activeCount,
+        hasWorkCount,
         status,
         lifecycleState,
         uptime: r.earliest_running_at ? formatDuration(now - new Date(r.earliest_running_at + "Z").getTime()) : null,
@@ -120,6 +159,40 @@ export class PsProjectionService {
       };
     });
   }
+}
+
+/**
+ * Slice 15 — count nodes in this rig that have at least one pending
+ * qitem assigned to them (queue.destination_session matches a node's
+ * latest session_name). Pure SQL query — does NOT consult tmux output
+ * or SeatActivity (non-inference contract).
+ */
+function countNodesWithPendingWork(db: Database.Database, rigId: string): number {
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT n.id) as c
+    FROM nodes n
+    JOIN sessions s ON s.node_id = n.id
+      AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
+    WHERE n.rig_id = ?
+      AND EXISTS (
+        SELECT 1 FROM queue_items q
+        WHERE q.destination_session = s.session_name
+          AND q.state = 'pending'
+      )
+  `).get(rigId) as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+/**
+ * Slice 15 — count of pending qitems assigned to a specific canonical
+ * session name. Exposed for per-node enrichment in node-inventory.
+ */
+export function countPendingWorkForSession(db: Database.Database, canonicalSessionName: string): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) as c FROM queue_items
+    WHERE destination_session = ? AND state = 'pending'
+  `).get(canonicalSessionName) as { c: number } | undefined;
+  return row?.c ?? 0;
 }
 
 function formatDuration(ms: number): string {

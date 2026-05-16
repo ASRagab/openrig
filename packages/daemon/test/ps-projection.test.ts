@@ -295,4 +295,146 @@ describe("PsProjectionService", () => {
       expect(deriveRigLifecycleState(["attention_required", "detached"])).toBe("attention_required");
     });
   });
+
+  // Slice 15 — `terminal-active` count + `has-work` count are PARALLEL
+  // primitives on PsEntry; `runningCount` (process-alive) stays unchanged.
+  // The tests below pin the non-inference contract (HG-3 + HG-4): the
+  // two new counts must be observable independently — a seat in one
+  // state should NOT pull the other count up with it.
+  describe("slice 15 — activeCount + hasWorkCount (parallel to runningCount)", () => {
+    function makeSeatActivityFor(activeByPaneId: Record<string, boolean>) {
+      return {
+        getSeatActivity: (paneId: string) => {
+          if (paneId in activeByPaneId) {
+            return {
+              paneId,
+              isActiveWithinWindow: activeByPaneId[paneId]!,
+              silenceWindowSeconds: 3,
+              lastObservedAt: "2026-05-16T00:00:00.000Z",
+            };
+          }
+          return null;
+        },
+      };
+    }
+
+    function seedPendingQitem(destinationSession: string): void {
+      const id = `qitem-${Date.now()}-${Math.random()}`;
+      const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+      db.prepare(`
+        INSERT INTO queue_items (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, tier, body)
+        VALUES (?, ?, ?, ?, ?, 'pending', 'routine', 'routine', ?)
+      `).run(id, ts, ts, "operator@test", destinationSession, "test-body");
+    }
+
+    it("runningCount stays process-alive semantics; activeCount + hasWorkCount default to 0 when no signals wired", () => {
+      const rigId = seedRig("baseline");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+
+      const entries = ps.getEntries();
+      expect(entries[0]!.runningCount).toBe(1);
+      expect(entries[0]!.activeCount).toBe(0);
+      expect(entries[0]!.hasWorkCount).toBe(0);
+    });
+
+    it("HG-3 direction A — seat producing output with NOTHING queued: terminalActive=true, hasAssignedWork=false ⇒ activeCount=1, hasWorkCount=0", () => {
+      const rigId = seedRig("active-no-work");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      const paneId = `tmux-${n1}`;
+      const seatActivity = makeSeatActivityFor({ [paneId]: true });
+      const psWithActivity = new PsProjectionService({ db, seatActivity: seatActivity as never });
+
+      const entries = psWithActivity.getEntries();
+      expect(entries[0]!.activeCount).toBe(1);
+      expect(entries[0]!.hasWorkCount).toBe(0);
+      // process-alive count unchanged
+      expect(entries[0]!.runningCount).toBe(1);
+    });
+
+    it("HG-3 direction B — seat SILENT with queued work: terminalActive=false, hasAssignedWork=true ⇒ activeCount=0, hasWorkCount=1", () => {
+      const rigId = seedRig("idle-with-work");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      const paneId = `tmux-${n1}`;
+      seedPendingQitem(paneId);
+      const seatActivity = makeSeatActivityFor({ [paneId]: false });
+      const psWithActivity = new PsProjectionService({ db, seatActivity: seatActivity as never });
+
+      const entries = psWithActivity.getEntries();
+      expect(entries[0]!.activeCount).toBe(0);
+      expect(entries[0]!.hasWorkCount).toBe(1);
+      expect(entries[0]!.runningCount).toBe(1);
+    });
+
+    it("HG-4 non-inference — fake activity state does NOT change hasWorkCount; fake queue state does NOT change activeCount", () => {
+      const rigId = seedRig("non-inference");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      const paneId = `tmux-${n1}`;
+
+      // Start: silent seat, no queued work. Both counts 0.
+      const seatActivitySilent = makeSeatActivityFor({ [paneId]: false });
+      let entries = new PsProjectionService({ db, seatActivity: seatActivitySilent as never }).getEntries();
+      expect(entries[0]!.activeCount).toBe(0);
+      expect(entries[0]!.hasWorkCount).toBe(0);
+
+      // Flip ONLY queue state (add pending qitem). activeCount must NOT move.
+      seedPendingQitem(paneId);
+      entries = new PsProjectionService({ db, seatActivity: seatActivitySilent as never }).getEntries();
+      expect(entries[0]!.activeCount).toBe(0); // unchanged — proves no queue→active inference
+      expect(entries[0]!.hasWorkCount).toBe(1);
+
+      // Flip ONLY activity state (active observation), keep qitem. hasWorkCount must hold steady.
+      const seatActivityActive = makeSeatActivityFor({ [paneId]: true });
+      entries = new PsProjectionService({ db, seatActivity: seatActivityActive as never }).getEntries();
+      expect(entries[0]!.activeCount).toBe(1);
+      expect(entries[0]!.hasWorkCount).toBe(1); // unchanged — proves no active→hasWork inference
+    });
+
+    it("running-but-no-observation reads as inactive (activeCount=0) — null SeatActivity is distinct from active", () => {
+      const rigId = seedRig("no-obs");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      // SeatActivity returns null for every paneId — no observations yet.
+      const seatActivity = { getSeatActivity: () => null };
+      const psWithActivity = new PsProjectionService({ db, seatActivity: seatActivity as never });
+
+      const entries = psWithActivity.getEntries();
+      expect(entries[0]!.runningCount).toBe(1);
+      expect(entries[0]!.activeCount).toBe(0); // no signal ≠ active
+    });
+
+    it("hasWorkCount counts DISTINCT nodes; multiple qitems on one seat counts the seat once", () => {
+      const rigId = seedRig("multi-qitem");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      const paneId = `tmux-${n1}`;
+      seedPendingQitem(paneId);
+      seedPendingQitem(paneId);
+      seedPendingQitem(paneId);
+
+      const entries = ps.getEntries();
+      expect(entries[0]!.hasWorkCount).toBe(1);
+    });
+
+    it("done/closed qitems do NOT count toward hasWorkCount (only 'pending' state)", () => {
+      const rigId = seedRig("only-pending");
+      const n1 = seedNode(rigId, "dev");
+      seedSession(n1, "running");
+      const paneId = `tmux-${n1}`;
+      // Insert one pending + one done qitem for the same seat.
+      seedPendingQitem(paneId);
+      const id = `qitem-done-${Date.now()}`;
+      const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+      db.prepare(`
+        INSERT INTO queue_items (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, tier, body)
+        VALUES (?, ?, ?, ?, ?, 'done', 'routine', 'routine', ?)
+      `).run(id, ts, ts, "operator@test", paneId, "test-body");
+
+      const entries = ps.getEntries();
+      expect(entries[0]!.hasWorkCount).toBe(1); // only the pending one counts
+    });
+  });
 });

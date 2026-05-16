@@ -3,6 +3,7 @@ import type { NodeInventoryEntry, NodeDetailEntry, NodeDetailPeer, NodeDetailEdg
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { ContextUsageStore } from "./context-usage-store.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
+import type { SeatActivityService } from "./seat-activity-service.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { probeSessionActivity } from "./session-transport.js";
 import { findLatestUsableSnapshot } from "./rig-repository.js";
@@ -628,6 +629,55 @@ export function getNodeDetailWithContext(
   }
 
   return detail;
+}
+
+/**
+ * Slice 15 — populate `terminalActive` + `hasAssignedWork` per node.
+ *
+ * Two orthogonal enrichments computed independently (non-inference
+ * contract per IMPL-PRD §2.3):
+ *   - `terminalActive`: read from SeatActivityService (tmux signal)
+ *   - `hasAssignedWork` + `pendingWorkCount`: derived from queue_items
+ *     where destination_session matches the seat's canonical session name
+ *
+ * Pure / synchronous — keeps the projection cheap for both `rig ps` and
+ * the UI which both fetch this per-request. The two enrichments do not
+ * read each other's source.
+ */
+export function attachTerminalActivityAndWork(
+  entries: NodeInventoryEntry[],
+  deps: { db: Database.Database; seatActivity?: SeatActivityService },
+): NodeInventoryEntry[] {
+  const seatActivity = deps.seatActivity ?? null;
+  const pendingByDest = readPendingWorkBySession(deps.db);
+  return entries.map((entry) => {
+    let terminalActive: boolean | null | undefined = undefined;
+    if (seatActivity && entry.canonicalSessionName) {
+      const obs = seatActivity.getSeatActivity(entry.canonicalSessionName);
+      terminalActive = obs ? obs.isActiveWithinWindow : null;
+    }
+    const pendingCount = entry.canonicalSessionName
+      ? (pendingByDest.get(entry.canonicalSessionName) ?? 0)
+      : 0;
+    return {
+      ...entry,
+      terminalActive,
+      hasAssignedWork: pendingCount > 0,
+      pendingWorkCount: pendingCount,
+    };
+  });
+}
+
+function readPendingWorkBySession(db: Database.Database): Map<string, number> {
+  const rows = db.prepare(`
+    SELECT destination_session, COUNT(*) as c
+    FROM queue_items
+    WHERE state = 'pending'
+    GROUP BY destination_session
+  `).all() as Array<{ destination_session: string; c: number }>;
+  const out = new Map<string, number>();
+  for (const r of rows) out.set(r.destination_session, r.c);
+  return out;
 }
 
 export async function attachAgentActivity(
