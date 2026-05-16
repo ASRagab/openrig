@@ -5,6 +5,11 @@ import { GETTING_STARTED_NARRATIVE } from "./getting-started-narrative.js";
 
 type DefaultSlice = {
   id: string;
+  /** §1 dot-ID per conventions/scope-and-versioning. Minted into the
+   *  slice README frontmatter so the seeded scaffold satisfies the
+   *  GA-convention coherence target without needing to round-trip
+   *  through `rig scope`. */
+  dotId: string;
   title: string;
   status: "active" | "draft";
   objective: string;
@@ -12,27 +17,37 @@ type DefaultSlice = {
 
 type DefaultMission = {
   id: string;
+  /** §1 mission dot-ID — escape band for non-release missions. */
+  dotId: string;
   title: string;
   status: "active" | "draft";
   objective: string;
   slices: DefaultSlice[];
 };
 
+// Release-0.3.2 slice 01 (OPR.0.3.2.1) — seeded missions/slices now
+// carry §1 dot-IDs in frontmatter so the scaffold coheres with
+// `conventions/scope-and-versioning`. `getting-started` is a
+// non-release mission → escape band `OPR.99.0.1`; its slices fan out
+// as `OPR.99.0.1.<n>` (numbers monotonic, never reused).
 const DEFAULT_MISSIONS: DefaultMission[] = [
   {
     id: "getting-started",
+    dotId: "OPR.99.0.1",
     title: "Getting Started",
     status: "active",
     objective: "Launch the conveyor starter and learn how OpenRig moves work through queue-backed slices.",
     slices: [
       {
         id: "first-conveyor-run",
+        dotId: "OPR.99.0.1.1",
         title: "First Conveyor Run",
         status: "active",
         objective: "Move one small packet through intake, planning, build, review, and close on the conveyor starter.",
       },
       {
         id: "inspect-project-evidence",
+        dotId: "OPR.99.0.1.2",
         title: "Inspect Project Evidence",
         status: "draft",
         objective: "Open Project, Queue, Story, and Tests to inspect the evidence created by the first conveyor run.",
@@ -61,7 +76,7 @@ export function workspaceScaffoldDirs(): string[] {
 function subdirReadmeContent(subdir: string): string {
   switch (subdir) {
     case "missions":
-      return "# missions\n\nProject missions live here. Each mission folder maps to one Project mission in the UI and owns a `slices/` child folder.\n\nExpected shape:\n\n```text\nmissions/<mission-id>/README.md\nmissions/<mission-id>/PROGRESS.md\nmissions/<mission-id>/slices/<slice-id>/README.md\n```\n";
+      return "# missions\n\nProject missions live here. Each mission folder maps to one Project mission in the UI and owns a `slices/` child folder.\n\nExpected shape:\n\n```text\nmissions/<mission-name>/README.md\nmissions/<mission-name>/PROGRESS.md\nmissions/<mission-name>/slices/<slice-name>/README.md\n```\n\nEvery mission and slice README carries a stable dot-ID in its frontmatter (`id: OPR.<ver>[.<n>]`) per the scope-and-versioning convention. Use `rig scope mission create <name>` and `rig scope slice create <mission> <slug>` to mint conformant artifacts; the CLI handles the dot-ID + auto-numbering for you. The folder name is the operator-facing slug; the `id:` is the stable handle that survives renames.\n";
     case "artifacts":
       return "# artifacts\n\nWork products live here: plans, drafts, generated outputs, and other files that a slice may reference before closure.\n";
     case "evidence":
@@ -90,7 +105,7 @@ This workspace is file-backed. The Project UI mirrors this structure:
 - \`evidence/\` is for proof notes and verification summaries.
 - \`dogfood-evidence/<proof-packet-id>\` becomes Tests proof when the packet id contains the slice id tokens.
 
-Use stable kebab-case ids for mission and slice folders. Keep slice ids unique inside the workspace.
+Use stable kebab-case names for mission and slice folders. Every mission/slice README also carries a stable dot-ID in its frontmatter (\`id: OPR.<ver>[.<n>]\`) per the \`scope-and-versioning\` convention; mint conformant artifacts via \`rig scope mission create <name>\` and \`rig scope slice create <mission> <slug>\`. Folder names are operator-facing slugs; the \`id:\` is the rename-proof handle.
 `;
 
 const STEERING_PLACEHOLDER = `---
@@ -121,6 +136,7 @@ alongside your Project workspace.
 
 function missionReadme(mission: DefaultMission): string {
   return `---
+id: ${mission.dotId}
 title: ${mission.title}
 status: ${mission.status}
 mission: ${mission.id}
@@ -157,6 +173,7 @@ function sliceReadme(mission: DefaultMission, slice: DefaultSlice): string {
   const narrative = GETTING_STARTED_NARRATIVE[slice.id];
   if (narrative) {
     return `---
+id: ${slice.dotId}
 title: ${slice.title}
 status: ${slice.status}
 mission: ${mission.id}
@@ -167,6 +184,7 @@ slice: ${slice.id}
 ${narrative.readme}`;
   }
   return `---
+id: ${slice.dotId}
 title: ${slice.title}
 status: ${slice.status}
 mission: ${mission.id}
