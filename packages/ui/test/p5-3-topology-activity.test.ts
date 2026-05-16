@@ -93,7 +93,7 @@ describe("P5.3 topology activity parser and resolver", () => {
       agentActivity: { state: "needs_input", reason: "x", evidenceSource: "test", sampledAt: "now" },
     })).toBe("needs_input");
     // Slice 15 — queued work alone does NOT make a seat "active". The
-    // currentQitems→active inference was the founder-flagged
+    // currentQitems→active inference was the reported queue-to-active
     // conflation bug. UI now renders queued work separately as a
     // hasAssignedWork affordance; active/idle is driven by
     // terminalActive (tmux byte-stream) or agentActivity (hook events).

@@ -10,11 +10,12 @@ export const DEFAULT_POLL_INTERVAL_MS = 1000;
 /**
  * Slice 15 — daemon owner of the `terminal-active` primitive.
  *
- * Polls tmux's per-pane `pane_silence_flag` (configured by
- * `monitor-silence`) and keeps the latest observation per seat,
- * keyed by canonical session name. Downstream consumers (ps-projection,
- * node-inventory, UI hooks) read the latest observation through
- * `getSeatActivity(canonicalSessionName)`.
+ * Polls tmux's `#{window_activity}` last-activity timestamp per seat
+ * (via TmuxAdapter.readPaneLastActivity) and keeps the latest
+ * observation keyed by canonical session name. Active/idle is derived
+ * by comparing the observed timestamp's age against the silence-window
+ * threshold. Downstream consumers (ps-projection, node-inventory, UI
+ * hooks) read via `getSeatActivity(canonicalSessionName)`.
  *
  * Non-inference contract (slice 15 IMPL-PRD §2.3, HG-4): this service
  * NEVER reads queue/assignment state. Its constructor surface

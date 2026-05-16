@@ -462,13 +462,14 @@ export interface NodeInventoryEntry {
 /**
  * Slice 15 — `terminal-active` observation for a single seat's pane.
  *
- * Sourced from tmux's per-window `monitor-silence` mechanism, read via
- * `pane_silence_flag`. The service that produces these records polls
- * the flag at a configurable cadence and keeps the latest per pane.
- *
- * `isActiveWithinWindow` is the inverse of the runtime silence flag:
- * tmux's flag is "silent" semantics; we expose "active" semantics so
- * the boolean tracks the natural UI question "is the seat working".
+ * Sourced from tmux's `#{window_activity}` format (Unix-epoch-seconds
+ * timestamp of the last output on the window). The producing service
+ * polls the timestamp at a configurable cadence and compares it
+ * against the silence window threshold; `isActiveWithinWindow` is true
+ * when the most recent activity is within that window. The
+ * `monitor-silence` option is configured on the seat's window at
+ * launch time for tmux's own status-line + bell-alert behavior, but is
+ * not the read source.
  */
 export interface SeatActivity {
   /** tmux pane id OR canonical session name — whatever the daemon binds. */

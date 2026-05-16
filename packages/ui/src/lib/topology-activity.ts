@@ -175,8 +175,8 @@ export function getBaselineActivityState(input: TopologyActivityBaseline | null 
   // When the tmux signal is present it is the authoritative source. We
   // STOPPED inferring "active" from `currentQitems` (queued-work
   // presence) per IMPL-PRD §2.3 non-inference contract — that
-  // conflation was the founder-flagged bug. Queued work is rendered
-  // separately by the UI (hasAssignedWork affordance).
+  // queue-to-active conflation was the reported bug. Queued work is
+  // rendered separately by the UI (hasAssignedWork affordance).
   if (input.terminalActive === true) return "active";
   if (input.terminalActive === false) return "idle";
 
