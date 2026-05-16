@@ -456,11 +456,12 @@ Other keys are rejected. agentActivity.state is node-level (use with --nodes);
 allowed values: running, needs_input, idle, unknown.
 
 --fields accepts (rig-level): rigId, name, rigName, nodeCount, runningCount,
-status, lifecycleState, uptime, latestSnapshot.
+activeCount, hasWorkCount, status, lifecycleState, uptime, latestSnapshot.
 --fields accepts (node-level, with --nodes): rigId, rigName, logicalId, podId,
 podNamespace, canonicalSessionName, nodeKind, runtime, sessionStatus,
 startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
-resumeCommand, latestError, agentActivity. Other keys are rejected.
+resumeCommand, latestError, terminalActive, hasAssignedWork,
+pendingWorkCount, agentActivity. Other keys are rejected.
 \`name\` is rig-level only; for node entries use \`rigName\`. Nested-field
 projection (e.g. \`agentActivity.state\`) is not supported in this slice; pass
 \`agentActivity\` to project the whole object and read the nested value
