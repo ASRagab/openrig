@@ -132,6 +132,7 @@ import { queueTargetRepoSchema } from "./db/migrations/039_queue_target_repo.js"
 // can record diagnostic rows. SC-29 #10 declared verbatim in commit body.
 import { workflowSpecsDiagnosticSchema } from "./db/migrations/040_workflow_specs_diagnostic.js";
 import { rigPolicySchema } from "./db/migrations/041_rig_policy.js";
+import { RigPolicyStore } from "./domain/rig-policy/rig-policy-store.js";
 import { MissionControlActionLog } from "./domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "./domain/mission-control/mission-control-write-contract.js";
 import { MissionControlReadLayer } from "./domain/mission-control/mission-control-read-layer.js";
@@ -827,6 +828,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // PodRigInstantiator's session_source: mode: agent_image dispatch.
     agentImageLibrary,
     snapshotCapturer,
+    // Slice 09 (OPR.0.3.2.9) — operator-context-mode bindings store
+    // (typed primitive on the shared db handle; HG-5: no parallel store).
+    rigPolicyStore: new RigPolicyStore(db),
     agentImageSpecRoots: () => {
       // Spec-library roots scanned by the evidence guard. v0: user
       // specs under ~/.openrig/specs + workspace-local specs root
