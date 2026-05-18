@@ -202,6 +202,34 @@ export function rigPolicyCommand(depsOverride?: RigPolicyDeps): Command {
         process.exitCode = 1;
         return;
       }
+
+      // BLOCKING re-verify-2 (qitem-20260518045300): when --scope is
+      // explicit, validate scope + qualifier LOCALLY before touching
+      // the daemon. Otherwise an invalid operator invocation
+      // (e.g. `--scope global_host --qualifier X`) surfaces as
+      // "Daemon not running" when the daemon is down, instead of the
+      // proper local input error. Convention's scope rule applies at
+      // operator invocation, not at daemon HTTP parsing.
+      let explicitScope: Scope | null = null;
+      if (opts.scope !== undefined) {
+        if (!(SCOPES as readonly string[]).includes(opts.scope)) {
+          console.error(`Unknown scope '${opts.scope}'. Allowed: ${SCOPES.join(", ")}.`);
+          process.exitCode = 1;
+          return;
+        }
+        explicitScope = opts.scope as Scope;
+        const preflight = normalizeScopeQualifier(explicitScope, opts.qualifier);
+        if (!preflight.ok) {
+          if (opts.json) {
+            console.log(JSON.stringify({ ok: false, error: "qualifier_invalid", hint: preflight.message }, null, 2));
+          } else {
+            console.error(preflight.message);
+          }
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const defaultsRes = await client.get<RecommendedDefaultsResponse>("/api/rig-policy/defaults");
@@ -211,16 +239,19 @@ export function rigPolicyCommand(depsOverride?: RigPolicyDeps): Command {
           return;
         }
         const defaults = defaultsRes.data;
-        const scope = (opts.scope as Scope | undefined) ?? defaults.recommendedDefaultScope[mode];
+        const scope = explicitScope ?? defaults.recommendedDefaultScope[mode];
+        // Defensive — the defaults map is from the daemon, so its scope
+        // values are trusted; keep the assertion shape lean.
         if (!(SCOPES as readonly string[]).includes(scope)) {
           console.error(`Unknown scope '${scope}'. Allowed: ${SCOPES.join(", ")}.`);
           process.exitCode = 1;
           return;
         }
-        // BLOCKING re-verify (qitem-20260518044650): never silently drop
-        // an explicit operator-supplied qualifier on global_host. Reject
-        // BEFORE the proposed-binding restate so the operator sees the
-        // input error rather than a misleading proposed binding.
+        // Re-run normalization for the implicit-default-scope case.
+        // (Explicit scope was already preflighted above; this branch is
+        // a no-op for explicit-scope inputs but is needed when the
+        // default scope is e.g. `qitem`/`workstream` and the operator
+        // forgot --qualifier.)
         const normalized = normalizeScopeQualifier(scope, opts.qualifier);
         if (!normalized.ok) {
           if (opts.json) {

@@ -293,45 +293,85 @@ describe("normalizeScopeQualifier (CLI mirror of daemon-route parseScopeAndQuali
   });
 });
 
-describe("BLOCKING re-verify (qitem-20260518044650): set --scope global_host --qualifier <X> rejected at CLI before any daemon call", () => {
-  it("WITHOUT --confirm: exits 1; daemon NOT contacted (no GET defaults, no restate, no PUT)", async () => {
+describe("BLOCKING re-verify-2 (qitem-20260518045300): explicit --scope global_host --qualifier <X> rejected BEFORE any daemon contact", () => {
+  it("WITHOUT --confirm: exits 1; daemon NOT contacted at all (no GET /defaults, no PUT, no restate)", async () => {
     const { client, calls } = fakeClient({});
     const cmd = rigPolicyCommand(deps(client));
     await cmd.parseAsync(["node", "rig", "set", "sleep", "--scope", "global_host", "--qualifier", "unexpected"]);
     expect(process.exitCode).toBe(1);
-    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+    // BLOCKING re-verify-2 evidence: zero daemon calls of any kind.
+    expect(calls).toHaveLength(0);
     expect(errs.join("\n")).toMatch(/Global-host bindings cannot carry a qualifier/);
-    // CRITICAL: no misleading "Proposed binding" restate happens.
     expect(logs.join("\n")).not.toContain("Proposed binding");
   });
 
-  it("WITH --confirm: exits 1; daemon NOT contacted (no PUT)", async () => {
+  it("WITH --confirm: exits 1; daemon NOT contacted (no GET /defaults, no PUT)", async () => {
     const { client, calls } = fakeClient({});
     const cmd = rigPolicyCommand(deps(client));
     await cmd.parseAsync(["node", "rig", "set", "sleep", "--scope", "global_host", "--qualifier", "unexpected", "--confirm"]);
     expect(process.exitCode).toBe(1);
-    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+    expect(calls).toHaveLength(0);
     expect(errs.join("\n")).toMatch(/Global-host bindings cannot carry a qualifier/);
   });
 
-  it("WITH --json: emits ok:false + qualifier_invalid; no PUT", async () => {
+  it("WITH --json: emits ok:false + qualifier_invalid; zero daemon calls", async () => {
     const { client, calls } = fakeClient({});
     const cmd = rigPolicyCommand(deps(client));
     await cmd.parseAsync(["node", "rig", "set", "sleep", "--scope", "global_host", "--qualifier", "unexpected", "--json"]);
     expect(process.exitCode).toBe(1);
-    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+    expect(calls).toHaveLength(0);
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toBe("qualifier_invalid");
   });
 
-  it("Positive: set sleep without --qualifier targets /bindings/global_host (no trailing segment)", async () => {
+  it("Explicit non-global scope missing qualifier ALSO preflighted: zero daemon calls", async () => {
+    const { client, calls } = fakeClient({});
+    const cmd = rigPolicyCommand(deps(client));
+    await cmd.parseAsync(["node", "rig", "set", "debug", "--scope", "rig"]);
+    expect(process.exitCode).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(errs.join("\n")).toMatch(/requires a qualifier/);
+  });
+
+  it("Explicit unknown scope rejected locally: zero daemon calls", async () => {
+    const { client, calls } = fakeClient({});
+    const cmd = rigPolicyCommand(deps(client));
+    await cmd.parseAsync(["node", "rig", "set", "debug", "--scope", "banana", "--qualifier", "q-1"]);
+    expect(process.exitCode).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(errs.join("\n")).toMatch(/Unknown scope 'banana'/);
+  });
+
+  it("Positive: set sleep --scope global_host --confirm → PUT /bindings/global_host (one GET /defaults + one PUT)", async () => {
     const { client, calls } = fakeClient({});
     const cmd = rigPolicyCommand(deps(client));
     await cmd.parseAsync(["node", "rig", "set", "sleep", "--scope", "global_host", "--confirm"]);
     expect(process.exitCode).toBeUndefined();
     const put = calls.find((c) => c.method === "PUT")!;
     expect(put.path).toBe("/api/rig-policy/bindings/global_host");
+  });
+
+  it("Implicit-default-scope path STILL fetches defaults (no preflight rejection): set debug without --scope reaches GET /defaults + PUT", async () => {
+    const { client, calls } = fakeClient({});
+    const cmd = rigPolicyCommand(deps(client));
+    await cmd.parseAsync(["node", "rig", "set", "debug", "--qualifier", "q-1", "--confirm"]);
+    expect(process.exitCode).toBeUndefined();
+    const gets = calls.filter((c) => c.method === "GET" && c.path.startsWith("/api/rig-policy/defaults"));
+    const puts = calls.filter((c) => c.method === "PUT");
+    expect(gets.length).toBe(1);
+    expect(puts.length).toBe(1);
+    expect(puts[0]!.path).toBe("/api/rig-policy/bindings/qitem/q-1");
+  });
+
+  it("Implicit-default-scope path still rejects missing qualifier when default scope needs one (no PUT)", async () => {
+    const { client, calls } = fakeClient({});
+    const cmd = rigPolicyCommand(deps(client));
+    // `debug` default scope is `qitem`; without --qualifier the post-defaults normalization rejects.
+    await cmd.parseAsync(["node", "rig", "set", "debug"]);
+    expect(process.exitCode).toBe(1);
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+    expect(errs.join("\n")).toMatch(/requires a qualifier/);
   });
 });
 
