@@ -1107,6 +1107,12 @@ describe("Bundle API routes", () => {
 
       const history = await app.request("/api/bundles/history");
       const body = await history.json();
+      // Item 4 close-out / guard B2 repair: helper-level bundlePath assertion
+      // applies to all 4 branch tests (DRY). Discriminator: setting
+      // record.bundlePath to a wrong path in routes/bundles.ts must fail
+      // every apply-mode branch test.
+      expect(body.total).toBe(1);
+      expect(body.records[0].bundlePath).toBe(bundlePath);
       return body;
     } finally {
       (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
