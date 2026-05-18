@@ -67,8 +67,14 @@ function provenanceToYamlRecord(p: BundleProvenance): Record<string, unknown> {
   return out;
 }
 
-/** Normalize raw provenance to typed BundleProvenance. Returns undefined when absent or empty. */
-function normalizeProvenanceBlock(raw: unknown): BundleProvenance | undefined {
+/**
+ * Normalize raw snake_case provenance (as parsed from YAML or received from
+ * a request body) to typed camelCase BundleProvenance. Returns undefined when
+ * absent or empty. Exported so both the v1 normalizer pipeline and the v2
+ * inspect-route projection produce identical camelCase shapes — the
+ * /api/bundles/inspect contract is one shape regardless of schema version.
+ */
+export function normalizeProvenanceBlock(raw: unknown): BundleProvenance | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const p = raw as Record<string, unknown>;
   const result: BundleProvenance = {};

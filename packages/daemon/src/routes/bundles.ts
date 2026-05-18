@@ -14,7 +14,7 @@ import { LegacyRigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
-import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest } from "../domain/bundle-types.js";
+import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest, normalizeProvenanceBlock } from "../domain/bundle-types.js";
 import type { PodBundleManifest, BundleProvenance } from "../domain/bundle-types.js";
 import { fileURLToPath } from "node:url";
 
@@ -286,9 +286,11 @@ bundleRoutes.post("/inspect", async (c) => {
           algorithm: integritySection.algorithm ?? "sha256",
           files: integritySection.files ?? {},
         } : undefined,
-        // Item 1 / slice-05: surface provenance raw from manifest so JSON-path
-        // consumers (UI inspector, jq pipelines) see it. Field is optional.
-        provenance: rawParsed["provenance"] as Record<string, unknown> | undefined,
+        // Item 1 / slice-05: surface provenance in normalized camelCase so the
+        // /api/bundles/inspect contract is one shape regardless of v1 vs v2
+        // (v1 path normalizes through normalizeLegacyBundleManifest below).
+        // Field is optional; undefined when bundle has no provenance.
+        provenance: normalizeProvenanceBlock(rawParsed["provenance"]),
       };
       const integrityCompat = integritySection ? {
         schemaVersion: 2,

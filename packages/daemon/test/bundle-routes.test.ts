@@ -487,6 +487,78 @@ describe("Bundle API routes", () => {
     expect(body.digestValid).toBe(true);
   });
 
+  // Item 1 / slice-05 / guard B1 repair: pod-aware (v2) create -> inspect provenance round-trip.
+  // Asserts the inspect response surfaces provenance in normalized camelCase,
+  // matching the v1 contract. Discriminator: removing the v2 inspect projection
+  // line in routes/bundles.ts must make this test fail.
+  it("POST /api/bundles/inspect with v2 bundle surfaces provenance in camelCase (create -> inspect round-trip)", async () => {
+    const agentsDir = path.join(tmpDir, "agents", "impl");
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, "agent.yaml"), [
+      'name: impl-agent',
+      'version: "1.0.0"',
+      'resources:',
+      '  skills: []',
+      'profiles:',
+      '  default:',
+      '    uses:',
+      '      skills: []',
+    ].join("\n"));
+
+    const specPath = path.join(tmpDir, "rig.yaml");
+    fs.writeFileSync(specPath, [
+      'version: "0.2"',
+      'name: v2-prov-test',
+      'pods:',
+      '  - id: dev',
+      '    label: Dev',
+      '    members:',
+      '      - id: impl',
+      '        agent_ref: "local:agents/impl"',
+      '        profile: default',
+      '        runtime: claude-code',
+      '        cwd: .',
+      '    edges: []',
+      'edges: []',
+    ].join("\n"));
+
+    const bundlePath = path.join(tmpDir, "v2-prov.rigbundle");
+    const createRes = await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "v2-prov", bundleVersion: "0.1.0", outputPath: bundlePath,
+        provenance: {
+          sourceHost: "v2-route-test-host",
+          authorSession: "velocity-driver@openrig-velocity",
+          cliVersion: "0.3.2",
+          notes: "v2 route round-trip fixture",
+        },
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const inspectRes = await app.request("/api/bundles/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath }),
+    });
+    expect(inspectRes.status).toBe(200);
+    const inspectBody = await inspectRes.json();
+    expect(inspectBody.manifest.schemaVersion).toBe(2);
+    // The contract: provenance returned in normalized camelCase (matches v1)
+    expect(inspectBody.manifest.provenance).toBeDefined();
+    expect(inspectBody.manifest.provenance.sourceHost).toBe("v2-route-test-host");
+    expect(inspectBody.manifest.provenance.authorSession).toBe("velocity-driver@openrig-velocity");
+    expect(inspectBody.manifest.provenance.cliVersion).toBe("0.3.2");
+    expect(inspectBody.manifest.provenance.notes).toBe("v2 route round-trip fixture");
+    expect(typeof inspectBody.manifest.provenance.daemonVersion).toBe("string");
+    expect(inspectBody.manifest.provenance.daemonVersion.length).toBeGreaterThan(0);
+    // Negative — snake_case keys must NOT be present (camelCase contract)
+    expect(inspectBody.manifest.provenance.source_host).toBeUndefined();
+    expect(inspectBody.manifest.provenance.author_session).toBeUndefined();
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually
