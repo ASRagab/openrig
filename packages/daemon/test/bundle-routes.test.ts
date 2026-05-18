@@ -1036,6 +1036,81 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 4 / slice-05 Checkpoint 5.3: /install writes audit record on apply
+  // completion paths; plan mode does NOT write (planning doesn't change
+  // state). End-to-end: install -> GET /api/bundles/history reflects the
+  // record. Test isolation via OPENRIG_HOME env override to per-test tmpDir.
+  it("POST /api/bundles/install plan mode does NOT write an audit record (planning doesn't change state)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-plan-"));
+    process.env.OPENRIG_HOME = auditHome;
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "plan-mode.rigbundle");
+      await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ specPath, bundleName: "plan-mode", bundleVersion: "0.1.0", outputPath: bundlePath }),
+      });
+
+      await app.request("/api/bundles/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bundlePath, plan: true }),
+      });
+
+      const history = await app.request("/api/bundles/history");
+      const body = await history.json();
+      expect(body.total).toBe(0);
+    } finally {
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install apply mode writes an audit record visible via /history (any outcome)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-apply-"));
+    process.env.OPENRIG_HOME = auditHome;
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "apply-mode.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "apply-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "apply-mode", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        // Apply mode triggers the audit-write at one of the completion branches
+        // (completed / partial / failed / caught-error). Outcome may vary in
+        // the test bootstrap, but the record MUST be written.
+        await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+
+        const history = await app.request("/api/bundles/history");
+        const body = await history.json();
+        expect(body.total).toBe(1);
+        const rec = body.records[0];
+        expect(typeof rec.installedAt).toBe("string");
+        expect(rec.bundlePath).toBe(bundlePath);
+        expect(["success", "failed", "partial"]).toContain(rec.outcome);
+        expect(typeof rec.daemonVersion).toBe("string");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually

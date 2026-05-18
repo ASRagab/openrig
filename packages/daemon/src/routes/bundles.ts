@@ -19,7 +19,7 @@ import type { PodBundleManifest, BundleProvenance, BundleCompatibility } from ".
 import { fileURLToPath } from "node:url";
 import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-conflict-detector.js";
 import type { RigRepository } from "../domain/rig-repository.js";
-import { BundleAuditReader, type BundleAuditFsOps } from "../domain/bundle-audit.js";
+import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type BundleAuditRecord } from "../domain/bundle-audit.js";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 
 /**
@@ -293,6 +293,44 @@ function auditFsOps(): BundleAuditFsOps {
  */
 function bundleAuditPath(): string {
   return getDefaultOpenRigPath("bundle-audit.jsonl");
+}
+
+/**
+ * Item 4 / slice-05 Checkpoint 5.3: append a bundle install audit record.
+ * Best-effort — audit failures are logged via the eventBus shape but never
+ * fail the install response (the install already happened or failed; the
+ * audit is a side-channel record). bundleManifest is optional; when present,
+ * provenance.source_host is mirrored into the record.
+ */
+function writeInstallAudit(opts: {
+  bundlePath: string;
+  outcome: "success" | "failed" | "partial";
+  targetRigId?: string;
+  targetRigName?: string;
+  cliVersion?: string;
+  bundleManifest?: Record<string, unknown>;
+}): void {
+  try {
+    const writer = new BundleAuditWriter({
+      opts: { auditPath: bundleAuditPath() },
+      fsOps: auditFsOps(),
+    });
+    const provenance = normalizeProvenanceBlock(opts.bundleManifest?.["provenance"]);
+    const record: BundleAuditRecord = {
+      installedAt: new Date().toISOString(),
+      bundlePath: opts.bundlePath,
+      outcome: opts.outcome,
+    };
+    if (opts.targetRigId) record.targetRigId = opts.targetRigId;
+    if (opts.targetRigName) record.targetRigName = opts.targetRigName;
+    if (opts.cliVersion) record.cliVersion = opts.cliVersion;
+    record.daemonVersion = getDaemonVersion();
+    if (provenance?.sourceHost) record.sourceHost = provenance.sourceHost;
+    writer.append(record);
+  } catch {
+    // Audit-write failure is side-channel; never fail the install response.
+    // Future enhancement: surface via eventBus (out of scope this commit).
+  }
 }
 
 // POST /api/bundles/create
@@ -657,20 +695,40 @@ bundleRoutes.post("/install", async (c) => {
 
     if (result.status === "completed") {
       eventBus.emit({ type: "bootstrap.completed", runId: result.runId, rigId: result.rigId!, sourceRef: bundlePath });
+      writeInstallAudit({
+        bundlePath, outcome: "success", targetRigId: result.rigId,
+        targetRigName: installMeta?.rigName, cliVersion: clientCliVersion,
+        bundleManifest: installMeta?.bundleManifest,
+      });
       return c.json(result, 201);
     }
     if (result.status === "partial") {
       const ok = result.stages.filter((s: { status: string }) => s.status === "ok").length;
       const fail = result.stages.filter((s: { status: string }) => s.status === "failed" || s.status === "blocked").length;
       eventBus.emit({ type: "bootstrap.partial", runId: result.runId, sourceRef: bundlePath, rigId: result.rigId, completed: ok, failed: fail });
+      writeInstallAudit({
+        bundlePath, outcome: "partial", targetRigId: result.rigId,
+        targetRigName: installMeta?.rigName, cliVersion: clientCliVersion,
+        bundleManifest: installMeta?.bundleManifest,
+      });
       return c.json(result, 200);
     }
     eventBus.emit({ type: "bootstrap.failed", runId: result.runId, sourceRef: bundlePath, error: result.errors[0] ?? "failed" });
+    writeInstallAudit({
+      bundlePath, outcome: "failed",
+      targetRigName: installMeta?.rigName, cliVersion: clientCliVersion,
+      bundleManifest: installMeta?.bundleManifest,
+    });
     const hasBlocked = result.stages.some((s: { status: string }) => s.status === "blocked");
     return c.json(result, hasBlocked ? 409 : 500);
   } catch (err) {
     bootstrapRepo.updateRunStatus(run.id, "failed");
     eventBus.emit({ type: "bootstrap.failed", runId: run.id, sourceRef: bundlePath, error: (err as Error).message });
+    writeInstallAudit({
+      bundlePath, outcome: "failed",
+      targetRigName: installMeta?.rigName, cliVersion: clientCliVersion,
+      bundleManifest: installMeta?.bundleManifest,
+    });
     return c.json({ runId: run.id, status: "failed", error: (err as Error).message }, 500);
   }
   } finally { bootstrapOrchestrator.release(bundlePath); }
