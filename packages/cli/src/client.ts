@@ -16,6 +16,8 @@ export interface DaemonResponse<T = unknown> {
 
 interface DaemonRequestOptions {
   timeoutMs?: number;
+  /** Per-call header overrides (e.g., `Authorization: Bearer ...`). */
+  headers?: Record<string, string>;
 }
 
 interface DaemonClientOptions {
@@ -79,7 +81,20 @@ export class DaemonClient {
   }
 
   async delete<T = unknown>(path: string, options?: DaemonRequestOptions): Promise<DaemonResponse<T>> {
-    return this.requestJson<T>(path, { method: "DELETE" }, options);
+    return this.requestJson<T>(path, {
+      method: "DELETE",
+      headers: options?.headers,
+    }, options);
+  }
+
+  async put<T = unknown>(path: string, body?: unknown, options?: DaemonRequestOptions): Promise<DaemonResponse<T>> {
+    const baseHeaders: Record<string, string> = body !== undefined ? { "Content-Type": "application/json" } : {};
+    const headers = { ...baseHeaders, ...(options?.headers ?? {}) };
+    return this.requestJson<T>(path, {
+      method: "PUT",
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }, options);
   }
 
   private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<Response> {

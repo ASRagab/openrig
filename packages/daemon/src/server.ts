@@ -81,6 +81,7 @@ import { watchdogRoutes } from "./routes/watchdog.js";
 import { workflowRoutes } from "./routes/workflow.js";
 import { missionControlRoutes } from "./routes/mission-control.js";
 import { slicesRoutes } from "./routes/slices.js";
+import { rigPolicyRoutes } from "./routes/rig-policy.js";
 import { missionsRoutes } from "./routes/missions.js";
 import { rigCmuxRoutes } from "./routes/rig-cmux.js";
 import { CmuxLayoutService } from "./domain/cmux-layout-service.js";
@@ -253,6 +254,9 @@ export interface AppDeps {
    *  booting the kernel; the route returns 503 with a clear message
    *  when the tracker isn't wired. */
   kernelBootTracker?: import("./domain/kernel-boot-tracker.js").KernelBootTracker;
+  /** Slice 09 (OPR.0.3.2.9) — operator-context-mode bindings store.
+   *  Optional: when absent, the rig-policy routes return 503. */
+  rigPolicyStore?: import("./domain/rig-policy/rig-policy-store.js").RigPolicyStore;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -450,6 +454,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);
     c.set("kernelBootTracker" as never, deps.kernelBootTracker);
+    c.set("rigPolicyStore" as never, deps.rigPolicyStore);
     c.set("db" as never, deps.rigRepo.db);
     await next();
   });
@@ -522,6 +527,12 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/health-summary", healthSummaryRoutes());
   app.route("/api/rigs/:rigId/env", envRoutes());
   app.route("/api/restore-check", restoreCheckRoutes);
+  // Slice 09 (OPR.0.3.2.9) — rig-policy bindings (operator context mode).
+  // Same operator-bearer posture as mission-control; HG-SAFE preserved.
+  app.route(
+    "/api/rig-policy",
+    rigPolicyRoutes({ bearerToken: deps.missionControlBearerToken ?? null }),
+  );
 
   const uiDistDir = deps.uiDistDir ?? resolveDefaultUiDistDir();
   const uiIndexPath = nodePath.join(uiDistDir, "index.html");

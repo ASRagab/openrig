@@ -60,6 +60,7 @@ import { restorePacketCommand, type RestorePacketDeps } from "./commands/restore
 import { compactPlanCommand, type CompactPlanDeps } from "./commands/compact-plan.js";
 import { heartbeatCommand, type HeartbeatDeps } from "./commands/heartbeat.js";
 import { seatCommand, type SeatDeps } from "./commands/seat.js";
+import { rigPolicyCommand, type RigPolicyDeps } from "./commands/rig-policy.js";
 import type { LifecycleDeps } from "./daemon-lifecycle.js";
 import { CLI_VERSION } from "./version.js";
 
@@ -115,6 +116,7 @@ export interface ProgramDeps {
   compactPlanDeps?: CompactPlanDeps;
   heartbeatDeps?: HeartbeatDeps;
   seatDeps?: SeatDeps;
+  rigPolicyDeps?: RigPolicyDeps;
   configPath?: string;
 }
 
@@ -164,6 +166,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(pluginCommand(depsOverride?.pluginDeps));
   program.addCommand(agentImageCommand(depsOverride?.agentImageDeps));
   program.addCommand(workspaceCommand(depsOverride?.workspaceDeps));
+  program.addCommand(rigPolicyCommand(depsOverride?.rigPolicyDeps));
   program.addCommand(whoamiCommand(depsOverride?.whoamiDeps));
   program.addCommand(configCommand(depsOverride?.configPath));
   program.addCommand(preflightCommand());

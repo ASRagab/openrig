@@ -31,6 +31,7 @@ import { nodeCodexConfigProfileSchema } from "../../src/db/migrations/022_node_c
 import { streamItemsSchema } from "../../src/db/migrations/023_stream_items.js";
 import { queueItemsSchema } from "../../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../../src/db/migrations/025_queue_transitions.js";
+import { rigPolicySchema } from "../../src/db/migrations/041_rig_policy.js";
 import { BootstrapRepository } from "../../src/domain/bootstrap-repository.js";
 import { RuntimeVerifier } from "../../src/domain/runtime-verifier.js";
 import { RequirementsProbeRegistry } from "../../src/domain/requirements-probe.js";
@@ -85,7 +86,7 @@ import fs from "node:fs";
 
 export function createFullTestDb(): Database.Database {
   const db = createDb();
-  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema]);
+  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema, rigPolicySchema]);
   return db;
 }
 
