@@ -1219,6 +1219,127 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / slice-05 Checkpoint 7.3: /install routes declared skills to
+  // operator skills library after successful bootstrap. Uses bootstrap stub
+  // to force completed outcome; bundle manifest has skills[]; verifies the
+  // skills land at OPENRIG_HOME/skills/.
+  it("POST /api/bundles/install routes declared skills after successful bootstrap (completed branch)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-skills-route-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "with-skills.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "skills-target-"));
+      try {
+        // Build a bundle with skills[] declared. Add a skill file to the
+        // package dir so it lands in the bundle archive when packed.
+        const skillSourceDir = path.join(tmpDir, "test-pkg", "skills");
+        fs.mkdirSync(skillSourceDir, { recursive: true });
+        fs.writeFileSync(path.join(skillSourceDir, "FOO.md"), "# foo skill body");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "with-skills", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        // Tamper the created bundle's bundle.yaml to inject skills[] field.
+        // bundle.yaml's own hash is excluded from integrity.files so editing
+        // it doesn't break verifyIntegrity.
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "skills-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          // Append skills field referencing the file we put inside the bundled package
+          const tampered = `${original}\nskills:\n  - packages/test-pkg/skills/FOO.md\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        // Stub bootstrap to return completed so audit-write + skills routing fire
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-skills",
+          rigId: "01H000000000000000SKILLS01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        // Response carries skillsRouting block
+        expect(body.skillsRouting).toBeDefined();
+        expect(body.skillsRouting.routedCount).toBe(1);
+        expect(body.skillsRouting.records).toHaveLength(1);
+        expect(body.skillsRouting.records[0].status).toBe("routed");
+        // File actually copied to OPENRIG_HOME/skills/ tree
+        const expectedTarget = path.join(auditHome, "skills", "packages", "test-pkg", "skills", "FOO.md");
+        expect(fs.existsSync(expectedTarget)).toBe(true);
+        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("# foo skill body");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install does NOT include skillsRouting when bundle has no skills[]", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-skills-no-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "no-skills.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "no-skills-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "no-skills", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed", runId: "test-run-no-skills",
+          rigId: "01H000000000000000NOSKIL01",
+          stages: [], errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.skillsRouting).toBeUndefined();
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually

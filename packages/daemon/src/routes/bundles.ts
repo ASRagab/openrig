@@ -21,6 +21,7 @@ import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-con
 import type { RigRepository } from "../domain/rig-repository.js";
 import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type BundleAuditRecord } from "../domain/bundle-audit.js";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
+import { routeSkills, type SkillsRouterFsOps, type RouteSkillsResult } from "../domain/bundle-skills-router.js";
 
 /**
  * Read the daemon's own package.json version at call time (Item 1 / slice-05).
@@ -274,6 +275,50 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
     exists: (p) => fs.existsSync(p),
     listFiles: (dir) => realFsOps().listFiles!(dir),
   };
+}
+
+/** Item 6 / slice-05 Checkpoint 7.3: real SkillsRouterFsOps backed by node:fs. */
+function skillsRouterFsOps(): SkillsRouterFsOps {
+  return {
+    exists: (p) => fs.existsSync(p),
+    readFile: (p) => fs.readFileSync(p, "utf-8"),
+    writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+  };
+}
+
+/**
+ * Item 6 / slice-05 Checkpoint 7.3: extract the bundle safely (banked unpack
+ * trust boundary) and route any declared skills to the operator skills
+ * library. Returns null when manifest has no skills[] (no-op). Called from
+ * /install completed branch — skills routing is independent of rig install
+ * state but only fires when install succeeded (partial/failed semantics
+ * deferred: keep skills routing tied to successful install outcome for v0).
+ */
+async function routeSkillsAfterBootstrap(opts: {
+  bundlePath: string;
+  manifest: Record<string, unknown> | undefined;
+}): Promise<RouteSkillsResult | null> {
+  if (!opts.manifest) return null;
+  const rawSkills = opts.manifest["skills"];
+  if (!Array.isArray(rawSkills) || rawSkills.length === 0) return null;
+  const declaredSkills = rawSkills.filter((s): s is string => typeof s === "string" && s.length > 0);
+  if (declaredSkills.length === 0) return null;
+
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-skills-route-"));
+  try {
+    await unpack(opts.bundlePath, tmpDir);
+    return routeSkills(
+      {
+        bundleRoot: tmpDir,
+        declaredSkills,
+        targetSkillsDir: getDefaultOpenRigPath("skills"),
+      },
+      skillsRouterFsOps(),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /** Item 4 / slice-05 Checkpoint 5.2: real BundleAuditFsOps backed by node:fs. */
@@ -700,7 +745,20 @@ bundleRoutes.post("/install", async (c) => {
         targetRigName: installMeta?.rigName, cliVersion: clientCliVersion,
         bundleManifest: installMeta?.bundleManifest,
       });
-      return c.json(result, 201);
+      // Item 6 / Checkpoint 7.3: route any declared skills after successful
+      // install. Best-effort: a routing failure does NOT fail the install
+      // response (the install already succeeded; skills routing is a side-
+      // channel post-install step). Routing result included in response body
+      // so operators see what landed.
+      let skillsRouting: RouteSkillsResult | null = null;
+      try {
+        skillsRouting = await routeSkillsAfterBootstrap({
+          bundlePath, manifest: installMeta?.bundleManifest,
+        });
+      } catch {
+        // Side-channel failure; install already succeeded
+      }
+      return c.json(skillsRouting ? { ...result, skillsRouting } : result, 201);
     }
     if (result.status === "partial") {
       const ok = result.stages.filter((s: { status: string }) => s.status === "ok").length;
