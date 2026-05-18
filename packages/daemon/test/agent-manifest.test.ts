@@ -484,4 +484,74 @@ profiles:
     const n2 = normalizeAgentSpec(raw2);
     expect(n1).toEqual(n2);
   });
+
+  // Slice 15 — per-seat silence-window-seconds override.
+  // The AgentSpec parser must preserve `profile.activity.silenceWindowSeconds`
+  // through normalization so resolveNodeConfig + rigspec-instantiator
+  // can plumb it through to NodeLauncher's setMonitorSilence call at
+  // seat-up. Both YAML conventions (snake_case + camelCase) are accepted.
+  describe("profile.activity.silenceWindowSeconds normalization (slice 15 HG-7)", () => {
+    const baseSpec = (activityBlock: string) => `
+name: test-agent
+version: "1.0"
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: []
+      runtime_resources: []
+${activityBlock}
+`;
+
+    it("accepts a valid integer override (snake_case yaml form)", () => {
+      const raw = parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 7`));
+      const spec = normalizeAgentSpec(raw);
+      expect(spec.profiles["default"]!.activity?.silenceWindowSeconds).toBe(7);
+    });
+
+    it("accepts a valid integer override (camelCase form)", () => {
+      const raw = parseAgentSpec(baseSpec(`    activity:\n      silenceWindowSeconds: 12`));
+      const spec = normalizeAgentSpec(raw);
+      expect(spec.profiles["default"]!.activity?.silenceWindowSeconds).toBe(12);
+    });
+
+    it("accepts boundary values 1 and 3600", () => {
+      const lo = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 1`)));
+      expect(lo.profiles["default"]!.activity?.silenceWindowSeconds).toBe(1);
+      const hi = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 3600`)));
+      expect(hi.profiles["default"]!.activity?.silenceWindowSeconds).toBe(3600);
+    });
+
+    it("drops out-of-range values (0, 3601, -1) so the launcher default applies", () => {
+      const zero = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 0`)));
+      expect(zero.profiles["default"]!.activity).toBeUndefined();
+      const tooBig = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 3601`)));
+      expect(tooBig.profiles["default"]!.activity).toBeUndefined();
+      const negative = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: -1`)));
+      expect(negative.profiles["default"]!.activity).toBeUndefined();
+    });
+
+    it("drops non-integer values (3.5, NaN, Infinity)", () => {
+      const fractional = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: 3.5`)));
+      expect(fractional.profiles["default"]!.activity).toBeUndefined();
+      const nan = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: .nan`)));
+      expect(nan.profiles["default"]!.activity).toBeUndefined();
+      const inf = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: .inf`)));
+      expect(inf.profiles["default"]!.activity).toBeUndefined();
+    });
+
+    it("drops non-numeric values ('seven', null) — typesafe at the parser boundary", () => {
+      const stringy = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity:\n      silence_window_seconds: "seven"`)));
+      expect(stringy.profiles["default"]!.activity).toBeUndefined();
+      const empty = normalizeAgentSpec(parseAgentSpec(baseSpec(`    activity: {}`)));
+      expect(empty.profiles["default"]!.activity).toBeUndefined();
+    });
+
+    it("absent activity block → spec.profiles.default.activity is undefined (launcher default applies)", () => {
+      const raw = normalizeAgentSpec(parseAgentSpec(baseSpec(``)));
+      expect(raw.profiles["default"]!.activity).toBeUndefined();
+    });
+  });
 });

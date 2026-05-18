@@ -130,6 +130,13 @@ export interface AppDeps {
   selfAttachService?: SelfAttachService;
   rigExpansionService?: import("./domain/rig-expansion-service.js").RigExpansionService;
   rigLifecycleService?: RigLifecycleService;
+  /**
+   * Slice 15 — Seat-activity service (terminal-active primitive). The
+   * daemon owns one instance and wires it into PsProjectionService and
+   * the per-node enrichment. Optional so existing test harnesses that
+   * construct AppDeps directly don't need to provide one.
+   */
+  seatActivityService?: import("./domain/seat-activity-service.js").SeatActivityService;
   psProjectionService: PsProjectionService;
   upRouter: UpCommandRouter;
   teardownOrchestrator: RigTeardownOrchestrator;
@@ -435,6 +442,10 @@ export function createApp(deps: AppDeps): Hono {
     c.set("contextMonitor" as never, deps.contextMonitor);
     c.set("nodeCmuxService" as never, deps.nodeCmuxService);
     c.set("agentActivityStore" as never, deps.agentActivityStore);
+    // Slice 15 — wire seatActivityService into request context so the
+    // /api/rigs/:id/nodes route can enrich entries with terminalActive +
+    // hasAssignedWork via attachTerminalActivityAndWork.
+    c.set("seatActivityService" as never, deps.seatActivityService);
     c.set("activityHookToken" as never, deps.activityHookToken);
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);

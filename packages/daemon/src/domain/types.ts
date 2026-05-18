@@ -422,6 +422,34 @@ export interface NodeInventoryEntry {
   startupCompletedAt: string | null;
   agentActivity?: AgentActivity;
   contextUsage?: ContextUsage;
+  /**
+   * Slice 15 — `terminal-active` primitive (tmux byte-stream).
+   *
+   *   true  → seat is currently producing tmux output (pane silence
+   *           flag = 0, within configured silence window)
+   *   false → seat is silent past the threshold
+   *   null  → no signal (not tmux-bound, monitor-silence not configured,
+   *           or transient read error). Distinct from `false`: consumers
+   *           treat `null` as "no observation right now", not "definitely
+   *           idle".
+   *
+   * MUST NOT be derived from `hasAssignedWork` or queue/assignment state.
+   * The non-inference contract (slice 15 README + IMPL-PRD §2.3) is the
+   * core correctness item: this field is computed independently from
+   * `hasAssignedWork`.
+   */
+  terminalActive?: boolean | null;
+  /**
+   * Slice 15 — `has-work-to-do` primitive. Derived from queue/assignment
+   * projection (pending qitems whose `destination_session` matches this
+   * seat's `canonicalSessionName`).
+   *
+   * MUST NOT be derived from `terminalActive` or tmux output. Two
+   * orthogonal primitives, never one inferred from the other.
+   */
+  hasAssignedWork?: boolean;
+  /** Optional count of pending qitems assigned to this seat (cheap aggregate). */
+  pendingWorkCount?: number;
   /** PL-007: per-node workspace block when the rig declares a workspace.
    *  workspaceRoot mirrors RigSpec.workspace.workspaceRoot. activeRepo is
    *  the repo whose path contains the node's cwd, or RigSpec.workspace.
@@ -429,6 +457,29 @@ export interface NodeInventoryEntry {
    *  the active repo, or `knowledge` when cwd is under knowledgeRoot.
    *  null when the rig does not declare a workspace. */
   workspace?: NodeWorkspaceInfo | null;
+}
+
+/**
+ * Slice 15 — `terminal-active` observation for a single seat's pane.
+ *
+ * Sourced from tmux's `#{window_activity}` format (Unix-epoch-seconds
+ * timestamp of the last output on the window). The producing service
+ * polls the timestamp at a configurable cadence and compares it
+ * against the silence window threshold; `isActiveWithinWindow` is true
+ * when the most recent activity is within that window. The
+ * `monitor-silence` option is configured on the seat's window at
+ * launch time for tmux's own status-line + bell-alert behavior, but is
+ * not the read source.
+ */
+export interface SeatActivity {
+  /** tmux pane id OR canonical session name — whatever the daemon binds. */
+  paneId: string;
+  /** True ⟺ pane has produced output within `silenceWindowSeconds`. */
+  isActiveWithinWindow: boolean;
+  /** Configured threshold at observation time. */
+  silenceWindowSeconds: number;
+  /** ISO timestamp of the most recent observation. */
+  lastObservedAt: string;
 }
 
 export interface NodeWorkspaceInfo {
@@ -553,6 +604,18 @@ export interface ProfileSpec {
     subagents: string[];
     plugins: string[];
     runtimeResources: string[];
+  };
+  /**
+   * Slice 15 — per-seat activity-detection tuning. The daemon configures
+   * tmux's `monitor-silence` option for the seat's pane at seat-up.
+   * `silenceWindowSeconds` is the integer threshold (in seconds) below
+   * which an output-producing pane reads as "terminal-active". When
+   * omitted, the daemon's default (3 seconds per slice 15 README) is
+   * applied. Invalid values (non-integer, outside [1, 3600]) are
+   * dropped at normalize time and the default is used.
+   */
+  activity?: {
+    silenceWindowSeconds?: number;
   };
 }
 

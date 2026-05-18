@@ -1018,7 +1018,16 @@ export class PodRigInstantiator {
     }
 
     const canonicalSessionName = deriveCanonicalSessionName(input.pod.id, input.member.id, input.rigSpec.name);
-    const launchResult = await this.deps.nodeLauncher.launchNode(input.rigId, input.qualifiedId, { sessionName: canonicalSessionName });
+    // Slice 15 — forward per-seat silenceWindowSeconds from the resolved
+    // profile.activity block. NodeLauncher applies the launcher default
+    // (3s) when this is undefined. The seat's tmux monitor-silence is
+    // configured immediately after createSession; SeatActivityService
+    // then reads window_activity to compute terminalActive against this
+    // threshold per poll.
+    const launchResult = await this.deps.nodeLauncher.launchNode(input.rigId, input.qualifiedId, {
+      sessionName: canonicalSessionName,
+      silenceWindowSeconds: configResult.config.activity?.silenceWindowSeconds,
+    });
     if (!launchResult.ok) {
       return { status: "failed", error: launchResult.message };
     }

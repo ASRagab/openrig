@@ -313,4 +313,70 @@ export class TmuxAdapter {
       return null;
     }
   }
+
+  /**
+   * Slice 15 — configure tmux's per-window `monitor-silence` option for
+   * the target's containing window. The runtime flips
+   * `pane_silence_flag` to "1" when the pane has been silent past the
+   * threshold; "0" while producing output. This is the v0 source of
+   * the `terminal-active` primitive (README §v0). Window-scoped is the
+   * correct level: tmux's monitor-silence is a window option (see
+   * `man tmux` §OPTIONS); `-w` targets the window containing the pane.
+   *
+   * Validates `seconds` at the adapter boundary so a bad caller can't
+   * inject negative / zero / fractional / NaN values into the shell
+   * command — those would either silently coerce or fail with an
+   * opaque tmux error.
+   */
+  async setMonitorSilence(target: string, seconds: number): Promise<TmuxResult> {
+    if (!Number.isFinite(seconds) || !Number.isInteger(seconds) || seconds < 1) {
+      return {
+        ok: false,
+        code: "validation_error",
+        message: `setMonitorSilence: seconds must be a positive integer, got ${seconds}`,
+      };
+    }
+    const cmd = `tmux set-option -w -t ${shellQuote(target)} monitor-silence ${shellQuote(String(seconds))}`;
+    try {
+      await this.exec(cmd);
+      return { ok: true };
+    } catch (err) {
+      return classifyWriteError(err);
+    }
+  }
+
+  /**
+   * Slice 15 — read the timestamp (Unix epoch seconds) of the last
+   * activity on the pane's window. The daemon's SeatActivityService
+   * compares this against the configured silence window: if the
+   * timestamp is within the window the seat is `terminal-active`,
+   * otherwise it's silent past the threshold.
+   *
+   * Why not `pane_silence_flag`: tmux 3.6a was observed to return a
+   * blank value for `#{pane_silence_flag}` during slice 15 dogfood
+   * (sticky-alert behavior + version-dependent emit semantics), so
+   * we cannot rely on it as the primary signal. `#{window_activity}`
+   * is reliably populated (the runtime updates it whenever the
+   * window receives output) and is the timestamp the tmux status-line
+   * activity indicators use themselves.
+   *
+   * Returns:
+   *   - a Unix-epoch-seconds integer when the runtime exposed the value
+   *   - `null` when the target is missing OR the value is unparseable
+   *     (consumers treat null as "no signal", distinct from "idle").
+   */
+  async readPaneLastActivity(paneId: string): Promise<number | null> {
+    try {
+      const output = await this.exec(
+        `tmux display-message -p -t ${shellQuote(paneId)} '#{window_activity}'`,
+      );
+      const trimmed = output.trim();
+      if (!/^\d+$/.test(trimmed)) return null;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return n;
+    } catch {
+      return null;
+    }
+  }
 }

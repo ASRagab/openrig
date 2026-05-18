@@ -92,11 +92,44 @@ describe("P5.3 topology activity parser and resolver", () => {
     expect(getBaselineActivityState({
       agentActivity: { state: "needs_input", reason: "x", evidenceSource: "test", sampledAt: "now" },
     })).toBe("needs_input");
-    expect(getBaselineActivityState({ currentQitems: [{ qitemId: "q", bodyExcerpt: "work", tier: null }] })).toBe("active");
+    // Slice 15 — queued work alone does NOT make a seat "active". The
+    // currentQitems→active inference was the reported queue-to-active
+    // conflation bug. UI now renders queued work separately as a
+    // hasAssignedWork affordance; active/idle is driven by
+    // terminalActive (tmux byte-stream) or agentActivity (hook events).
+    expect(getBaselineActivityState({ currentQitems: [{ qitemId: "q", bodyExcerpt: "work", tier: null }] })).toBe("idle");
     expect(getBaselineActivityState({ startupStatus: "failed" })).toBe("blocked");
     expect(getBaselineActivityState({
       agentActivity: { state: "idle", reason: "x", evidenceSource: "test", sampledAt: "now" },
     })).toBe("idle");
+  });
+
+  // Slice 15 non-inference HG-4 (UI surface). terminalActive is the
+  // authoritative source when present; queue state never collapses
+  // into the active animation.
+  it("slice 15 HG-3/HG-4 — terminalActive drives active/idle; queued work alone does NOT", () => {
+    // DIRECTION A: terminalActive=true, NO queued work → active
+    expect(getBaselineActivityState({ terminalActive: true })).toBe("active");
+    // DIRECTION B: terminalActive=false WITH queued work → idle
+    // (proves queue→active inference is removed at the baseline layer)
+    expect(getBaselineActivityState({
+      terminalActive: false,
+      currentQitems: [{ qitemId: "q", bodyExcerpt: "work", tier: null }],
+    })).toBe("idle");
+    // Independent: terminalActive=true WITH queued work is still active
+    expect(getBaselineActivityState({
+      terminalActive: true,
+      currentQitems: [{ qitemId: "q", bodyExcerpt: "work", tier: null }],
+    })).toBe("active");
+    // Null/undefined terminalActive — fall back to agentActivity, not queue
+    expect(getBaselineActivityState({
+      terminalActive: null,
+      currentQitems: [{ qitemId: "q", bodyExcerpt: "work", tier: null }],
+    })).toBe("idle");
+    expect(getBaselineActivityState({
+      terminalActive: null,
+      agentActivity: { state: "running", reason: "x", evidenceSource: "test", sampledAt: "now" },
+    })).toBe("active");
   });
 
   it("expires event-driven activity after the shared TTL", () => {

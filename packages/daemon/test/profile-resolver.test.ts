@@ -508,4 +508,36 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
       }
     });
   });
+
+  // Slice 15 HG-7 — per-seat silence-window-seconds passes through
+  // ResolvedNodeConfig.activity for the rigspec-instantiator to plumb
+  // into NodeLauncher.launchNode. Verifies the carry-through; the
+  // launch-call site is exercised by node-launcher tests.
+  describe("slice 15 — profile.activity carries into ResolvedNodeConfig", () => {
+    it("ResolvedNodeConfig.activity.silenceWindowSeconds reflects profile.activity when set", () => {
+      const ctx = makeCtx({
+        baseSpec: makeResolved(makeSpec({
+          profiles: {
+            default: {
+              activity: { silenceWindowSeconds: 9 },
+              uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
+            },
+          },
+        })),
+      });
+      const result = resolveNodeConfig(ctx);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.config.activity?.silenceWindowSeconds).toBe(9);
+      }
+    });
+
+    it("ResolvedNodeConfig.activity is undefined when the profile does not declare one", () => {
+      const result = resolveNodeConfig(makeCtx());
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.config.activity).toBeUndefined();
+      }
+    });
+  });
 });
