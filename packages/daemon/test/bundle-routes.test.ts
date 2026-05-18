@@ -653,6 +653,120 @@ describe("Bundle API routes", () => {
     expect(inspectBody.manifest.provenance.author_session).toBeUndefined();
   });
 
+  // Item 2 / slice-05 Checkpoint 3.3: install-time version check
+  it("POST /api/bundles/install fails with 3-part error when min_daemon_version exceeds running daemon", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "incompat.rigbundle");
+
+    // Create bundle with min_daemon_version way above current
+    const createRes = await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "incompat", bundleVersion: "0.1.0", outputPath: bundlePath,
+        compatibility: { minDaemonVersion: "99.0.0" },
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true }),
+    });
+    expect(installRes.status).toBe(400);
+    const body = await installRes.json();
+    expect(body.error).toBe("Bundle compatibility check failed");
+    expect(Array.isArray(body.failures)).toBe(true);
+    expect(body.failures.length).toBeGreaterThan(0);
+    const daemonFailure = body.failures.find((f: { reason: string }) => f.reason === "daemon_version_mismatch");
+    expect(daemonFailure).toBeDefined();
+    expect(daemonFailure.required).toBe("99.0.0");
+    expect(typeof daemonFailure.actual).toBe("string");
+    expect(typeof daemonFailure.description).toBe("string");
+    expect(Array.isArray(body.resolutions)).toBe(true);
+    expect(body.resolutions.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("POST /api/bundles/install with skipVersionCheck=true bypasses incompatible bundle's compat check", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "incompat-skip.rigbundle");
+
+    await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "incompat-skip", bundleVersion: "0.1.0", outputPath: bundlePath,
+        compatibility: { minDaemonVersion: "99.0.0" },
+      }),
+    });
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true, skipVersionCheck: true }),
+    });
+    // Compat check was skipped; we just need NOT to see the "Bundle compatibility
+    // check failed" error. Bootstrap may still return any other status; what we
+    // assert is the absence of the compat-check failure shape.
+    if (installRes.status === 400) {
+      const body = await installRes.json();
+      expect(body.error).not.toBe("Bundle compatibility check failed");
+    }
+  });
+
+  it("POST /api/bundles/install fails with 3-part error when min_cli_version exceeds the CLI version sent in body", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "cli-incompat.rigbundle");
+
+    await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "cli-incompat", bundleVersion: "0.1.0", outputPath: bundlePath,
+        compatibility: { minCliVersion: "99.0.0" },
+      }),
+    });
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true, cliVersion: "0.3.1" }),
+    });
+    expect(installRes.status).toBe(400);
+    const body = await installRes.json();
+    expect(body.error).toBe("Bundle compatibility check failed");
+    const cliFailure = body.failures.find((f: { reason: string }) => f.reason === "cli_version_mismatch");
+    expect(cliFailure).toBeDefined();
+    expect(cliFailure.required).toBe("99.0.0");
+    expect(cliFailure.actual).toBe("0.3.1");
+  });
+
+  it("POST /api/bundles/install passes the compat check when bundle requires versions <= current", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "compat.rigbundle");
+
+    await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "compat-ok", bundleVersion: "0.1.0", outputPath: bundlePath,
+        compatibility: { minDaemonVersion: "0.0.1", minCliVersion: "0.0.1" },
+      }),
+    });
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true, cliVersion: "0.3.1" }),
+    });
+    // Must NOT be the compat-fail shape. Bootstrap may return any status.
+    if (installRes.status === 400) {
+      const body = await installRes.json();
+      expect(body.error).not.toBe("Bundle compatibility check failed");
+    }
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually

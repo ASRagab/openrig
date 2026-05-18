@@ -54,6 +54,8 @@ function runningDeps(port: number): StatusDeps {
 
 // Captured create bodies for assertion
 let capturedCreateBodies: Record<string, unknown>[] = [];
+// Captured install bodies for assertion (Item 2 Checkpoint 3.3)
+let capturedInstallBodies: Record<string, unknown>[] = [];
 
 describe("Bundle CLI", () => {
   let server: http.Server;
@@ -90,6 +92,7 @@ describe("Bundle CLI", () => {
         res.end(JSON.stringify({ manifest: { name: "test", version: "0.1.0" }, digestValid: true, integrityResult: { passed: true } }));
       } else if (req.url === "/api/bundles/install" && req.method === "POST") {
         const parsed = JSON.parse(body);
+        capturedInstallBodies.push(parsed);
         if (String(parsed.bundlePath ?? "").includes("blocked")) {
           res.writeHead(409, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "blocked" }));
@@ -286,6 +289,38 @@ describe("Bundle CLI", () => {
     expect(compatibility).toBeTruthy();
     expect(compatibility!["minDaemonVersion"]).toBe("0.3.2");
     expect(compatibility!["minCliVersion"]).toBeUndefined();
+  });
+
+  // Item 2 / slice-05 Checkpoint 3.3: bundle install --skip-version-check wires through
+  it("bundle install --skip-version-check sets skipVersionCheck=true in request body", async () => {
+    capturedInstallBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "install", "/tmp/test.rigbundle",
+        "--yes", "--target", "/tmp/target",
+        "--skip-version-check",
+      ]);
+    });
+    const installBody = capturedInstallBodies[capturedInstallBodies.length - 1];
+    expect(installBody).toBeTruthy();
+    expect(installBody!["skipVersionCheck"]).toBe(true);
+    // cliVersion auto-included (read at call time via getCliVersion)
+    expect(typeof installBody!["cliVersion"]).toBe("string");
+    expect((installBody!["cliVersion"] as string).length).toBeGreaterThan(0);
+  });
+
+  it("bundle install without --skip-version-check sets skipVersionCheck=false and still sends cliVersion", async () => {
+    capturedInstallBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "install", "/tmp/test.rigbundle",
+        "--yes", "--target", "/tmp/target",
+      ]);
+    });
+    const installBody = capturedInstallBodies[capturedInstallBodies.length - 1];
+    expect(installBody).toBeTruthy();
+    expect(installBody!["skipVersionCheck"]).toBe(false);
+    expect(typeof installBody!["cliVersion"]).toBe("string");
   });
 
   // Item 2 / slice-05: no flags → compatibility omitted (no empty object sent)

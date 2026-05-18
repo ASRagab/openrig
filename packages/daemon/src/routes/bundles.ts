@@ -36,6 +36,85 @@ function getDaemonVersion(): string {
 }
 
 /**
+ * Compare two dotted numeric version strings (semver-ish). Returns -1 if
+ * a < b, 0 if equal, 1 if a > b. Non-numeric segments coerce to 0. Adequate
+ * for the 0.x.y / 1.x.y range; pre-release / build metadata not interpreted.
+ * Item-2 install-time version check (Checkpoint 3.3).
+ */
+function compareVersions(a: string, b: string): number {
+  const partsA = a.split(".").map((p) => parseInt(p, 10) || 0);
+  const partsB = b.split(".").map((p) => parseInt(p, 10) || 0);
+  const maxLen = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < maxLen; i++) {
+    const va = partsA[i] ?? 0;
+    const vb = partsB[i] ?? 0;
+    if (va !== vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+/** A single compatibility check failure surfaced in the 3-part error response. */
+interface CompatibilityFailure {
+  reason: "daemon_version_mismatch" | "cli_version_mismatch";
+  required: string;
+  actual: string;
+  description: string;
+}
+
+/**
+ * Run the install-time compatibility check (Item 2 Checkpoint 3.3). Returns
+ * an array of failures (one per kind), or null if all checks pass. Missing
+ * fields in compat are no-ops (daemon-only check when min_cli_version absent;
+ * full pass when both absent). cliVersion undefined skips the CLI check
+ * silently (pre-Item-2 CLIs don't send it; honest backward compat).
+ */
+function checkBundleCompatibility(
+  compat: BundleCompatibility | undefined,
+  daemonVersion: string,
+  cliVersion: string | undefined,
+): CompatibilityFailure[] | null {
+  if (!compat) return null;
+  const failures: CompatibilityFailure[] = [];
+  if (compat.minDaemonVersion && compareVersions(daemonVersion, compat.minDaemonVersion) < 0) {
+    failures.push({
+      reason: "daemon_version_mismatch",
+      required: compat.minDaemonVersion,
+      actual: daemonVersion,
+      description: `bundle requires daemon >= ${compat.minDaemonVersion}, current daemon is ${daemonVersion}`,
+    });
+  }
+  if (compat.minCliVersion && cliVersion && compareVersions(cliVersion, compat.minCliVersion) < 0) {
+    failures.push({
+      reason: "cli_version_mismatch",
+      required: compat.minCliVersion,
+      actual: cliVersion,
+      description: `bundle requires CLI >= ${compat.minCliVersion}, current CLI is ${cliVersion}`,
+    });
+  }
+  return failures.length > 0 ? failures : null;
+}
+
+/**
+ * Extract bundle.yaml manifest from a .rigbundle archive without doing the
+ * full bootstrap unpack. Used by the install-time compatibility check. Throws
+ * on archive / parse / safety failures.
+ */
+async function extractManifestForCompatCheck(bundlePath: string): Promise<Record<string, unknown>> {
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-compat-"));
+  try {
+    const tar = await import("tar");
+    await tar.extract({ file: bundlePath, cwd: tmpDir });
+    const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
+    if (!fs.existsSync(manifestPath)) throw new Error("Bundle missing bundle.yaml");
+    const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
+    const parsed = parsePodBundleManifest(manifestYaml);
+    return parsed as Record<string, unknown>;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Sanitize raw compatibility from request body into a BundleCompatibility
  * object. Only known typed fields accepted; unknown fields dropped silently.
  * Returns undefined if input is missing or has no usable fields.
@@ -349,16 +428,56 @@ bundleRoutes.post("/install", async (c) => {
   const plan = body["plan"] === true;
   const autoApprove = body["autoApprove"] === true;
   const targetRoot = typeof body["targetRoot"] === "string" ? body["targetRoot"] : undefined;
+  // Item 2 / slice-05 Checkpoint 3.3: install-time compatibility check inputs
+  const skipVersionCheck = body["skipVersionCheck"] === true;
+  const clientCliVersion = typeof body["cliVersion"] === "string" ? body["cliVersion"] : undefined;
 
   if (!bundlePath) return c.json({ error: "bundlePath is required" }, 400);
   if (!plan && !targetRoot) return c.json({ error: "targetRoot is required for apply mode" }, 400);
 
-  // Concurrency lock
+  // Concurrency lock — runs BEFORE compat check so the existing 409
+  // semantic (concurrent install detection) is preserved verbatim.
   if (!bootstrapOrchestrator.tryAcquire(bundlePath)) {
     return c.json({ error: "Bundle install already in progress", code: "conflict" }, 409);
   }
 
   try {
+  // Item 2 / slice-05 Checkpoint 3.3: install-time compatibility check
+  // Runs AFTER the lock + BEFORE bootstrap delegation. Mismatch returns a
+  // 3-part error and exits the lifecycle (lock releases via the outer
+  // finally). Operator override via --skip-version-check (request body
+  // skipVersionCheck=true).
+  if (!skipVersionCheck) {
+    try {
+      const manifest = await extractManifestForCompatCheck(bundlePath);
+      const compatibility = normalizeCompatibilityBlock(manifest["compatibility"]);
+      const failures = checkBundleCompatibility(compatibility, getDaemonVersion(), clientCliVersion);
+      if (failures) {
+        return c.json({
+          error: "Bundle compatibility check failed",
+          failures,
+          resolutions: [
+            "upgrade the affected runtime to the required version (recommended)",
+            "use a bundle with relaxed minimum requirements",
+            "pass --skip-version-check to bypass for an operator-explicit override (NOT recommended for routine use)",
+          ],
+        }, 400);
+      }
+    } catch (err) {
+      // Extraction failure here is treated as honest fast-fail rather than
+      // silently skipping the check; bootstrap would surface the same error
+      // anyway. 3-part shape preserved.
+      return c.json({
+        error: "Bundle compatibility check could not run (extraction failed)",
+        detail: (err as Error).message,
+        resolutions: [
+          "confirm the bundle path is correct and the archive is readable",
+          "pass --skip-version-check to bypass the check (NOT recommended unless intentional)",
+        ],
+      }, 400);
+    }
+  }
+
   if (plan) {
     // Plan mode: no run lifecycle
     try {
