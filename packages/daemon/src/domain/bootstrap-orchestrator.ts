@@ -624,6 +624,34 @@ export class BootstrapOrchestrator {
     const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { cwdOverride: opts.cwdOverride, prelaunchHook });
 
     if (!outcome.ok) {
+      // OPR.0.3.2.CT — attention_required is a recoverable outcome
+      // (rig + sessions preserved). Surface it distinctly from terminal
+      // failure so the route can return a 3-part error pointing the
+      // operator at the approve→resume path. The bootstrap run status
+      // is `partial` (not `failed`) because the rig exists and is
+      // operator-actionable.
+      if (outcome.code === "attention_required") {
+        const attentionMsg = (outcome as { message: string }).message;
+        const attentionNodes = (outcome as { attentionNodes: import("./types.js").AttentionNode[] }).attentionNodes;
+        stages.push({
+          stage: "import_rig",
+          status: "blocked",
+          detail: {
+            code: "attention_required",
+            message: attentionMsg,
+            attentionNodes,
+          },
+        });
+        this.deps.bootstrapRepo.updateRunStatus(run.id, "partial", { rigId: (outcome as { rigId: string }).rigId });
+        return {
+          runId: run.id,
+          status: "partial",
+          stages,
+          rigId: (outcome as { rigId: string }).rigId,
+          errors: [attentionMsg],
+          warnings,
+        };
+      }
       const outErrors = outcome.code === "validation_failed" || outcome.code === "preflight_failed"
         ? (outcome as { errors: string[] }).errors
         : [(outcome as { message: string }).message];

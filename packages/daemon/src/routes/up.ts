@@ -228,6 +228,38 @@ upRoutes.post("/", async (c) => {
           attachCommand = firstRunning?.tmuxAttachCommand ?? inventory.find((n) => n.canonicalSessionName)?.tmuxAttachCommand ?? null;
         }
 
+        // OPR.0.3.2.CT — when the partial outcome is the all-attention_required
+        // case (no node launched; all parked waiting on trust/approval),
+        // surface a 3-part error so the operator sees the actionable
+        // approve→resume path. The rig + sessions are PRESERVED on disk;
+        // `rig ps` lists them. PRD HG-4: fact / consequence / action.
+        const attentionStage = result.stages.find(
+          (s) => s.stage === "import_rig"
+            && s.status === "blocked"
+            && (s.detail as { code?: string } | undefined)?.code === "attention_required",
+        );
+        if (attentionStage) {
+          const detail = attentionStage.detail as {
+            code: string;
+            message: string;
+            attentionNodes: import("../domain/types.js").AttentionNode[];
+          };
+          const nodeCount = detail.attentionNodes.length;
+          const attachHints = detail.attentionNodes
+            .filter((n) => n.sessionName)
+            .map((n) => `tmux attach -t ${n.sessionName}`)
+            .slice(0, 3)
+            .join(" ; ");
+          const threePart = {
+            fact: detail.message,
+            consequence: `Rig ${result.rigId} is created and listable via \`rig ps\`. Sessions are running with startup_status='attention_required'. Tmux panes show the runtime's trust/approval prompt — answering it in-pane completes the launch.`,
+            action: nodeCount === 1
+              ? `Attach to the session and answer the prompt: ${attachHints || "see `rig ps`"}. Alternatively, pre-trust the workspace (e.g., \`rig setup --cwd <workspace>\`) and re-run the launch.`
+              : `Attach to each parked session and answer its prompt: ${attachHints || "see `rig ps`"}. Alternatively, pre-trust the workspace (e.g., \`rig setup --cwd <workspace>\`) and re-run the launch.`,
+          };
+          return c.json({ ...result, attachCommand, error: threePart, attentionNodes: detail.attentionNodes }, 409);
+        }
+
         return c.json({ ...result, attachCommand }, 200);
       }
       eventBus.emit({ type: "bootstrap.failed", runId: result.runId, sourceRef, error: result.errors[0] ?? "failed" });
