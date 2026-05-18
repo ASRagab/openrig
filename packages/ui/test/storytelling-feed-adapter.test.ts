@@ -284,6 +284,71 @@ describe("buildStorytellingFeedItems — production adapter", () => {
     }
   });
 
+  // Guard BLOCKER qitem-20260518093643 — PRD Option A scopes the
+  // ConceptCard source narrowly: missions/backlog/slices/<slug> with
+  // `status: candidate`. A `status: candidate` row under any other
+  // mission (or with missionId === null) must NOT emit a concept item;
+  // it routes through the normal status-bucket path instead.
+  it("BLOCKER fix: candidate slice under a NON-backlog mission emits zero ConceptCards (PRD Option A — backlog-only)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "non-backlog-candidate", missionId: "release-0.3.2", displayName: "Non-backlog", status: "draft", rawStatus: "candidate", description: "shaped under release lane" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+    // Falls through to status-bucket path; status="draft" routes to incident-info.
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(1);
+  });
+
+  it("BLOCKER fix: candidate slice with missionId=null emits zero ConceptCards", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "orphan-candidate", missionId: null, displayName: "Orphan", status: "draft", rawStatus: "candidate", description: "shaped without mission" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+  });
+
+  it("BLOCKER fix: backlog candidate STILL emits exactly one ConceptCard (positive case preserved)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "backlog-candidate", missionId: "backlog", displayName: "Backlog", status: "draft", rawStatus: "candidate", description: "shaped backlog item" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(1);
+  });
+
+  it("BLOCKER fix: mixed input — 2 backlog candidates + 2 non-backlog candidates → 2 ConceptCards (only backlog), non-backlog as incidents", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "b1", missionId: "backlog", displayName: "B1", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "b2", missionId: "backlog", displayName: "B2", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "x1", missionId: "release-0.3.2", displayName: "X1", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "x2", missionId: null, displayName: "X2", status: "draft", rawStatus: "candidate", description: "d" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(2);
+    // Non-backlog candidates fall through to incident (status: draft → info).
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(2);
+  });
+
+  // Pure-helper unit test — the predicate is exported separately for
+  // discrete pinning.
+  it("isBacklogCandidateSlice predicate: backlog+candidate=true; everything else=false", async () => {
+    const { isBacklogCandidateSlice } = await import("../src/components/feed/cards/storytelling-cards.js");
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "candidate" })).toBe(true);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "Candidate" })).toBe(true);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "release-0.3.2", rawStatus: "candidate" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: null, rawStatus: "candidate" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "shipped" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: null })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog" })).toBe(false);
+  });
+
   it("falls back to FeedCard.id when payload has no qitemId/qitem_id key", () => {
     const card = makeApprovalFeedCard({ id: "queue.created-42" });
     const items = buildStorytellingFeedItems([], [], undefined, [card]);

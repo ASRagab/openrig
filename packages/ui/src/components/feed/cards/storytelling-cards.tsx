@@ -529,6 +529,23 @@ export interface AdapterSliceRow {
 //                 drillInHref ← /project/slice/<name>. Capped at 2
 //                 per the curated-band rule (HG-4). Graceful-empty
 //                 when no candidate rows exist (HG-2).
+/**
+ * OPR.0.3.2.17 — predicate for the ConceptCard data source per PRD
+ * Option A. A slice qualifies as a "shaped backlog candidate" when
+ * BOTH conditions hold:
+ *   - frontmatter status is "candidate" (case-insensitive)
+ *   - the slice lives under the `backlog` mission
+ *
+ * Exported so the predicate is a discrete, testable surface — guard
+ * BLOCKING qitem-20260518093643 flagged that the original filter
+ * (rawStatus alone) over-matched any-mission candidate slices.
+ */
+export function isBacklogCandidateSlice(slice: AdapterSliceRow): boolean {
+  const status = (slice.rawStatus ?? "").toLowerCase();
+  if (status !== "candidate") return false;
+  return slice.missionId === "backlog";
+}
+
 export function buildStorytellingFeedItems(
   missions: AdapterMissionRow[],
   slices: AdapterSliceRow[],
@@ -580,16 +597,22 @@ export function buildStorytellingFeedItems(
   });
 
   // OPR.0.3.2.17 — ConceptCard routing.
+  // PRD Option A: source is specifically shaped backlog candidates at
+  // `missions/backlog/slices/<slug>/README.md` with `status: candidate`
+  // — NOT any candidate slice across any mission. The predicate
+  // requires BOTH conditions; a `status: candidate` slice under a
+  // different mission (e.g., release-0.3.2) routes through the normal
+  // status-bucket path, not as a concept item. This keeps the
+  // ConceptCard band semantically aligned with the operator's
+  // "shaped backlog" mental model.
+  //
   // Partition candidates out of the normal status-bucket routing so a
   // single slice is routed to exactly ONE kind (HG-5: no double-count).
-  // Candidates are shaped-but-not-promoted backlog items; the curated
-  // band caps at 2 (HG-4). Graceful-empty (HG-2): when no candidate
-  // rows are present this branch contributes zero items.
-  const candidateSlices = eligibleSlices.filter(
-    (s) => (s.rawStatus ?? "").toLowerCase() === "candidate",
-  );
+  // The curated band caps at 2 (HG-4). Graceful-empty (HG-2): when no
+  // candidate rows are present this branch contributes zero items.
+  const candidateSlices = eligibleSlices.filter(isBacklogCandidateSlice);
   const nonCandidateSlices = eligibleSlices.filter(
-    (s) => (s.rawStatus ?? "").toLowerCase() !== "candidate",
+    (s) => !isBacklogCandidateSlice(s),
   );
   for (const slice of candidateSlices.slice(0, 2)) {
     const title = slice.displayName || slice.name;
