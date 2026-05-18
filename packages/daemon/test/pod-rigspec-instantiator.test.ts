@@ -723,7 +723,7 @@ state: 2-named
     }
   });
 
-  // --- Conveyor-Trust Minimal Fix (OPR.0.3.2.CT, founder-ordered 2026-05-18) ---
+  // --- Conveyor-Trust Minimal Fix (OPR.0.3.2.CT) ---
   //
   // QA baseline-deep-dogfood found `rig up conveyor --yes` dead-ends on
   // workspace-trust gate: instantiate_error AND failure tears down to

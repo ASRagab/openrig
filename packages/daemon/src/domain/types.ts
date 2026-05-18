@@ -938,7 +938,7 @@ export type InstantiateOutcome =
   | { ok: false; code: "instantiate_error"; message: string }
   | { ok: false; code: "cycle_error"; message: string }
   | { ok: false; code: "service_boot_failed"; message: string }
-  // OPR.0.3.2.CT (conveyor-trust-minimal-fix, founder-ordered 2026-05-18):
+  // OPR.0.3.2.CT (conveyor-trust-minimal-fix):
   // When every launched node reaches a recoverable attention_required
   // state (e.g., workspace-trust prompt), do NOT tear the rig down.
   // The rig + sessions are preserved, listable, and approvable; the
@@ -969,7 +969,19 @@ export interface InstantiateResult {
   // recoverable parked node awaiting operator action (e.g., trust
   // approval). The session row's startup_status carries the same
   // signal so `rig ps` surfaces it.
-  nodes: { logicalId: string; status: "launched" | "failed" | "attention_required"; error?: string }[];
+  //
+  // `sessionName` + `evidence` carry runtime detail needed by
+  // BootstrapOrchestrator to construct AttentionNode[] for the mixed
+  // launched+attention_required path (the route's 3-part error
+  // response needs sessionName for the tmux-attach hint). Optional
+  // because legacy callers don't supply them on terminal-only paths.
+  nodes: {
+    logicalId: string;
+    status: "launched" | "failed" | "attention_required";
+    error?: string;
+    sessionName?: string;
+    evidence?: string;
+  }[];
   warnings?: string[];
 }
 

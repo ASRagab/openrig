@@ -7,6 +7,7 @@ import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { buildAttentionResponse } from "../src/routes/up.js";
 
 const VALID_SPEC = `
 schema_version: 1
@@ -496,6 +497,140 @@ edges: []
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain("not a valid rig spec");
+    });
+  });
+
+  // --- Conveyor-Trust Minimal Fix (OPR.0.3.2.CT) — guard verdict
+  //     qitem-20260518082933 BLOCKER 2: HG-4 route response shape must
+  //     be pinned by tests. buildAttentionResponse is the pure
+  //     helper that constructs the 3-part error from a bootstrap
+  //     result with a blocked/attention_required import_rig stage; the
+  //     route returns 409 with that body. These tests pin the shape
+  //     without needing the full daemon harness.
+
+  describe("OPR.0.3.2.CT BLOCKER-2: HG-4 3-part error shape", () => {
+    it("returns null when no import_rig stage is blocked/attention_required (normal partial path)", () => {
+      const result = {
+        rigId: "rig-1",
+        stages: [
+          { stage: "resolve_spec", status: "ok" },
+          { stage: "import_rig", status: "ok", detail: { rigId: "rig-1", nodes: [] } },
+        ],
+      };
+      expect(buildAttentionResponse(result)).toBeNull();
+    });
+
+    it("returns null on a 'failed' import_rig stage (no attention_required code)", () => {
+      const result = {
+        rigId: "rig-1",
+        stages: [
+          { stage: "import_rig", status: "failed", detail: { code: "instantiate_error" } },
+        ],
+      };
+      expect(buildAttentionResponse(result)).toBeNull();
+    });
+
+    it("HG-4: blocked + attention_required stage → fact/consequence/action with attentionNodes", () => {
+      const result = {
+        rigId: "rig-conveyor-1",
+        stages: [
+          {
+            stage: "import_rig",
+            status: "blocked",
+            detail: {
+              code: "attention_required",
+              message: "1 node requires attention before becoming interactive (rig parked, NOT failed; approve and resume to proceed).",
+              attentionNodes: [
+                { logicalId: "dev.impl", sessionName: "dev-impl@conveyor", evidence: "trust prompt", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+      };
+      const r = buildAttentionResponse(result);
+      expect(r).not.toBeNull();
+      expect(r!.error.fact).toMatch(/requires attention/i);
+      expect(r!.error.consequence).toMatch(/rig-conveyor-1/);
+      expect(r!.error.consequence).toMatch(/rig ps/);
+      expect(r!.error.consequence).toMatch(/attention_required/);
+      expect(r!.error.action).toMatch(/tmux attach -t dev-impl@conveyor/);
+      expect(r!.error.action).toMatch(/rig setup --cwd/);
+      // Singular phrasing for a 1-node case
+      expect(r!.error.action).toMatch(/^Attach to the session/);
+      expect(r!.attentionNodes).toHaveLength(1);
+      expect(r!.attentionNodes[0]!.logicalId).toBe("dev.impl");
+    });
+
+    it("HG-4: multi-node action message uses plural phrasing + lists multiple tmux attach hints", () => {
+      const result = {
+        rigId: "rig-conveyor-2",
+        stages: [
+          {
+            stage: "import_rig",
+            status: "blocked",
+            detail: {
+              code: "attention_required",
+              message: "3 nodes require attention before becoming interactive.",
+              attentionNodes: [
+                { logicalId: "dev.impl", sessionName: "dev-impl@conveyor", reason: "trust_gate" },
+                { logicalId: "dev.qa", sessionName: "dev-qa@conveyor", reason: "trust_gate" },
+                { logicalId: "dev.review", sessionName: "dev-review@conveyor", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+      };
+      const r = buildAttentionResponse(result);
+      expect(r).not.toBeNull();
+      // Plural phrasing
+      expect(r!.error.action).toMatch(/^Attach to each parked session/);
+      // First 3 hints listed
+      expect(r!.error.action).toContain("tmux attach -t dev-impl@conveyor");
+      expect(r!.error.action).toContain("tmux attach -t dev-qa@conveyor");
+      expect(r!.error.action).toContain("tmux attach -t dev-review@conveyor");
+      expect(r!.attentionNodes).toHaveLength(3);
+    });
+
+    it("HG-4: when no sessionName is present on any node, action falls back to 'see rig ps' (defense)", () => {
+      const result = {
+        rigId: "rig-conveyor-3",
+        stages: [
+          {
+            stage: "import_rig",
+            status: "blocked",
+            detail: {
+              code: "attention_required",
+              message: "1 node requires attention.",
+              attentionNodes: [
+                { logicalId: "dev.impl", sessionName: "", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+      };
+      const r = buildAttentionResponse(result);
+      expect(r!.error.action).toContain("see `rig ps`");
+    });
+
+    it("HG-4: result without rigId still produces a valid response (defense)", () => {
+      const result = {
+        stages: [
+          {
+            stage: "import_rig",
+            status: "blocked",
+            detail: {
+              code: "attention_required",
+              message: "1 node requires attention.",
+              attentionNodes: [
+                { logicalId: "dev.impl", sessionName: "dev-impl@x", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+      };
+      const r = buildAttentionResponse(result);
+      expect(r).not.toBeNull();
+      expect(r!.error.consequence).toContain("(rigId unavailable)");
     });
   });
 });

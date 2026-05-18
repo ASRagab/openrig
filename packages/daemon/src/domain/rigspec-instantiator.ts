@@ -823,7 +823,7 @@ export class PodRigInstantiator {
       }
     }
 
-    // OPR.0.3.2.CT (conveyor-trust-minimal-fix, founder-ordered 2026-05-18):
+    // OPR.0.3.2.CT (conveyor-trust-minimal-fix):
     // Distinguish recoverable attention_required (e.g., workspace trust
     // gate) from terminal failure. ANY attention_required node means
     // the rig is operator-recoverable — do NOT tear down. Only when
@@ -889,9 +889,21 @@ export class PodRigInstantiator {
       this.deps.eventBus.emit({ type: "rig.imported", rigId, specName: rigSpec.name, specVersion: rigSpec.version });
     } catch { /* best-effort */ }
 
+    // Carry sessionName + evidence through to InstantiateResult.nodes
+    // so BootstrapOrchestrator can build AttentionNode[] in the mixed
+    // launched+attention_required path (guard verdict
+    // qitem-20260518082933 BLOCKER 1).
+    const resultNodes = nodeResults.map((n) => ({
+      logicalId: n.logicalId,
+      status: n.status,
+      error: n.error,
+      sessionName: n.sessionName,
+      evidence: n.evidence,
+    }));
+
     return {
       ok: true,
-      result: { rigId, specName: rigSpec.name, specVersion: rigSpec.version, nodes: nodeResults, warnings: podInstantiateWarnings.length > 0 ? podInstantiateWarnings : undefined },
+      result: { rigId, specName: rigSpec.name, specVersion: rigSpec.version, nodes: resultNodes, warnings: podInstantiateWarnings.length > 0 ? podInstantiateWarnings : undefined },
     };
   }
 
