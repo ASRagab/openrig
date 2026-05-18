@@ -117,6 +117,105 @@ describe("BundleInspector", () => {
     });
   });
 
+  // Item 5 / slice-05 Checkpoint 6.1 / guard B1 repair: provenance block renders
+  // when manifest carries it. Discriminator: false && result.manifest.provenance
+  // gate must fail this test.
+  it("renders provenance block with all fields when manifest carries provenance", async () => {
+    const responseWithProvenance = {
+      manifest: {
+        name: "with-prov",
+        version: "0.1.0",
+        rigSpec: "rig.yaml",
+        packages: [{ name: "pkg", version: "1.0", path: "packages/pkg" }],
+        provenance: {
+          createdAt: "2026-05-18T12:00:00Z",
+          sourceHost: "test-host.local",
+          authorSession: "velocity-driver@openrig-velocity",
+          sourceRigId: "01H000000000000000PROV001",
+          sourceRigName: "openrig-velocity",
+          daemonVersion: "0.3.2",
+          cliVersion: "0.3.2",
+          notes: "fixture for B1 repair",
+        },
+      },
+      digestValid: true,
+      integrityResult: { passed: true, mismatches: [], missing: [], extra: [], errors: [] },
+    };
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => responseWithProvenance });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={qc}><BundleInspector /></QueryClientProvider>);
+
+    act(() => { fireEvent.change(screen.getByTestId("bundle-path-input"), { target: { value: "/tmp/with-prov.rigbundle" } }); });
+    act(() => { fireEvent.click(screen.getByTestId("inspect-btn")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("provenance-block")).toBeTruthy();
+      expect(screen.getByTestId("provenance-createdAt").textContent).toContain("2026-05-18T12:00:00Z");
+      expect(screen.getByTestId("provenance-sourceHost").textContent).toContain("test-host.local");
+      expect(screen.getByTestId("provenance-authorSession").textContent).toContain("velocity-driver@openrig-velocity");
+      expect(screen.getByTestId("provenance-sourceRigName").textContent).toContain("openrig-velocity");
+      expect(screen.getByTestId("provenance-sourceRigName").textContent).toContain("01H000000000000000PROV001");
+      expect(screen.getByTestId("provenance-versions").textContent).toContain("daemon 0.3.2");
+      expect(screen.getByTestId("provenance-versions").textContent).toContain("cli 0.3.2");
+      expect(screen.getByTestId("provenance-notes").textContent).toContain("fixture for B1 repair");
+    });
+  });
+
+  // Item 5 / slice-05 Checkpoint 6.1 / guard B1 repair: compatibility block renders
+  // when manifest carries it. Discriminator: false && result.manifest.compatibility
+  // gate must fail this test.
+  it("renders compatibility block with all fields when manifest carries compatibility", async () => {
+    const responseWithCompat = {
+      manifest: {
+        name: "with-compat",
+        version: "0.1.0",
+        rigSpec: "rig.yaml",
+        packages: [{ name: "pkg", version: "1.0", path: "packages/pkg" }],
+        compatibility: {
+          minDaemonVersion: "0.3.2",
+          minCliVersion: "0.3.2",
+          schemaVersion: 1,
+        },
+      },
+      digestValid: true,
+      integrityResult: { passed: true, mismatches: [], missing: [], extra: [], errors: [] },
+    };
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => responseWithCompat });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={qc}><BundleInspector /></QueryClientProvider>);
+
+    act(() => { fireEvent.change(screen.getByTestId("bundle-path-input"), { target: { value: "/tmp/with-compat.rigbundle" } }); });
+    act(() => { fireEvent.click(screen.getByTestId("inspect-btn")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("compatibility-block")).toBeTruthy();
+      expect(screen.getByTestId("compatibility-minDaemonVersion").textContent).toContain("0.3.2");
+      expect(screen.getByTestId("compatibility-minCliVersion").textContent).toContain("0.3.2");
+      expect(screen.getByTestId("compatibility-schemaVersion").textContent).toContain("v1");
+    });
+  });
+
+  // Item 5 / slice-05 Checkpoint 6.1 / guard B1 repair: backward-compat — bundle
+  // without provenance or compatibility blocks does NOT render those sections.
+  // Pre-Item-1/Item-2 bundles install/inspect unchanged.
+  it("does NOT render provenance or compatibility blocks when manifest omits them (backward compat)", async () => {
+    // INSPECT_RESPONSE has no provenance + no compatibility — reuse it
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => INSPECT_RESPONSE });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={qc}><BundleInspector /></QueryClientProvider>);
+
+    act(() => { fireEvent.change(screen.getByTestId("bundle-path-input"), { target: { value: "/tmp/bc.rigbundle" } }); });
+    act(() => { fireEvent.click(screen.getByTestId("inspect-btn")); });
+
+    await waitFor(() => {
+      // Manifest summary still renders (regression baseline)
+      expect(screen.getByTestId("manifest-summary")).toBeTruthy();
+    });
+    // New blocks must NOT be present
+    expect(screen.queryByTestId("provenance-block")).toBeNull();
+    expect(screen.queryByTestId("compatibility-block")).toBeNull();
+  });
+
   // T6: Error state
   it("shows error on inspect failure", async () => {
     fetchMock.mockRejectedValueOnce(new Error("network error"));
