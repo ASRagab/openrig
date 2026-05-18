@@ -8,6 +8,7 @@ import {
   isRelativeSafePath,
   type LegacyBundleManifest as BundleManifest,
   type BundleProvenance,
+  type BundleCompatibility,
 } from "../src/domain/bundle-types.js";
 
 const VALID_RAW = {
@@ -250,6 +251,115 @@ describe("Bundle types", () => {
     const parsed = parseBundleManifest(yaml);
     const normalized = normalizeBundleManifest(parsed);
     expect(normalized.provenance).toBeUndefined();
+  });
+
+  // -- Item 2 compatibility block tests (slice-05 Checkpoint 3.1) --
+
+  // C1: missing compatibility is valid (backward compat)
+  it("missing compatibility block passes validation (backward compat)", () => {
+    const raw = { ...VALID_RAW };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // C2: full compatibility block passes validation
+  it("full compatibility block passes validation", () => {
+    const raw = {
+      ...VALID_RAW,
+      compatibility: {
+        min_daemon_version: "0.3.2",
+        min_cli_version: "0.3.2",
+        schema_version: 1,
+      },
+    };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // C3: partial compatibility (only min_daemon_version) passes — all fields optional
+  it("partial compatibility block (only min_daemon_version) passes validation", () => {
+    const raw = { ...VALID_RAW, compatibility: { min_daemon_version: "0.3.2" } };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // C4: compatibility present but not an object rejected
+  it("compatibility present but not an object rejected", () => {
+    const raw1 = { ...VALID_RAW, compatibility: "0.3.2" };
+    const r1 = validateBundleManifest(raw1);
+    expect(r1.valid).toBe(false);
+    expect(r1.errors.some((e) => e.includes("compatibility"))).toBe(true);
+
+    const raw2 = { ...VALID_RAW, compatibility: [] };
+    const r2 = validateBundleManifest(raw2);
+    expect(r2.valid).toBe(false);
+    expect(r2.errors.some((e) => e.includes("compatibility"))).toBe(true);
+  });
+
+  // C5: compatibility field with wrong type rejected
+  it("compatibility field with wrong type rejected", () => {
+    const raw1 = { ...VALID_RAW, compatibility: { min_daemon_version: 0.3 } };
+    const r1 = validateBundleManifest(raw1);
+    expect(r1.valid).toBe(false);
+    expect(r1.errors.some((e) => e.includes("compatibility.min_daemon_version"))).toBe(true);
+
+    const raw2 = { ...VALID_RAW, compatibility: { schema_version: "1" } };
+    const r2 = validateBundleManifest(raw2);
+    expect(r2.valid).toBe(false);
+    expect(r2.errors.some((e) => e.includes("compatibility.schema_version"))).toBe(true);
+  });
+
+  // C6: round-trip preserves compatibility through serialize → parse → normalize
+  it("round-trip preserves compatibility through serialize → parse → normalize", () => {
+    const compatibility: BundleCompatibility = {
+      minDaemonVersion: "0.3.2",
+      minCliVersion: "0.3.2",
+      schemaVersion: 1,
+    };
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "rt-compat",
+      version: "1.0.0",
+      createdAt: "2026-05-18T12:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+      integrity: {
+        algorithm: "sha256",
+        files: { "rig.yaml": "1".repeat(64), "packages/pkg/package.yaml": "2".repeat(64) },
+      },
+      compatibility,
+    };
+
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).toContain("compatibility:");
+    expect(yaml).toContain("min_daemon_version: 0.3.2");
+
+    const parsed = parseBundleManifest(yaml);
+    const validation = validateBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.compatibility).toBeDefined();
+    expect(normalized.compatibility?.minDaemonVersion).toBe("0.3.2");
+    expect(normalized.compatibility?.minCliVersion).toBe("0.3.2");
+    expect(normalized.compatibility?.schemaVersion).toBe(1);
+  });
+
+  // C7: missing compatibility round-trips cleanly (no field emitted in YAML)
+  it("missing compatibility round-trips cleanly (no field emitted in YAML)", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "no-compat",
+      version: "1.0.0",
+      createdAt: "2026-05-18T00:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).not.toContain("compatibility:");
+    const parsed = parseBundleManifest(yaml);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.compatibility).toBeUndefined();
   });
 });
 

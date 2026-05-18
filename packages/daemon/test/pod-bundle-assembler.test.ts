@@ -700,6 +700,81 @@ describe("PodBundleManifest validation", () => {
     expect(result.errors.some((e) => e.includes("provenance.source_host"))).toBe(true);
   });
 
+  // -- Item 2 compatibility block tests (slice-05 Checkpoint 3.1) --
+
+  it("v2: missing compatibility block passes validation (backward compat)", () => {
+    const raw = {
+      schema_version: 2, name: "no-compat", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: full compatibility block passes validation", () => {
+    const raw = {
+      schema_version: 2, name: "with-compat", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      compatibility: { min_daemon_version: "0.3.2", min_cli_version: "0.3.2", schema_version: 2 },
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: compatibility present but not an object rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-compat", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      compatibility: "0.3.2",
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("compatibility"))).toBe(true);
+  });
+
+  it("v2: compatibility field with wrong type rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-compat-field", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      compatibility: { min_daemon_version: 0.3 },
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("compatibility.min_daemon_version"))).toBe(true);
+  });
+
+  it("v2: round-trip preserves compatibility through serialize -> parse", () => {
+    const manifest: PodBundleManifest = {
+      schemaVersion: 2, name: "rt-compat", version: "2.0",
+      createdAt: "2026-05-18T00:00:00Z", rigSpec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        originalRef: "local:agents/impl", hash: "def",
+        importEntries: [],
+      }],
+      compatibility: {
+        minDaemonVersion: "0.3.2",
+        minCliVersion: "0.3.2",
+        schemaVersion: 2,
+      },
+    };
+    const yaml = serializePodBundleManifest(manifest);
+    expect(yaml).toContain("compatibility:");
+    expect(yaml).toContain("min_daemon_version: 0.3.2");
+    const parsed = parsePodBundleManifest(yaml);
+    const validation = validatePodBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const m = parsed as Record<string, unknown>;
+    const compat = m["compatibility"] as Record<string, unknown>;
+    expect(compat["min_daemon_version"]).toBe("0.3.2");
+    expect(compat["min_cli_version"]).toBe("0.3.2");
+    expect(compat["schema_version"]).toBe(2);
+  });
+
   it("v2: round-trip preserves provenance through serialize -> parse", () => {
     const manifest: PodBundleManifest = {
       schemaVersion: 2, name: "rt-prov", version: "2.0",

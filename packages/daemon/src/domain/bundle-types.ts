@@ -68,6 +68,66 @@ function provenanceToYamlRecord(p: BundleProvenance): Record<string, unknown> {
 }
 
 /**
+ * Compatibility block — operator-declared install-time requirements for a
+ * bundle artifact. All fields optional; missing block keeps backward compat
+ * (bundles install unchanged). Install-time version check (Item 2 Checkpoint
+ * 3.3) consults this block before bootstrap delegation; --skip-version-check
+ * is the operator-explicit override.
+ */
+export interface BundleCompatibility {
+  /** Minimum daemon version required to install this bundle (semver string). */
+  minDaemonVersion?: string;
+  /** Minimum CLI version required to install this bundle (semver string). */
+  minCliVersion?: string;
+  /** Schema version reaffirmed; mirrors root schemaVersion when set. */
+  schemaVersion?: number;
+}
+
+/** Validate optional compatibility block. Appends to errors if present-but-malformed. */
+function validateCompatibilityBlock(raw: unknown, errors: string[]): void {
+  if (raw === undefined) return;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    errors.push("compatibility must be an object");
+    return;
+  }
+  const c = raw as Record<string, unknown>;
+  if ("min_daemon_version" in c && typeof c["min_daemon_version"] !== "string") {
+    errors.push("compatibility.min_daemon_version must be a string");
+  }
+  if ("min_cli_version" in c && typeof c["min_cli_version"] !== "string") {
+    errors.push("compatibility.min_cli_version must be a string");
+  }
+  if ("schema_version" in c && typeof c["schema_version"] !== "number") {
+    errors.push("compatibility.schema_version must be a number");
+  }
+}
+
+/** Serialize a typed BundleCompatibility to the snake_case YAML record shape. */
+function compatibilityToYamlRecord(c: BundleCompatibility): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (c.minDaemonVersion !== undefined) out["min_daemon_version"] = c.minDaemonVersion;
+  if (c.minCliVersion !== undefined) out["min_cli_version"] = c.minCliVersion;
+  if (c.schemaVersion !== undefined) out["schema_version"] = c.schemaVersion;
+  return out;
+}
+
+/**
+ * Normalize raw snake_case compatibility to typed camelCase BundleCompatibility.
+ * Returns undefined when absent or empty. Exported alongside the provenance
+ * normalizer so the v2 inspect-route projection can produce a single
+ * camelCase shape for both manifest schemas.
+ */
+export function normalizeCompatibilityBlock(raw: unknown): BundleCompatibility | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const c = raw as Record<string, unknown>;
+  const result: BundleCompatibility = {};
+  if (typeof c["min_daemon_version"] === "string") result.minDaemonVersion = c["min_daemon_version"];
+  if (typeof c["min_cli_version"] === "string") result.minCliVersion = c["min_cli_version"];
+  if (typeof c["schema_version"] === "number") result.schemaVersion = c["schema_version"];
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
  * Normalize raw snake_case provenance (as parsed from YAML or received from
  * a request body) to typed camelCase BundleProvenance. Returns undefined when
  * absent or empty. Exported so both the v1 normalizer pipeline and the v2
@@ -118,6 +178,7 @@ export interface PodBundleManifest {
   cultureFile?: string;
   integrity?: BundleIntegrity;
   provenance?: BundleProvenance;
+  compatibility?: BundleCompatibility;
 }
 
 export function validatePodBundleManifest(raw: unknown): { valid: boolean; errors: string[] } {
@@ -145,6 +206,7 @@ export function validatePodBundleManifest(raw: unknown): { valid: boolean; error
   }
 
   validateProvenanceBlock(m["provenance"], errors);
+  validateCompatibilityBlock(m["compatibility"], errors);
 
   return { valid: errors.length === 0, errors };
 }
@@ -174,6 +236,7 @@ export function serializePodBundleManifest(manifest: PodBundleManifest): string 
   if (manifest.cultureFile) doc["culture_file"] = manifest.cultureFile;
   if (manifest.integrity) doc["integrity"] = { algorithm: manifest.integrity.algorithm, files: manifest.integrity.files };
   if (manifest.provenance) doc["provenance"] = provenanceToYamlRecord(manifest.provenance);
+  if (manifest.compatibility) doc["compatibility"] = compatibilityToYamlRecord(manifest.compatibility);
   return stringifyYaml(doc);
 }
 
@@ -210,6 +273,7 @@ export interface LegacyBundleManifest {
   packages: LegacyBundlePackageEntry[];
   integrity?: BundleIntegrity;
   provenance?: BundleProvenance;
+  compatibility?: BundleCompatibility;
 }
 
 /** Validation options */
@@ -301,6 +365,7 @@ export function validateLegacyBundleManifest(
   }
 
   validateProvenanceBlock(m["provenance"], errors);
+  validateCompatibilityBlock(m["compatibility"], errors);
 
   return { valid: errors.length === 0, errors };
 }
@@ -346,6 +411,9 @@ export function normalizeLegacyBundleManifest(raw: unknown): LegacyBundleManifes
   const provenance = normalizeProvenanceBlock(m["provenance"]);
   if (provenance) result.provenance = provenance;
 
+  const compatibility = normalizeCompatibilityBlock(m["compatibility"]);
+  if (compatibility) result.compatibility = compatibility;
+
   return result;
 }
 
@@ -374,6 +442,8 @@ export function serializeLegacyBundleManifest(manifest: LegacyBundleManifest): s
   }
 
   if (manifest.provenance) doc["provenance"] = provenanceToYamlRecord(manifest.provenance);
+
+  if (manifest.compatibility) doc["compatibility"] = compatibilityToYamlRecord(manifest.compatibility);
 
   return stringifyYaml(doc);
 }
