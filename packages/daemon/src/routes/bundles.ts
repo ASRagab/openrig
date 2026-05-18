@@ -95,15 +95,19 @@ function checkBundleCompatibility(
 }
 
 /**
- * Extract bundle.yaml manifest from a .rigbundle archive without doing the
- * full bootstrap unpack. Used by the install-time compatibility check. Throws
- * on archive / parse / safety failures.
+ * Extract bundle.yaml manifest from a .rigbundle archive via the canonical
+ * safe-extraction path (unpack from domain/bundle-archive). unpack performs
+ * verifyArchiveDigest, then tar.list pre-scan rejecting symlinks / hardlinks
+ * / absolute paths / dot-dot traversal, then extracts, then verifies content
+ * integrity. Using unpack here keeps the install-time compat check inside the
+ * existing trust boundary — raw tar.extract on an untrusted archive would
+ * bypass the safety prescan (B1 regression fixed). Throws on archive / safety
+ * / parse failures; the caller converts these into a 3-part 400 response.
  */
 async function extractManifestForCompatCheck(bundlePath: string): Promise<Record<string, unknown>> {
   const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-compat-"));
   try {
-    const tar = await import("tar");
-    await tar.extract({ file: bundlePath, cwd: tmpDir });
+    await unpack(bundlePath, tmpDir);
     const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
     if (!fs.existsSync(manifestPath)) throw new Error("Bundle missing bundle.yaml");
     const manifestYaml = fs.readFileSync(manifestPath, "utf-8");

@@ -767,6 +767,59 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 2 / slice-05 Checkpoint 3.3 / guard B1 repair: install rejects unsafe
+  // archives through the safe error path BEFORE bootstrap delegation.
+  // Discriminator: reverting extractManifestForCompatCheck to a raw tar.extract
+  // (without unpack's verifyArchiveDigest + tar.list unsafe-entry prescan) must
+  // make this test fail — the unsafe symlink would be silently extracted and
+  // bootstrap would see an attacker-controlled link target.
+  it("POST /api/bundles/install rejects an archive containing a symlink entry via the safe path (B1 repair)", async () => {
+    const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-unsafe-staging-"));
+    const bundlePath = path.join(tmpDir, "unsafe-symlink.rigbundle");
+    try {
+      // Minimal valid manifest contents (bundle.yaml present) plus the unsafe
+      // symlink that the safety prescan must reject.
+      fs.writeFileSync(path.join(stagingDir, "bundle.yaml"), [
+        'schema_version: 1',
+        'name: unsafe-test',
+        'version: "0.1.0"',
+        'created_at: "2026-05-18T00:00:00Z"',
+        'rig_spec: rig.yaml',
+        'packages: []',
+      ].join("\n"));
+      fs.writeFileSync(path.join(stagingDir, "rig.yaml"), 'schema_version: 1\nname: x\nversion: "1.0"\nnodes: []\nedges: []');
+      fs.symlinkSync("/etc/passwd", path.join(stagingDir, "evil-symlink"));
+
+      const tar = await import("tar");
+      await tar.create(
+        { gzip: { level: 9 }, file: bundlePath, cwd: stagingDir, portable: true },
+        ["bundle.yaml", "rig.yaml", "evil-symlink"],
+      );
+
+      // Write a valid sibling .sha256 so digest verification PASSES — proving
+      // the prescan is what catches the symlink, not the digest check.
+      const { createHash } = await import("node:crypto");
+      const archiveHash = createHash("sha256").update(fs.readFileSync(bundlePath)).digest("hex");
+      fs.writeFileSync(`${bundlePath}.sha256`, archiveHash, "utf-8");
+
+      const installRes = await app.request("/api/bundles/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bundlePath, plan: true }),
+      });
+      expect(installRes.status).toBe(400);
+      const body = await installRes.json();
+      // Either explicit-extraction-failed shape (safe rejection happened inside
+      // unpack) OR the compat-check-failed shape with the safety message in
+      // detail. Either way, the symlink string must appear and bootstrap must
+      // NOT have been entered.
+      const text = JSON.stringify(body);
+      expect(text).toMatch(/Unsafe archive entries|SymbolicLink|symlink/i);
+    } finally {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    }
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually
