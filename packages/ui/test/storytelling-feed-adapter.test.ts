@@ -189,14 +189,164 @@ describe("buildStorytellingFeedItems — production adapter", () => {
     expect(items).toEqual([]);
   });
 
-  it("never emits concept-kind items — ConceptCard is deferred to a 0.3.2 slice", () => {
+  // OPR.0.3.2.17 — ConceptCard data source (replacing the 0.3.1 deferred
+  // pin; HG-6 fail-first discriminator).
+  //
+  // Source: shaped backlog candidates — SliceListEntry rows where
+  //   rawStatus === "candidate" (case-insensitive).
+  // Mapping: sliceId ← name; title ← displayName (or name); oneLiner ←
+  //   frontmatter description (passed through as the adapter row's
+  //   `description` field).
+  // Graceful-empty (HG-2): no candidate rows → no concept items, no
+  //   error; other kinds unaffected.
+
+  it("HG-1: rawStatus='candidate' slice emits a ConceptCard via the adapter (fail-first; passes only when concept branch is wired)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        {
+          name: "concept-restore-packet",
+          missionId: "backlog",
+          displayName: "Restore packet primitive",
+          status: "draft",
+          rawStatus: "candidate",
+          description: "First-class restore packet so seats survive compaction.",
+        },
+      ],
+    );
+    const concepts = items.filter((i) => i.kind === "concept");
+    expect(concepts).toHaveLength(1);
+    if (concepts[0]!.kind === "concept") {
+      expect(concepts[0]!.source.sliceId).toBe("concept-restore-packet");
+      expect(concepts[0]!.source.title).toBe("Restore packet primitive");
+      expect(concepts[0]!.source.oneLiner).toBe("First-class restore packet so seats survive compaction.");
+    }
+  });
+
+  it("HG-1: rawStatus='Candidate' (mixed case) still emits ConceptCard", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "Candidate", description: "d" }],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(1);
+  });
+
+  it("HG-2 graceful-empty: zero candidate rows → no concept items, no error, other kinds still render", () => {
     const items = buildStorytellingFeedItems(
       [{ name: "m1", path: "missions/m1" }],
-      [{ name: "s1", status: "shipped" }, { name: "s2", status: "blocked" }],
+      [
+        { name: "s-shipped", status: "shipped" },
+        { name: "s-blocked", status: "blocked" },
+        // no rawStatus='candidate' row anywhere
+      ],
       undefined,
       [makeApprovalFeedCard({ qitemId: "q1" })],
     );
-    expect(items.some((i) => i.kind === "concept")).toBe(false);
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+    expect(items.filter((i) => i.kind === "progress")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "shipped")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "approval")).toHaveLength(1);
+  });
+
+  it("HG-4 cap: ConceptCard items capped at 2 per the curated-band rule", () => {
+    const slices = Array.from({ length: 5 }).map((_, i) => ({
+      name: `cand-${i}`,
+      missionId: "backlog",
+      displayName: `Candidate ${i}`,
+      status: "draft" as const,
+      rawStatus: "candidate",
+      description: `desc-${i}`,
+    }));
+    const items = buildStorytellingFeedItems([], slices);
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(2);
+  });
+
+  it("HG-5 no regression: candidate slices do NOT also emit shipped/incident items (concept routing is exclusive)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "candidate", description: "d" }],
+    );
+    // Concept-routed rows must not double-count into shipped/incident.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe("concept");
+  });
+
+  it("ConceptCardSource oneLiner falls back to a stable placeholder when description is missing (defense; PRD allows graceful)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "candidate" }],
+    );
+    expect(items).toHaveLength(1);
+    if (items[0]!.kind === "concept") {
+      expect(typeof items[0]!.source.oneLiner).toBe("string");
+      expect(items[0]!.source.oneLiner.length).toBeGreaterThan(0);
+    }
+  });
+
+  // Guard BLOCKER qitem-20260518093643 — PRD Option A scopes the
+  // ConceptCard source narrowly: missions/backlog/slices/<slug> with
+  // `status: candidate`. A `status: candidate` row under any other
+  // mission (or with missionId === null) must NOT emit a concept item;
+  // it routes through the normal status-bucket path instead.
+  it("BLOCKER fix: candidate slice under a NON-backlog mission emits zero ConceptCards (PRD Option A — backlog-only)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "non-backlog-candidate", missionId: "release-0.3.2", displayName: "Non-backlog", status: "draft", rawStatus: "candidate", description: "shaped under release lane" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+    // Falls through to status-bucket path; status="draft" routes to incident-info.
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(1);
+  });
+
+  it("BLOCKER fix: candidate slice with missionId=null emits zero ConceptCards", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "orphan-candidate", missionId: null, displayName: "Orphan", status: "draft", rawStatus: "candidate", description: "shaped without mission" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+  });
+
+  it("BLOCKER fix: backlog candidate STILL emits exactly one ConceptCard (positive case preserved)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "backlog-candidate", missionId: "backlog", displayName: "Backlog", status: "draft", rawStatus: "candidate", description: "shaped backlog item" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(1);
+  });
+
+  it("BLOCKER fix: mixed input — 2 backlog candidates + 2 non-backlog candidates → 2 ConceptCards (only backlog), non-backlog as incidents", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        { name: "b1", missionId: "backlog", displayName: "B1", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "b2", missionId: "backlog", displayName: "B2", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "x1", missionId: "release-0.3.2", displayName: "X1", status: "draft", rawStatus: "candidate", description: "d" },
+        { name: "x2", missionId: null, displayName: "X2", status: "draft", rawStatus: "candidate", description: "d" },
+      ],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(2);
+    // Non-backlog candidates fall through to incident (status: draft → info).
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(2);
+  });
+
+  // Pure-helper unit test — the predicate is exported separately for
+  // discrete pinning.
+  it("isBacklogCandidateSlice predicate: backlog+candidate=true; everything else=false", async () => {
+    const { isBacklogCandidateSlice } = await import("../src/components/feed/cards/storytelling-cards.js");
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "candidate" })).toBe(true);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "Candidate" })).toBe(true);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "release-0.3.2", rawStatus: "candidate" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: null, rawStatus: "candidate" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: "shipped" })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog", rawStatus: null })).toBe(false);
+    expect(isBacklogCandidateSlice({ name: "x", missionId: "backlog" })).toBe(false);
   });
 
   it("falls back to FeedCard.id when payload has no qitemId/qitem_id key", () => {
