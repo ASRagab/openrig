@@ -15,7 +15,44 @@ import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest } from "../domain/bundle-types.js";
-import type { PodBundleManifest } from "../domain/bundle-types.js";
+import type { PodBundleManifest, BundleProvenance } from "../domain/bundle-types.js";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Read the daemon's own package.json version at call time (Item 1 / slice-05).
+ * Function-level read on purpose: module-level constants would mask test
+ * isolation per the audit-every-layer discipline. The read is cheap and
+ * only happens on bundle create.
+ */
+function getDaemonVersion(): string {
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const pkgPath = nodePath.join(nodePath.dirname(here), "..", "..", "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Normalize raw provenance from request body into a BundleProvenance object.
+ * Only string fields are accepted; unknown/non-string fields are dropped
+ * silently. Returns undefined if the input is missing or has no usable
+ * fields. Daemon-side daemonVersion injection is the caller's responsibility.
+ */
+function provenanceFromRequestBody(raw: unknown): BundleProvenance | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const p = raw as Record<string, unknown>;
+  const result: BundleProvenance = {};
+  if (typeof p["sourceHost"] === "string") result.sourceHost = p["sourceHost"];
+  if (typeof p["authorSession"] === "string") result.authorSession = p["authorSession"];
+  if (typeof p["sourceRigId"] === "string") result.sourceRigId = p["sourceRigId"];
+  if (typeof p["sourceRigName"] === "string") result.sourceRigName = p["sourceRigName"];
+  if (typeof p["cliVersion"] === "string") result.cliVersion = p["cliVersion"];
+  if (typeof p["notes"] === "string") result.notes = p["notes"];
+  return Object.keys(result).length > 0 ? result : undefined;
+}
 import type { FsOps } from "../domain/package-resolver.js";
 
 export const bundleRoutes = new Hono();
@@ -86,6 +123,12 @@ bundleRoutes.post("/create", async (c) => {
   const rigRoot = typeof body["rigRoot"] === "string" ? body["rigRoot"] : undefined;
   const includePackages = Array.isArray(body["includePackages"]) ? body["includePackages"] as string[] : undefined;
 
+  // Item 1 / slice-05: build provenance from request body + inject daemonVersion server-side
+  const clientProvenance = provenanceFromRequestBody(body["provenance"]);
+  const provenance: BundleProvenance | undefined = clientProvenance
+    ? { ...clientProvenance, daemonVersion: getDaemonVersion() }
+    : undefined;
+
   if (!specPath || !bundleName || !bundleVersion || !outputPath) {
     return c.json({ error: "specPath, bundleName, bundleVersion, and outputPath are required" }, 400);
   }
@@ -105,7 +148,7 @@ bundleRoutes.post("/create", async (c) => {
       const tmpStaging = fs.mkdtempSync(nodePath.join(os.tmpdir(), "pod-bundle-create-"));
       try {
         const assembler = new PodBundleAssembler({ fsOps: podAssemblerFsOps() });
-        const result = assembler.assemble({ rigRoot: effectiveRigRoot, rigSpecPath: nodePath.resolve(specPath), outputDir: tmpStaging, bundleName, bundleVersion });
+        const result = assembler.assemble({ rigRoot: effectiveRigRoot, rigSpecPath: nodePath.resolve(specPath), outputDir: tmpStaging, bundleName, bundleVersion, provenance });
 
         const integrity = computeIntegrity(tmpStaging, integrityFsOps());
         result.manifest.integrity = integrity;
@@ -162,7 +205,7 @@ bundleRoutes.post("/create", async (c) => {
     try {
       const assembler = new BundleAssembler({ fsOps: assemblerFsOps() });
       const manifest = assembler.assemble({
-        specPath: nodePath.resolve(specPath), packages, outputDir: tmpStaging, bundleName, bundleVersion,
+        specPath: nodePath.resolve(specPath), packages, outputDir: tmpStaging, bundleName, bundleVersion, provenance,
       });
 
       const integrity = computeIntegrity(tmpStaging, integrityFsOps());
@@ -243,6 +286,9 @@ bundleRoutes.post("/inspect", async (c) => {
           algorithm: integritySection.algorithm ?? "sha256",
           files: integritySection.files ?? {},
         } : undefined,
+        // Item 1 / slice-05: surface provenance raw from manifest so JSON-path
+        // consumers (UI inspector, jq pipelines) see it. Field is optional.
+        provenance: rawParsed["provenance"] as Record<string, unknown> | undefined,
       };
       const integrityCompat = integritySection ? {
         schemaVersion: 2,

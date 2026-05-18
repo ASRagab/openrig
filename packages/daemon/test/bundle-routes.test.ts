@@ -102,6 +102,66 @@ describe("Bundle API routes", () => {
     expect(fs.existsSync(outputPath)).toBe(true);
   });
 
+  // Item 1 / slice-05: provenance round-trip through /create + /inspect
+  it("POST /api/bundles/create accepts provenance + /inspect surfaces it (v1 round-trip)", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "prov-test.rigbundle");
+
+    const createRes = await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specPath, bundleName: "prov-test", bundleVersion: "0.1.0", outputPath: bundlePath,
+        provenance: {
+          sourceHost: "route-test-host",
+          authorSession: "velocity-driver@openrig-velocity",
+          cliVersion: "0.3.2",
+          notes: "route-test fixture",
+        },
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const inspectRes = await app.request("/api/bundles/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath }),
+    });
+    expect(inspectRes.status).toBe(200);
+    const inspectBody = await inspectRes.json();
+    expect(inspectBody.manifest.provenance).toBeDefined();
+    expect(inspectBody.manifest.provenance.sourceHost).toBe("route-test-host");
+    expect(inspectBody.manifest.provenance.authorSession).toBe("velocity-driver@openrig-velocity");
+    expect(inspectBody.manifest.provenance.cliVersion).toBe("0.3.2");
+    expect(inspectBody.manifest.provenance.notes).toBe("route-test fixture");
+    // Server-side daemonVersion injection — read from daemon package.json at call time
+    expect(typeof inspectBody.manifest.provenance.daemonVersion).toBe("string");
+    expect(inspectBody.manifest.provenance.daemonVersion.length).toBeGreaterThan(0);
+    // createdAt mirrored from root
+    expect(inspectBody.manifest.provenance.createdAt).toBe(inspectBody.manifest.createdAt);
+  });
+
+  it("POST /api/bundles/create with no provenance produces a bundle whose manifest omits provenance (backward compat)", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "no-prov.rigbundle");
+
+    const createRes = await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ specPath, bundleName: "no-prov", bundleVersion: "0.1.0", outputPath: bundlePath }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const inspectRes = await app.request("/api/bundles/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath }),
+    });
+    expect(inspectRes.status).toBe(200);
+    const inspectBody = await inspectRes.json();
+    expect(inspectBody.manifest.provenance).toBeUndefined();
+  });
+
   // T2: Inspect returns manifest
   it("POST /api/bundles/inspect returns manifest + integrity", async () => {
     const { specPath } = seedPackage();

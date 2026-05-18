@@ -1,9 +1,45 @@
+import fs from "node:fs";
+import os from "node:os";
 import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+
+/**
+ * Read the CLI's own package.json version at call time (Item 1 / slice-05).
+ * Function-level read on purpose: module-level constants would mask test
+ * isolation per the audit-every-layer discipline.
+ */
+function getCliVersion(): string {
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const pkgPath = nodePath.join(nodePath.dirname(here), "..", "..", "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Build the provenance block the CLI sends to /api/bundles/create. Reads
+ * hostname, session name (from canonical OPENRIG_SESSION_NAME env), and
+ * CLI version at call time. Operator notes come from the --notes flag.
+ * Daemon adds daemonVersion server-side.
+ */
+function buildClientProvenance(notes: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {
+    sourceHost: os.hostname(),
+    cliVersion: getCliVersion(),
+  };
+  const session = process.env.OPENRIG_SESSION_NAME;
+  if (typeof session === "string" && session.length > 0) out.authorSession = session;
+  if (typeof notes === "string" && notes.length > 0) out.notes = notes;
+  return out;
+}
 
 export function bundleCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("bundle").description("Manage rig bundles");
@@ -26,8 +62,9 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
     .option("--bundle-version <ver>", "Bundle version", "0.1.0")
     .option("--include-packages <refs...>", "Package refs to include (default: all from spec)")
     .option("--rig-root <root>", "Root directory for pod-aware resolution")
+    .option("--notes <text>", "Operator notes captured in bundle provenance metadata")
     .option("--json", "JSON output")
-    .action(async (spec: string, opts: { output: string; name: string; bundleVersion: string; includePackages?: string[]; rigRoot?: string; json?: boolean }) => {
+    .action(async (spec: string, opts: { output: string; name: string; bundleVersion: string; includePackages?: string[]; rigRoot?: string; notes?: string; json?: boolean }) => {
       const deps = getDepsF();
       const client = await getClient(deps);
       if (!client) { process.exitCode = 1; return; }
@@ -36,6 +73,7 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
         specPath: spec, bundleName: opts.name, bundleVersion: opts.bundleVersion, outputPath: opts.output,
         includePackages: opts.includePackages,
         rigRoot: opts.rigRoot ? nodePath.resolve(opts.rigRoot) : undefined,
+        provenance: buildClientProvenance(opts.notes),
       });
 
       if (opts.json) {

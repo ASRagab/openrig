@@ -211,4 +211,66 @@ describe("Bundle CLI", () => {
     expect(createBody).toBeTruthy();
     expect(createBody!["rigRoot"]).toMatch(/\/my\/project/);
   });
+
+  // Item 1 / slice-05: --notes flag is captured into provenance in the request body
+  it("bundle create --notes wires the operator note into provenance.notes in the request body", async () => {
+    capturedCreateBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "create", "/tmp/rig.yaml",
+        "-o", "/tmp/test.rigbundle",
+        "--notes", "checkpoint-2-part-3 fixture",
+      ]);
+    });
+    const createBody = capturedCreateBodies[capturedCreateBodies.length - 1];
+    expect(createBody).toBeTruthy();
+    const provenance = createBody!["provenance"] as Record<string, unknown> | undefined;
+    expect(provenance).toBeTruthy();
+    expect(provenance!["notes"]).toBe("checkpoint-2-part-3 fixture");
+  });
+
+  // Item 1 / slice-05: provenance auto-includes hostname + cliVersion at invoke time
+  it("bundle create automatically includes hostname + cliVersion in provenance (no flag needed)", async () => {
+    capturedCreateBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "create", "/tmp/rig.yaml",
+        "-o", "/tmp/test.rigbundle",
+      ]);
+    });
+    const createBody = capturedCreateBodies[capturedCreateBodies.length - 1];
+    expect(createBody).toBeTruthy();
+    const provenance = createBody!["provenance"] as Record<string, unknown> | undefined;
+    expect(provenance).toBeTruthy();
+    // hostname and cliVersion auto-populate (real os.hostname() + CLI package.json read)
+    expect(typeof provenance!["sourceHost"]).toBe("string");
+    expect((provenance!["sourceHost"] as string).length).toBeGreaterThan(0);
+    expect(typeof provenance!["cliVersion"]).toBe("string");
+    expect((provenance!["cliVersion"] as string).length).toBeGreaterThan(0);
+    // notes is undefined when --notes not passed (no empty string sent)
+    expect(provenance!["notes"]).toBeUndefined();
+  });
+
+  // Item 1 / slice-05: authorSession populates when OPENRIG_SESSION_NAME env is set
+  it("bundle create includes authorSession when OPENRIG_SESSION_NAME env is set", async () => {
+    capturedCreateBodies = [];
+    const origEnv = process.env.OPENRIG_SESSION_NAME;
+    process.env.OPENRIG_SESSION_NAME = "velocity-driver@openrig-velocity";
+    try {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync([
+          "node", "rig", "bundle", "create", "/tmp/rig.yaml",
+          "-o", "/tmp/test.rigbundle",
+        ]);
+      });
+    } finally {
+      if (origEnv === undefined) delete process.env.OPENRIG_SESSION_NAME;
+      else process.env.OPENRIG_SESSION_NAME = origEnv;
+    }
+    const createBody = capturedCreateBodies[capturedCreateBodies.length - 1];
+    expect(createBody).toBeTruthy();
+    const provenance = createBody!["provenance"] as Record<string, unknown> | undefined;
+    expect(provenance).toBeTruthy();
+    expect(provenance!["authorSession"]).toBe("velocity-driver@openrig-velocity");
+  });
 });
