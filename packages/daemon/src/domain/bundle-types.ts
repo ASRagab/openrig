@@ -1,5 +1,88 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
+// -- Shared types --
+
+/**
+ * Provenance block — attribution metadata for a bundle artifact. All fields
+ * optional for backward compat; bundles without provenance install unchanged.
+ * Captured by the bundle-assembler at create time; surfaced in inspect output
+ * and audit-trail records. Not cryptographically signed at this stage.
+ */
+export interface BundleProvenance {
+  /** ISO timestamp; mirrors root createdAt at create time. */
+  createdAt?: string;
+  /** os.hostname() of the host that ran rig bundle create. */
+  sourceHost?: string;
+  /** Canonical session name of the creator (e.g. velocity-driver@openrig-velocity). */
+  authorSession?: string;
+  /** ULID of the source rig, if creating from a live rig. */
+  sourceRigId?: string;
+  /** Name of the source rig, if creating from a live rig. */
+  sourceRigName?: string;
+  /** Daemon version at create time (e.g. 0.3.2). */
+  daemonVersion?: string;
+  /** CLI version at create time (e.g. 0.3.2). */
+  cliVersion?: string;
+  /** Operator-authored notes from the --notes flag on rig bundle create. */
+  notes?: string;
+}
+
+const PROVENANCE_STRING_FIELDS = [
+  "created_at",
+  "source_host",
+  "author_session",
+  "source_rig_id",
+  "source_rig_name",
+  "daemon_version",
+  "cli_version",
+  "notes",
+] as const;
+
+/** Validate optional provenance block. Appends to errors if present-but-malformed. */
+function validateProvenanceBlock(raw: unknown, errors: string[]): void {
+  if (raw === undefined) return;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    errors.push("provenance must be an object");
+    return;
+  }
+  const p = raw as Record<string, unknown>;
+  for (const field of PROVENANCE_STRING_FIELDS) {
+    if (field in p && typeof p[field] !== "string") {
+      errors.push(`provenance.${field} must be a string`);
+    }
+  }
+}
+
+/** Serialize a typed BundleProvenance to the snake_case YAML record shape. */
+function provenanceToYamlRecord(p: BundleProvenance): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (p.createdAt !== undefined) out["created_at"] = p.createdAt;
+  if (p.sourceHost !== undefined) out["source_host"] = p.sourceHost;
+  if (p.authorSession !== undefined) out["author_session"] = p.authorSession;
+  if (p.sourceRigId !== undefined) out["source_rig_id"] = p.sourceRigId;
+  if (p.sourceRigName !== undefined) out["source_rig_name"] = p.sourceRigName;
+  if (p.daemonVersion !== undefined) out["daemon_version"] = p.daemonVersion;
+  if (p.cliVersion !== undefined) out["cli_version"] = p.cliVersion;
+  if (p.notes !== undefined) out["notes"] = p.notes;
+  return out;
+}
+
+/** Normalize raw provenance to typed BundleProvenance. Returns undefined when absent or empty. */
+function normalizeProvenanceBlock(raw: unknown): BundleProvenance | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const p = raw as Record<string, unknown>;
+  const result: BundleProvenance = {};
+  if (typeof p["created_at"] === "string") result.createdAt = p["created_at"];
+  if (typeof p["source_host"] === "string") result.sourceHost = p["source_host"];
+  if (typeof p["author_session"] === "string") result.authorSession = p["author_session"];
+  if (typeof p["source_rig_id"] === "string") result.sourceRigId = p["source_rig_id"];
+  if (typeof p["source_rig_name"] === "string") result.sourceRigName = p["source_rig_name"];
+  if (typeof p["daemon_version"] === "string") result.daemonVersion = p["daemon_version"];
+  if (typeof p["cli_version"] === "string") result.cliVersion = p["cli_version"];
+  if (typeof p["notes"] === "string") result.notes = p["notes"];
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 // -- Pod-aware bundle types (AgentSpec reboot) --
 
 export interface PodBundleAgentImportEntry {
@@ -28,6 +111,7 @@ export interface PodBundleManifest {
   agents: PodBundleAgentEntry[];
   cultureFile?: string;
   integrity?: BundleIntegrity;
+  provenance?: BundleProvenance;
 }
 
 export function validatePodBundleManifest(raw: unknown): { valid: boolean; errors: string[] } {
@@ -53,6 +137,8 @@ export function validatePodBundleManifest(raw: unknown): { valid: boolean; error
       if (typeof a["hash"] !== "string" || !a["hash"]) errors.push(`agents[${i}].hash is required`);
     }
   }
+
+  validateProvenanceBlock(m["provenance"], errors);
 
   return { valid: errors.length === 0, errors };
 }
@@ -81,6 +167,7 @@ export function serializePodBundleManifest(manifest: PodBundleManifest): string 
   };
   if (manifest.cultureFile) doc["culture_file"] = manifest.cultureFile;
   if (manifest.integrity) doc["integrity"] = { algorithm: manifest.integrity.algorithm, files: manifest.integrity.files };
+  if (manifest.provenance) doc["provenance"] = provenanceToYamlRecord(manifest.provenance);
   return stringifyYaml(doc);
 }
 
@@ -116,6 +203,7 @@ export interface LegacyBundleManifest {
   rigSpec: string;
   packages: LegacyBundlePackageEntry[];
   integrity?: BundleIntegrity;
+  provenance?: BundleProvenance;
 }
 
 /** Validation options */
@@ -206,6 +294,8 @@ export function validateLegacyBundleManifest(
     }
   }
 
+  validateProvenanceBlock(m["provenance"], errors);
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -247,6 +337,9 @@ export function normalizeLegacyBundleManifest(raw: unknown): LegacyBundleManifes
     };
   }
 
+  const provenance = normalizeProvenanceBlock(m["provenance"]);
+  if (provenance) result.provenance = provenance;
+
   return result;
 }
 
@@ -273,6 +366,8 @@ export function serializeLegacyBundleManifest(manifest: LegacyBundleManifest): s
       files: manifest.integrity.files,
     };
   }
+
+  if (manifest.provenance) doc["provenance"] = provenanceToYamlRecord(manifest.provenance);
 
   return stringifyYaml(doc);
 }

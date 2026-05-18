@@ -561,6 +561,101 @@ describe("PodBundleManifest validation", () => {
     expect(imports).toHaveLength(1);
     expect(imports[0]!["name"]).toBe("lib");
   });
+
+  // Item 1 — provenance block (slice-05): backward-compat + presence + round-trip
+  it("v2: missing provenance block passes validation (backward compat)", () => {
+    const raw = {
+      schema_version: 2, name: "no-prov", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        original_ref: "local:agents/impl", hash: "abc",
+        import_entries: [],
+      }],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: full provenance block passes validation", () => {
+    const raw = {
+      schema_version: 2, name: "with-prov", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        original_ref: "local:agents/impl", hash: "abc",
+        import_entries: [],
+      }],
+      provenance: {
+        created_at: "2026-05-18T00:00:00Z",
+        source_host: "test-host.local",
+        author_session: "velocity-driver@openrig-velocity",
+        source_rig_id: "01KQEQPN4MQJN0DHBM5CQ0N8D7",
+        source_rig_name: "openrig-velocity",
+        daemon_version: "0.3.2",
+        cli_version: "0.3.2",
+        notes: "Test bundle for Item 1",
+      },
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: provenance present but not an object rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-prov", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      provenance: "string-not-object",
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("provenance"))).toBe(true);
+  });
+
+  it("v2: provenance field with wrong type rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-prov-field", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      provenance: { source_host: 12345 },
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("provenance.source_host"))).toBe(true);
+  });
+
+  it("v2: round-trip preserves provenance through serialize -> parse", () => {
+    const manifest: PodBundleManifest = {
+      schemaVersion: 2, name: "rt-prov", version: "2.0",
+      createdAt: "2026-05-18T00:00:00Z", rigSpec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        originalRef: "local:agents/impl", hash: "def",
+        importEntries: [],
+      }],
+      provenance: {
+        createdAt: "2026-05-18T00:00:00Z",
+        sourceHost: "rt-host",
+        authorSession: "velocity-driver@openrig-velocity",
+        daemonVersion: "0.3.2",
+        cliVersion: "0.3.2",
+        notes: "v2 round-trip fixture",
+      },
+    };
+    const yaml = serializePodBundleManifest(manifest);
+    expect(yaml).toContain("provenance:");
+    expect(yaml).toContain("source_host: rt-host");
+    const parsed = parsePodBundleManifest(yaml);
+    const validation = validatePodBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const m = parsed as Record<string, unknown>;
+    const prov = m["provenance"] as Record<string, unknown>;
+    expect(prov["source_host"]).toBe("rt-host");
+    expect(prov["author_session"]).toBe("velocity-driver@openrig-velocity");
+    expect(prov["daemon_version"]).toBe("0.3.2");
+    expect(prov["notes"]).toBe("v2 round-trip fixture");
+  });
 });
 
 describe("PodBundleSourceResolver", () => {

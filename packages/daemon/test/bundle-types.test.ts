@@ -7,6 +7,7 @@ import {
   serializeLegacyBundleManifest as serializeBundleManifest,
   isRelativeSafePath,
   type LegacyBundleManifest as BundleManifest,
+  type BundleProvenance,
 } from "../src/domain/bundle-types.js";
 
 const VALID_RAW = {
@@ -134,6 +135,121 @@ describe("Bundle types", () => {
     const result = validateBundleManifest(raw);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes("safe relative path"))).toBe(true);
+  });
+
+  // T12: missing provenance is valid (backward compat — pre-Item-1 bundles install)
+  it("missing provenance block passes validation (backward compat)", () => {
+    const raw = { ...VALID_RAW };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // T13: full provenance block passes validation
+  it("full provenance block passes validation", () => {
+    const raw = {
+      ...VALID_RAW,
+      provenance: {
+        created_at: "2026-05-18T00:00:00Z",
+        source_host: "test-host.local",
+        author_session: "velocity-driver@openrig-velocity",
+        source_rig_id: "01KQEQPN4MQJN0DHBM5CQ0N8D7",
+        source_rig_name: "openrig-velocity",
+        daemon_version: "0.3.2",
+        cli_version: "0.3.2",
+        notes: "Test bundle for Item 1",
+      },
+    };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // T14: partial provenance (only notes) passes validation — all fields optional
+  it("partial provenance block (only notes) passes validation", () => {
+    const raw = { ...VALID_RAW, provenance: { notes: "ad-hoc" } };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  // T15: provenance must be an object when present (not null, not array, not string)
+  it("provenance present but not an object rejected", () => {
+    const raw1 = { ...VALID_RAW, provenance: "not-an-object" };
+    const result1 = validateBundleManifest(raw1);
+    expect(result1.valid).toBe(false);
+    expect(result1.errors.some((e) => e.includes("provenance"))).toBe(true);
+
+    const raw2 = { ...VALID_RAW, provenance: [] };
+    const result2 = validateBundleManifest(raw2);
+    expect(result2.valid).toBe(false);
+    expect(result2.errors.some((e) => e.includes("provenance"))).toBe(true);
+  });
+
+  // T16: malformed provenance field type rejected (numeric created_at)
+  it("provenance field with wrong type rejected", () => {
+    const raw = { ...VALID_RAW, provenance: { created_at: 12345, source_host: "h" } };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("provenance.created_at"))).toBe(true);
+  });
+
+  // T17: round-trip preserves provenance through serialize → parse → normalize
+  it("round-trip preserves provenance through serialize → parse → normalize", () => {
+    const provenance: BundleProvenance = {
+      createdAt: "2026-05-18T12:00:00Z",
+      sourceHost: "rt-host",
+      authorSession: "velocity-driver@openrig-velocity",
+      daemonVersion: "0.3.2",
+      cliVersion: "0.3.2",
+      notes: "round-trip fixture",
+    };
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "rt-bundle",
+      version: "1.0.0",
+      createdAt: "2026-05-18T12:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [
+        { name: "pkg", version: "1.0.0", path: "packages/pkg", originalSource: "local:./pkg" },
+      ],
+      integrity: {
+        algorithm: "sha256",
+        files: { "rig.yaml": "e".repeat(64), "packages/pkg/package.yaml": "f".repeat(64) },
+      },
+      provenance,
+    };
+
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).toContain("provenance:");
+    expect(yaml).toContain("source_host: rt-host");
+    expect(yaml).toContain("notes: round-trip fixture");
+
+    const parsed = parseBundleManifest(yaml);
+    const validation = validateBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.provenance).toBeDefined();
+    expect(normalized.provenance?.sourceHost).toBe("rt-host");
+    expect(normalized.provenance?.authorSession).toBe("velocity-driver@openrig-velocity");
+    expect(normalized.provenance?.daemonVersion).toBe("0.3.2");
+    expect(normalized.provenance?.cliVersion).toBe("0.3.2");
+    expect(normalized.provenance?.notes).toBe("round-trip fixture");
+  });
+
+  // T18: missing provenance round-trips as undefined (no field in YAML)
+  it("missing provenance round-trips cleanly (no field emitted in YAML)", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "no-prov",
+      version: "1.0.0",
+      createdAt: "2026-05-18T00:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).not.toContain("provenance:");
+    const parsed = parseBundleManifest(yaml);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.provenance).toBeUndefined();
   });
 });
 
