@@ -46,6 +46,32 @@ async function withClient<T>(
   return fn(client);
 }
 
+// release-0.3.2 slice 01 BC repair — strict-int validator for
+// --max-files. Rejects `12abc`, `abc`, `0`, `-1`, etc. with a 3-part
+// fact/consequence/action error; does NOT call the daemon on invalid
+// input. Keeps positive cases (`10000`, `12`, etc.) flowing through.
+export function parseMaxFilesStrict(raw: string): number {
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    const err = new Error(
+      `--max-files must be a positive integer (got "${raw}").`,
+    ) as Error & { fact: string; consequence: string; action: string };
+    err.fact = `--max-files must be a positive integer (got "${raw}").`;
+    err.consequence = "rig workspace validate did not run; daemon was not contacted.";
+    err.action = "Pass a positive integer like --max-files 10000.";
+    throw err;
+  }
+  return Number.parseInt(raw, 10);
+}
+
+function emit3PartError(json: boolean, fact: string, consequence: string, action: string): void {
+  if (json) {
+    console.log(JSON.stringify({ ok: false, error: { fact, consequence, action } }, null, 2));
+  } else {
+    process.stderr.write(`Error: ${fact}\n${consequence}\n${action}\n`);
+  }
+  process.exitCode = 1;
+}
+
 export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
   const cmd = new Command("workspace").description(
     "PL-007 Workspace Primitive — typed-kind tooling. v0: `validate` walks a root and reports frontmatter gaps.",
@@ -78,6 +104,17 @@ export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
           json?: boolean;
         },
       ) => {
+        // HG-6 — CLI-side validation BEFORE the daemon call. Reject
+        // malformed --max-files with a 3-part error; never silently
+        // coerce `12abc` → 12.
+        let maxFiles: number;
+        try {
+          maxFiles = parseMaxFilesStrict(opts.maxFiles);
+        } catch (err) {
+          const e = err as Error & { fact?: string; consequence?: string; action?: string };
+          emit3PartError(Boolean(opts.json), e.fact ?? e.message, e.consequence ?? "", e.action ?? "");
+          return;
+        }
         const root = path.resolve(rootArg ?? process.cwd());
         const deps = getDeps();
         await withClient(deps, async (client) => {
@@ -86,7 +123,7 @@ export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
             workspaceKind: opts.kind,
             recursive: opts.recursive !== false,
             requireFrontmatter: opts.requireFrontmatter ?? false,
-            maxFiles: Number.parseInt(opts.maxFiles, 10),
+            maxFiles,
           });
           if (res.status >= 400) {
             console.error(JSON.stringify(res.data, null, 2));

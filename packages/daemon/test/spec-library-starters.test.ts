@@ -77,6 +77,74 @@ const STARTER_AGENT_SPECS = [
   "agents/orchestration/orchestrator/agent.yaml",
 ];
 
+function assertAcyclicLaunchDependencyGraph(file: string, parsed: Record<string, unknown>): void {
+  const pods = (parsed["pods"] as Array<Record<string, unknown>> | undefined) ?? [];
+  const allIds: string[] = [];
+  const inDegree: Record<string, number> = {};
+  const adjacency: Record<string, string[]> = {};
+
+  for (const pod of pods) {
+    const podId = String(pod["id"]);
+    const members = (pod["members"] as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const member of members) {
+      const qid = `${podId}.${String(member["id"])}`;
+      allIds.push(qid);
+      inDegree[qid] = 0;
+      adjacency[qid] = [];
+    }
+  }
+
+  const addDependency = (from: string, to: string) => {
+    if (!adjacency[from] || !adjacency[to]) return;
+    adjacency[from]!.push(to);
+    inDegree[to] = (inDegree[to] ?? 0) + 1;
+  };
+
+  const addEdge = (edge: Record<string, unknown>, qualify?: (id: string) => string) => {
+    const kind = String(edge["kind"]);
+    if (kind !== "delegates_to" && kind !== "spawned_by") return;
+    const rawFrom = String(edge["from"]);
+    const rawTo = String(edge["to"]);
+    const from = qualify ? qualify(rawFrom) : rawFrom;
+    const to = qualify ? qualify(rawTo) : rawTo;
+    if (kind === "delegates_to") {
+      addDependency(from, to);
+    } else {
+      addDependency(to, from);
+    }
+  };
+
+  for (const pod of pods) {
+    const podId = String(pod["id"]);
+    const edges = (pod["edges"] as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const edge of edges) {
+      addEdge(edge, (id) => `${podId}.${id}`);
+    }
+  }
+
+  const edges = (parsed["edges"] as Array<Record<string, unknown>> | undefined) ?? [];
+  for (const edge of edges) {
+    addEdge(edge);
+  }
+
+  const queue = allIds.filter((id) => inDegree[id] === 0).sort();
+  const visited: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    visited.push(current);
+    for (const next of (adjacency[current] ?? []).sort()) {
+      inDegree[next] = (inDegree[next] ?? 1) - 1;
+      if (inDegree[next] === 0) queue.push(next);
+      queue.sort();
+    }
+  }
+
+  if (visited.length !== allIds.length) {
+    const cycled = allIds.filter((id) => !visited.includes(id));
+    throw new Error(`${file} has a launch dependency cycle among: ${cycled.join(", ")}`);
+  }
+}
+
 describe("Starter specs", () => {
   const specReviewService = new SpecReviewService();
 
@@ -200,6 +268,14 @@ describe("Starter specs", () => {
       if (result.errors.length > 0) {
         throw new Error(`Preflight failed for ${file}: ${result.errors.join("; ")}`);
       }
+    }
+  });
+
+  it("all rig specs have acyclic launch-dependency edges", () => {
+    for (const file of RIG_SPECS) {
+      const yaml = readFileSync(join(SPECS_ROOT, file), "utf-8");
+      const parsed = parseYaml(yaml) as Record<string, unknown>;
+      assertAcyclicLaunchDependencyGraph(file, parsed);
     }
   });
 

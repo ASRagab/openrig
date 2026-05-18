@@ -58,7 +58,7 @@ edges:
   - kind: delegates_to
     from: build.builder
     to: review.reviewer
-  - kind: delegates_to
+  - kind: can_observe
     from: review.reviewer
     to: build.builder
   - kind: can_observe
