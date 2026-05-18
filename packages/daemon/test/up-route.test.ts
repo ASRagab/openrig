@@ -554,7 +554,7 @@ edges: []
       expect(r!.error.consequence).toMatch(/rig ps/);
       expect(r!.error.consequence).toMatch(/attention_required/);
       expect(r!.error.action).toMatch(/tmux attach -t dev-impl@conveyor/);
-      expect(r!.error.action).toMatch(/rig setup --cwd/);
+      expect(r!.error.action).not.toMatch(/rig setup --cwd/);
       // Singular phrasing for a 1-node case
       expect(r!.error.action).toMatch(/^Attach to the session/);
       expect(r!.attentionNodes).toHaveLength(1);
@@ -589,6 +589,37 @@ edges: []
       expect(r!.error.action).toContain("tmux attach -t dev-qa@conveyor");
       expect(r!.error.action).toContain("tmux attach -t dev-review@conveyor");
       expect(r!.attentionNodes).toHaveLength(3);
+    });
+
+    it("HG-4: multi-node action message points to attentionNodes when attach hints are abbreviated", () => {
+      const result = {
+        rigId: "rig-conveyor-4",
+        stages: [
+          {
+            stage: "import_rig",
+            status: "blocked",
+            detail: {
+              code: "attention_required",
+              message: "4 nodes require attention before becoming interactive.",
+              attentionNodes: [
+                { logicalId: "intake.lead", sessionName: "intake-lead@conveyor", reason: "trust_gate" },
+                { logicalId: "plan.planner", sessionName: "plan-planner@conveyor", reason: "trust_gate" },
+                { logicalId: "build.builder", sessionName: "build-builder@conveyor", reason: "trust_gate" },
+                { logicalId: "review.reviewer", sessionName: "review-reviewer@conveyor", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+      };
+      const r = buildAttentionResponse(result);
+      expect(r).not.toBeNull();
+      expect(r!.error.action).toMatch(/^Attach to each parked session listed in attentionNodes/);
+      expect(r!.error.action).toContain("tmux attach -t intake-lead@conveyor");
+      expect(r!.error.action).toContain("tmux attach -t plan-planner@conveyor");
+      expect(r!.error.action).toContain("tmux attach -t build-builder@conveyor");
+      expect(r!.error.action).toContain("plus 1 more listed in attentionNodes");
+      expect(r!.error.action).not.toContain("review-reviewer@conveyor");
+      expect(r!.attentionNodes).toHaveLength(4);
     });
 
     it("HG-4: when no sessionName is present on any node, action falls back to 'see rig ps' (defense)", () => {
@@ -741,7 +772,7 @@ edges: []
         expect(body.error.consequence).toMatch(/rig-stub-1/);
         expect(body.error.consequence).toMatch(/rig ps/);
         expect(body.error.action).toMatch(/tmux attach -t dev-impl@conveyor-attention-route-test/);
-        expect(body.error.action).toMatch(/rig setup --cwd/);
+        expect(body.error.action).not.toMatch(/rig setup --cwd/);
         // attentionNodes array carried through to operator
         expect(body.attentionNodes).toBeInstanceOf(Array);
         expect(body.attentionNodes).toHaveLength(1);

@@ -855,12 +855,10 @@ export class PodRigInstantiator {
     if (hasAttention && !hasLaunched) {
       // All-attention_required path — rig + sessions PRESERVED; no
       // tear-down. The operator's path: attach to a session via
-      // `tmux attach -t <session>` and answer the runtime prompt, OR
-      // pre-trust the workspace (e.g., `rig setup --cwd <cwd>`) and
-      // restore (`rig restore <rigId>`). NO new trust primitive
-      // introduced (HG-5); reuses the shipped trust-grant + resume
-      // primitives already exercised by `rig setup` + the existing
-      // restore path.
+      // `tmux attach -t <session>` and answer the runtime prompt. NO
+      // new trust primitive
+      // introduced (HG-5); reuses the runtime's shipped in-pane
+      // trust-grant prompt.
       const attentionNodes = nodeResults
         .filter((n) => n.status === "attention_required")
         .map((n) => ({

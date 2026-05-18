@@ -41,19 +41,22 @@ export function buildAttentionResponse(result: {
     attentionNodes: import("../domain/types.js").AttentionNode[];
   };
   const nodeCount = detail.attentionNodes.length;
-  const attachHints = detail.attentionNodes
+  const sessionAttachHints = detail.attentionNodes
     .filter((n) => n.sessionName)
     .map((n) => `tmux attach -t ${n.sessionName}`)
-    .slice(0, 3)
-    .join(" ; ");
+  const visibleAttachHints = sessionAttachHints.slice(0, 3).join(" ; ");
+  const remainingAttachHintCount = Math.max(0, sessionAttachHints.length - 3);
+  const attachHintText = visibleAttachHints
+    ? `${visibleAttachHints}${remainingAttachHintCount > 0 ? ` ; plus ${remainingAttachHintCount} more listed in attentionNodes` : ""}`
+    : "see `rig ps`";
   const rigIdDisplay = result.rigId ?? "(rigId unavailable)";
   return {
     error: {
       fact: detail.message,
       consequence: `Rig ${rigIdDisplay} is created and listable via \`rig ps\`. Sessions are running with startup_status='attention_required'. Tmux panes show the runtime's trust/approval prompt — answering it in-pane completes the launch.`,
       action: nodeCount === 1
-        ? `Attach to the session and answer the prompt: ${attachHints || "see `rig ps`"}. Alternatively, pre-trust the workspace (e.g., \`rig setup --cwd <workspace>\`) and re-run the launch.`
-        : `Attach to each parked session and answer its prompt: ${attachHints || "see `rig ps`"}. Alternatively, pre-trust the workspace (e.g., \`rig setup --cwd <workspace>\`) and re-run the launch.`,
+        ? `Attach to the session and answer the prompt: ${attachHintText}.`
+        : `Attach to each parked session listed in attentionNodes and answer its prompt: ${attachHintText}.`,
     },
     attentionNodes: detail.attentionNodes,
   };
