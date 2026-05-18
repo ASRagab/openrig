@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -1069,41 +1069,143 @@ describe("Bundle API routes", () => {
     }
   });
 
-  it("POST /api/bundles/install apply mode writes an audit record visible via /history (any outcome)", async () => {
+  /**
+   * Item 4 Checkpoint 5.3 B1 repair: deterministic per-branch audit-write tests.
+   * Each test stubs setup.bootstrapOrchestrator.bootstrap with vi.fn() to force
+   * a specific outcome, then asserts the exact outcome ends up in
+   * /api/bundles/history. Discriminator: disabling each branch's
+   * writeInstallAudit call must fail its paired test specifically.
+   */
+  async function runApplyAuditTest(opts: {
+    bundleName: string;
+    bootstrapResult?: unknown;
+    bootstrapThrows?: Error;
+    expectedOutcome: "success" | "failed" | "partial";
+    expectedRigId?: string;
+  }): Promise<{ records: Array<Record<string, unknown>>; total: number }> {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, `${opts.bundleName}.rigbundle`);
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${opts.bundleName}-target-`));
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ specPath, bundleName: opts.bundleName, bundleVersion: "0.1.0", outputPath: bundlePath }),
+      });
+
+      const stub = opts.bootstrapThrows
+        ? vi.fn().mockRejectedValue(opts.bootstrapThrows)
+        : vi.fn().mockResolvedValue(opts.bootstrapResult);
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+      await app.request("/api/bundles/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+      });
+
+      const history = await app.request("/api/bundles/history");
+      const body = await history.json();
+      return body;
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      fs.rmSync(targetRoot, { recursive: true, force: true });
+    }
+  }
+
+  it("POST /api/bundles/install apply / completed branch writes audit record with outcome=success", async () => {
     const origHome = process.env.OPENRIG_HOME;
-    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-apply-"));
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-completed-"));
     process.env.OPENRIG_HOME = auditHome;
     try {
-      const { specPath } = seedPackage();
-      const bundlePath = path.join(tmpDir, "apply-mode.rigbundle");
-      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "apply-target-"));
-      try {
-        await app.request("/api/bundles/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ specPath, bundleName: "apply-mode", bundleVersion: "0.1.0", outputPath: bundlePath }),
-        });
+      const body = await runApplyAuditTest({
+        bundleName: "completed-test",
+        bootstrapResult: {
+          status: "completed",
+          runId: "test-run-completed",
+          rigId: "01H000000000000000COMPL01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        },
+        expectedOutcome: "success",
+      });
+      expect(body.total).toBe(1);
+      expect(body.records[0].outcome).toBe("success");
+      expect(body.records[0].targetRigId).toBe("01H000000000000000COMPL01");
+      expect(typeof body.records[0].daemonVersion).toBe("string");
+    } finally {
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
 
-        // Apply mode triggers the audit-write at one of the completion branches
-        // (completed / partial / failed / caught-error). Outcome may vary in
-        // the test bootstrap, but the record MUST be written.
-        await app.request("/api/bundles/install", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
-        });
+  it("POST /api/bundles/install apply / partial branch writes audit record with outcome=partial", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-partial-"));
+    process.env.OPENRIG_HOME = auditHome;
+    try {
+      const body = await runApplyAuditTest({
+        bundleName: "partial-test",
+        bootstrapResult: {
+          status: "partial",
+          runId: "test-run-partial",
+          rigId: "01H000000000000000PARTI01",
+          stages: [
+            { stage: "resolve_spec", status: "ok" },
+            { stage: "instantiate_rig", status: "failed" },
+          ],
+          errors: ["partial fail"],
+        },
+        expectedOutcome: "partial",
+      });
+      expect(body.total).toBe(1);
+      expect(body.records[0].outcome).toBe("partial");
+      expect(body.records[0].targetRigId).toBe("01H000000000000000PARTI01");
+    } finally {
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
 
-        const history = await app.request("/api/bundles/history");
-        const body = await history.json();
-        expect(body.total).toBe(1);
-        const rec = body.records[0];
-        expect(typeof rec.installedAt).toBe("string");
-        expect(rec.bundlePath).toBe(bundlePath);
-        expect(["success", "failed", "partial"]).toContain(rec.outcome);
-        expect(typeof rec.daemonVersion).toBe("string");
-      } finally {
-        fs.rmSync(targetRoot, { recursive: true, force: true });
-      }
+  it("POST /api/bundles/install apply / failed-result branch writes audit record with outcome=failed", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-failed-"));
+    process.env.OPENRIG_HOME = auditHome;
+    try {
+      const body = await runApplyAuditTest({
+        bundleName: "failed-result-test",
+        bootstrapResult: {
+          status: "failed",
+          runId: "test-run-failed",
+          stages: [{ stage: "resolve_spec", status: "failed" }],
+          errors: ["resolve failed"],
+        },
+        expectedOutcome: "failed",
+      });
+      expect(body.total).toBe(1);
+      expect(body.records[0].outcome).toBe("failed");
+    } finally {
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install apply / thrown-error branch writes audit record with outcome=failed", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-audit-thrown-"));
+    process.env.OPENRIG_HOME = auditHome;
+    try {
+      const body = await runApplyAuditTest({
+        bundleName: "thrown-test",
+        bootstrapThrows: new Error("simulated bootstrap explosion"),
+        expectedOutcome: "failed",
+      });
+      expect(body.total).toBe(1);
+      expect(body.records[0].outcome).toBe("failed");
     } finally {
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
