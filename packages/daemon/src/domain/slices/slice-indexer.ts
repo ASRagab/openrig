@@ -93,6 +93,11 @@ export interface SliceListEntry {
   workflowSpec: WorkflowSpecRef | null;
   status: SliceStatus;
   rawStatus: string | null;
+  /** OPR.0.3.2.17 — frontmatter `description` / `summary` from the
+   *  slice's primary doc (README/IMPLEMENTATION-PRD/PROGRESS). Used by
+   *  the storytelling adapter as the ConceptCard.oneLiner for
+   *  `rawStatus === "candidate"` slices. null when absent. */
+  description: string | null;
   qitemCount: number;
   hasProofPacket: boolean;
   lastActivityAt: string | null;
@@ -299,6 +304,12 @@ export class SliceIndexer {
       workflowSpec: parseWorkflowSpecRef(frontmatter["workflow_spec"]),
       status,
       rawStatus: (frontmatter["status"] as string | undefined) ?? null,
+      // OPR.0.3.2.17 — surface frontmatter `description` (or `summary`
+      // fallback) so the storytelling adapter can use it as the
+      // ConceptCard.oneLiner without a separate detail fetch. The
+      // detail endpoint stays the source of truth for full body
+      // content; this is the short-form summary mirror.
+      description: extractDescription(frontmatter),
       qitemCount: qitemIds.length,
       hasProofPacket: proofPacket !== null,
       lastActivityAt,
@@ -670,6 +681,23 @@ export function parseFrontmatter(content: string): Record<string, unknown> {
  *  missing, non-string, or doesn't match the `<name>@<version>` shape.
  *  Exported so the missions route can reuse the same parser on the
  *  mission README's frontmatter. */
+/**
+ * OPR.0.3.2.17 — extract a short description from slice frontmatter.
+ * Tries `description` first, then `summary`. Returns null when both
+ * are absent or non-string. Whitespace trimmed; empty strings become
+ * null so the adapter's graceful-empty fallback fires.
+ */
+export function extractDescription(frontmatter: Record<string, unknown>): string | null {
+  for (const key of ["description", "summary"]) {
+    const v = frontmatter[key];
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return null;
+}
+
 export function parseWorkflowSpecRef(raw: unknown): WorkflowSpecRef | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();

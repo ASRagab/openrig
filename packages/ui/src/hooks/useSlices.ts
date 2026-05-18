@@ -18,6 +18,11 @@ export interface SliceListEntry {
   railItem: string | null;
   status: SliceStatus;
   rawStatus: string | null;
+  /** OPR.0.3.2.17 — short description from slice frontmatter
+   *  (description/summary fallback). Used by the storytelling adapter
+   *  as ConceptCard.oneLiner for `rawStatus === "candidate"` slices.
+   *  null when absent. */
+  description?: string | null;
   qitemCount: number;
   hasProofPacket: boolean;
   lastActivityAt: string | null;

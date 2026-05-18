@@ -522,4 +522,49 @@ describe("PL-slice-story-view-v0 SliceIndexer", () => {
       expect(indexer.list()).toHaveLength(2);
     });
   });
+
+  // OPR.0.3.2.17 — SliceListEntry surfaces frontmatter `description`
+  // so the storytelling adapter can use it as ConceptCard.oneLiner
+  // for `rawStatus === "candidate"` slices. Mapping: description first,
+  // summary fallback, null when both absent.
+  describe("OPR.0.3.2.17 — frontmatter description exposed on SliceListEntry", () => {
+    it("description: <text> populates SliceListEntry.description", () => {
+      writeSlice(slicesRoot, "concept-restore", {
+        "README.md": "---\nstatus: candidate\ndescription: First-class restore packet.\n---\n# Restore",
+      });
+      const indexer = new SliceIndexer({ slicesRoot, dogfoodEvidenceRoot: null, db });
+      const entries = indexer.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.description).toBe("First-class restore packet.");
+      expect(entries[0]!.rawStatus).toBe("candidate");
+    });
+
+    it("summary: <text> is the fallback when description is absent", () => {
+      writeSlice(slicesRoot, "concept-with-summary", {
+        "README.md": "---\nstatus: candidate\nsummary: Falls back to summary.\n---\n# Slice",
+      });
+      const indexer = new SliceIndexer({ slicesRoot, dogfoodEvidenceRoot: null, db });
+      const entries = indexer.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.description).toBe("Falls back to summary.");
+    });
+
+    it("description=null when both description and summary are absent", () => {
+      writeSlice(slicesRoot, "no-desc", {
+        "README.md": "---\nstatus: candidate\n---\n# No desc",
+      });
+      const indexer = new SliceIndexer({ slicesRoot, dogfoodEvidenceRoot: null, db });
+      const entries = indexer.list();
+      expect(entries[0]!.description).toBeNull();
+    });
+
+    it("empty/whitespace-only description value is normalized to null (graceful-empty input)", () => {
+      writeSlice(slicesRoot, "empty-desc", {
+        "README.md": "---\nstatus: candidate\ndescription: '   '\n---\n# Slice",
+      });
+      const indexer = new SliceIndexer({ slicesRoot, dogfoodEvidenceRoot: null, db });
+      const entries = indexer.list();
+      expect(entries[0]!.description).toBeNull();
+    });
+  });
 });

@@ -178,4 +178,33 @@ describe("StorytellingFeed — composition", () => {
     const { getByTestId } = render(<StorytellingFeed items={[]} />);
     expect(getByTestId("storytelling-feed-empty").textContent).toContain("No items");
   });
+
+  // OPR.0.3.2.17 — StorytellingFeed switch carries the concept branch
+  // (previously stripped at 0.3.1). Renders ConceptCard when adapter
+  // emits kind:"concept". HG-6 fail-first: if the switch loses the
+  // concept branch (silent regression), this test FAILS — no concept
+  // testid is found in the DOM.
+  it("OPR.0.3.2.17: renders a ConceptCard when items include kind:'concept' (HG-6 fail-first)", () => {
+    const items: FeedCardItem[] = [
+      {
+        kind: "concept",
+        source: { sliceId: "concept-restore-packet", title: "Restore packet primitive", oneLiner: "Shaped candidate." },
+      },
+    ];
+    const { getByTestId } = render(<StorytellingFeed items={items} />);
+    expect(getByTestId("feed-card-concept-concept-restore-packet")).toBeTruthy();
+  });
+
+  it("OPR.0.3.2.17: ConceptCard renders alongside the existing 4 card kinds (HG-5 no regression)", () => {
+    const items: FeedCardItem[] = [
+      { kind: "shipped",  source: { sliceId: "a", title: "A", oneLiner: "x" } },
+      { kind: "incident", source: { sliceId: "b", title: "B", oneLiner: "x", status: "info" } },
+      { kind: "progress", source: { missionId: "m", title: "M", oneLiner: "x", percent: 50 } },
+      { kind: "approval", source: { qitemId: "q1", title: "Approve", oneLiner: "x", drillInHref: "/for-you" } },
+      { kind: "concept",  source: { sliceId: "c1", title: "Concept", oneLiner: "Shaped." } },
+    ];
+    const { container } = render(<StorytellingFeed items={items} />);
+    expect(container.querySelectorAll("[data-testid^='feed-card-']").length).toBeGreaterThanOrEqual(5);
+    expect(container.querySelector("[data-testid='feed-card-concept-c1']")).toBeTruthy();
+  });
 });

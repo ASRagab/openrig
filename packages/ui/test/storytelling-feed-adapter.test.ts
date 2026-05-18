@@ -189,14 +189,99 @@ describe("buildStorytellingFeedItems — production adapter", () => {
     expect(items).toEqual([]);
   });
 
-  it("never emits concept-kind items — ConceptCard is deferred to a 0.3.2 slice", () => {
+  // OPR.0.3.2.17 — ConceptCard data source (replacing the 0.3.1 deferred
+  // pin; HG-6 fail-first discriminator).
+  //
+  // Source: shaped backlog candidates — SliceListEntry rows where
+  //   rawStatus === "candidate" (case-insensitive).
+  // Mapping: sliceId ← name; title ← displayName (or name); oneLiner ←
+  //   frontmatter description (passed through as the adapter row's
+  //   `description` field).
+  // Graceful-empty (HG-2): no candidate rows → no concept items, no
+  //   error; other kinds unaffected.
+
+  it("HG-1: rawStatus='candidate' slice emits a ConceptCard via the adapter (fail-first; passes only when concept branch is wired)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [
+        {
+          name: "concept-restore-packet",
+          missionId: "backlog",
+          displayName: "Restore packet primitive",
+          status: "draft",
+          rawStatus: "candidate",
+          description: "First-class restore packet so seats survive compaction.",
+        },
+      ],
+    );
+    const concepts = items.filter((i) => i.kind === "concept");
+    expect(concepts).toHaveLength(1);
+    if (concepts[0]!.kind === "concept") {
+      expect(concepts[0]!.source.sliceId).toBe("concept-restore-packet");
+      expect(concepts[0]!.source.title).toBe("Restore packet primitive");
+      expect(concepts[0]!.source.oneLiner).toBe("First-class restore packet so seats survive compaction.");
+    }
+  });
+
+  it("HG-1: rawStatus='Candidate' (mixed case) still emits ConceptCard", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "Candidate", description: "d" }],
+    );
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(1);
+  });
+
+  it("HG-2 graceful-empty: zero candidate rows → no concept items, no error, other kinds still render", () => {
     const items = buildStorytellingFeedItems(
       [{ name: "m1", path: "missions/m1" }],
-      [{ name: "s1", status: "shipped" }, { name: "s2", status: "blocked" }],
+      [
+        { name: "s-shipped", status: "shipped" },
+        { name: "s-blocked", status: "blocked" },
+        // no rawStatus='candidate' row anywhere
+      ],
       undefined,
       [makeApprovalFeedCard({ qitemId: "q1" })],
     );
-    expect(items.some((i) => i.kind === "concept")).toBe(false);
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(0);
+    expect(items.filter((i) => i.kind === "progress")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "shipped")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "incident")).toHaveLength(1);
+    expect(items.filter((i) => i.kind === "approval")).toHaveLength(1);
+  });
+
+  it("HG-4 cap: ConceptCard items capped at 2 per the curated-band rule", () => {
+    const slices = Array.from({ length: 5 }).map((_, i) => ({
+      name: `cand-${i}`,
+      missionId: "backlog",
+      displayName: `Candidate ${i}`,
+      status: "draft" as const,
+      rawStatus: "candidate",
+      description: `desc-${i}`,
+    }));
+    const items = buildStorytellingFeedItems([], slices);
+    expect(items.filter((i) => i.kind === "concept")).toHaveLength(2);
+  });
+
+  it("HG-5 no regression: candidate slices do NOT also emit shipped/incident items (concept routing is exclusive)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "candidate", description: "d" }],
+    );
+    // Concept-routed rows must not double-count into shipped/incident.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe("concept");
+  });
+
+  it("ConceptCardSource oneLiner falls back to a stable placeholder when description is missing (defense; PRD allows graceful)", () => {
+    const items = buildStorytellingFeedItems(
+      [],
+      [{ name: "c1", missionId: "backlog", displayName: "c1", status: "draft", rawStatus: "candidate" }],
+    );
+    expect(items).toHaveLength(1);
+    if (items[0]!.kind === "concept") {
+      expect(typeof items[0]!.source.oneLiner).toBe("string");
+      expect(items[0]!.source.oneLiner.length).toBeGreaterThan(0);
+    }
   });
 
   it("falls back to FeedCard.id when payload has no qitemId/qitem_id key", () => {

@@ -501,18 +501,34 @@ export interface AdapterSliceRow {
   displayName?: string;
   status?: string | null;
   lastActivityAt?: string | null;
+  /**
+   * OPR.0.3.2.17 — raw frontmatter `status` value (preserved alongside
+   * the bucketed `status`) so the adapter can route candidate slices
+   * to ConceptCard without changing the daemon's bucketing logic.
+   * Filled from SliceListEntry.rawStatus when callers thread sliceRows
+   * through.
+   */
+  rawStatus?: string | null;
+  /**
+   * OPR.0.3.2.17 — frontmatter `description` for the slice. Used as
+   * ConceptCard.oneLiner when the slice routes via `rawStatus ===
+   * "candidate"`. Absent values fall back to a stable placeholder so
+   * the band renders gracefully.
+   */
+  description?: string | null;
 }
-// Wired card kinds (post 0.3.1 storytelling-adapter wire-up):
+// Wired card kinds (post OPR.0.3.2.17 — ConceptCard data source wired):
 //   - progress  ← missions (mapped from useMissionDiscovery rows)
 //   - shipped   ← slices with status shipped/complete/done
 //   - incident  ← slices with status blocked/failed/danger/etc.
 //   - approval  ← FeedCard items with kind === "approval" (from
 //                 useActivityFeed → classifyFeed) — caller threads in
 //                 via the 4th arg.
-// Deferred: concept — ConceptCard component is preserved for a 0.3.2
-// slice that picks a deliberate data source; until then the adapter
-// never emits concept items and the production switch in
-// StorytellingFeed has no concept branch.
+//   - concept   ← slices with rawStatus === "candidate" (shaped backlog
+//                 items): title ← displayName; oneLiner ← description;
+//                 drillInHref ← /project/slice/<name>. Capped at 2
+//                 per the curated-band rule (HG-4). Graceful-empty
+//                 when no candidate rows exist (HG-2).
 export function buildStorytellingFeedItems(
   missions: AdapterMissionRow[],
   slices: AdapterSliceRow[],
@@ -562,7 +578,36 @@ export function buildStorytellingFeedItems(
   const eligibleSlices = (slices ?? []).filter((slice) => {
     return !slice.missionId || !hiddenMissionIds.has(slice.missionId);
   });
-  for (const slice of eligibleSlices.slice(0, 3)) {
+
+  // OPR.0.3.2.17 — ConceptCard routing.
+  // Partition candidates out of the normal status-bucket routing so a
+  // single slice is routed to exactly ONE kind (HG-5: no double-count).
+  // Candidates are shaped-but-not-promoted backlog items; the curated
+  // band caps at 2 (HG-4). Graceful-empty (HG-2): when no candidate
+  // rows are present this branch contributes zero items.
+  const candidateSlices = eligibleSlices.filter(
+    (s) => (s.rawStatus ?? "").toLowerCase() === "candidate",
+  );
+  const nonCandidateSlices = eligibleSlices.filter(
+    (s) => (s.rawStatus ?? "").toLowerCase() !== "candidate",
+  );
+  for (const slice of candidateSlices.slice(0, 2)) {
+    const title = slice.displayName || slice.name;
+    const oneLinerRaw = (slice.description ?? "").trim();
+    const oneLiner = oneLinerRaw.length > 0
+      ? oneLinerRaw
+      : "Shaped candidate — open to explore the proposed change.";
+    items.push({
+      kind: "concept",
+      source: {
+        sliceId: slice.name,
+        title,
+        oneLiner,
+      },
+    });
+  }
+
+  for (const slice of nonCandidateSlices.slice(0, 3)) {
     const oneLiner = slice.lastActivityAt
       ? `Last activity ${slice.lastActivityAt}`
       : `Slice in ${slice.status ?? "unknown"} state`;
@@ -634,13 +679,15 @@ export function StorytellingFeed({
   return (
     <div data-testid="storytelling-feed" className="flex flex-col gap-4">
       {items.map((item, i) => {
-        // ConceptCard is preserved as a component but is not reachable
-        // here — the adapter never emits `kind: "concept"`. A 0.3.2
-        // slice will pick a data source and re-add the branch.
+        // OPR.0.3.2.17 — ConceptCard branch re-added. Adapter emits
+        // `kind: "concept"` for shaped backlog candidates
+        // (rawStatus === "candidate"); the switch routes them to
+        // ConceptCard. Other 4 kinds unchanged (HG-5).
         if (item.kind === "shipped")  return <ShippedCard key={i}  source={item.source} />;
         if (item.kind === "incident") return <IncidentCard key={i} source={item.source} />;
         if (item.kind === "progress") return <ProgressCard key={i} source={item.source} onMarkComplete={onMarkMissionComplete} />;
         if (item.kind === "approval") return <ApprovalCard key={i} source={item.source} />;
+        if (item.kind === "concept")  return <ConceptCard key={i}  source={item.source} />;
         return null;
       })}
     </div>
