@@ -18,6 +18,27 @@ import type { OutboxHandler } from "../domain/outbox-handler.js";
  * Hot-potato strict-rejection happens in the domain layer; routes surface
  * structured errors with the validReasons enum so CLIs can render help.
  */
+
+/**
+ * OPR.0.3.2.20 — attention-class predicate for the `/list?attention=1`
+ * filter. Mirrors the mission-control read layer's semantics so the
+ * For You Action-required + Approval lenses agree with the
+ * single-pane view:
+ *
+ *   - approval class  → tier === "human-gate"
+ *   - action-required → destinationSession matches
+ *                       /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/
+ *
+ * Exported so the predicate is a discrete, testable surface. The route
+ * layer composes this with the open-state default so only unresolved
+ * items appear — closed/done attention items are not surfaced.
+ */
+export function isAttentionItem(q: { tier: string | null; destinationSession: string }): boolean {
+  if (q.tier === "human-gate") return true;
+  return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(q.destinationSession ?? "");
+}
+
+
 export function queueRoutes(): Hono {
   const app = new Hono();
 
@@ -302,15 +323,69 @@ export function queueRoutes(): Hono {
   });
 
   // GET /list — list with filters. MUST precede /:qitemId so the literal path wins.
+  //
+  // OPR.0.3.2.20 — `?attention=1` filter for the For You priority
+  // windowing slice. Returns OPEN attention-class qitems (the durable
+  // source of truth for the UI Action-required + Approval lenses) so
+  // those surfaces don't depend on the lossy ephemeral client event
+  // FIFO. Class membership matches the mission-control read layer
+  // semantics: tier='human-gate' OR destination matches
+  // /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/. Open state defaults
+  // to pending|in-progress|blocked (callers can still override via
+  // `state=...`). Composable with destinationSession/sourceSession/
+  // targetRepo/limit.
   app.get("/list", (c) => {
     const destinationSession = c.req.query("destinationSession") || undefined;
     const sourceSession = c.req.query("sourceSession") || undefined;
     const stateRaw = c.req.query("state") || undefined;
     const targetRepo = c.req.query("targetRepo") || undefined;
-    const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
-    const state = stateRaw ? (stateRaw.split(",") as QueueState[]) : undefined;
-    const items = getRepo(c).list({ destinationSession, sourceSession, state, targetRepo, limit });
-    return c.json(items);
+    const userLimit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+    const attention = c.req.query("attention") === "1";
+
+    const state: QueueState[] | undefined = stateRaw
+      ? (stateRaw.split(",") as QueueState[])
+      : attention
+        ? ["pending", "in-progress", "blocked"]
+        : undefined;
+
+    if (!attention) {
+      const items = getRepo(c).list({
+        destinationSession,
+        sourceSession,
+        state,
+        targetRepo,
+        limit: userLimit,
+      });
+      return c.json(items);
+    }
+
+    // OPR.0.3.2.20 — attention path goes through
+    // QueueRepository.listAttention, which pushes the attention
+    // predicate INTO the SQL WHERE clause so the LIMIT applies AFTER
+    // attention filtering. Window-independent by construction: an
+    // old human-gate item is never evicted by routine open qitems,
+    // however many of them land after it (guard re-verify
+    // qitem-20260518190827 BLOCKER 1). The earlier fetch-then-filter
+    // shape (ATTENTION_FETCH_BOUND) is gone — the LIMIT bound is the
+    // user-facing one only, applied at the SQL layer post-predicate.
+    //
+    // destinationSession/sourceSession/targetRepo are composable with
+    // the attention predicate at the SQL layer (guard re-verify
+    // qitem-20260518192210 BLOCKER 1 — the previous forward-fix
+    // dropped composition). Scoped attention queries (e.g.,
+    // attention=1&destinationSession=...) return ONLY the matching
+    // attention items.
+    const items = getRepo(c).listAttention({
+      limit: userLimit,
+      state,
+      destinationSession,
+      sourceSession,
+      targetRepo,
+    });
+    // Defense-in-depth: refine with the JS predicate so the SQL
+    // LIKE superset cannot leak a malformed destination through.
+    const filtered = items.filter(isAttentionItem);
+    return c.json(filtered);
   });
 
   // GET /overdue — surfaces in-progress qitems past closure_required_at.

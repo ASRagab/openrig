@@ -9,6 +9,7 @@ import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
 import { inboxEntriesSchema } from "../src/db/migrations/026_inbox_entries.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
+import { queueTargetRepoSchema } from "../src/db/migrations/039_queue_target_repo.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { InboxHandler } from "../src/domain/inbox-handler.js";
@@ -51,6 +52,7 @@ describe("queue routes", () => {
       queueTransitionsSchema,
       inboxEntriesSchema,
       outboxEntriesSchema,
+      queueTargetRepoSchema, // OPR.0.3.2.20: required for attention=1&targetRepo=X composition tests
     ]);
     bus = new EventBus(db);
     queueRepo = new QueueRepository(db, bus);
@@ -234,6 +236,429 @@ describe("queue routes", () => {
     const res = await app.request("/api/queue/list?destinationSession=b@r");
     const data = (await res.json()) as unknown[];
     expect(data).toHaveLength(1);
+  });
+
+  // OPR.0.3.2.20 — `?attention=1` filter for the For You priority
+  // windowing slice. Returns OPEN attention-class qitems (the durable
+  // source of truth) so the UI Action-required + Approval lenses don't
+  // depend on the lossy ephemeral event FIFO. HG-4 verified against
+  // the mission-control read layer's canonical attention semantics:
+  //   - approval class: tier === "human-gate"
+  //   - action-required class: destinationSession is human-*@kernel|host
+  //   - open state: pending | in-progress | blocked
+  describe("OPR.0.3.2.20 GET /api/queue/list?attention=1 — open attention-class items", () => {
+    it("HG-4 positive (approval class): tier='human-gate' open qitem is returned", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "b@r",
+          body: "approve please",
+          tier: "human-gate",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as Array<{ tier: string | null; body: string }>;
+      expect(data).toHaveLength(1);
+      expect(data[0]!.tier).toBe("human-gate");
+    });
+
+    it("HG-4 positive (action-required class): destination=human-foo@kernel open qitem is returned", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-bob@kernel",
+          body: "needs human",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as Array<{ destinationSession: string }>;
+      expect(data).toHaveLength(1);
+      expect(data[0]!.destinationSession).toBe("human-bob@kernel");
+    });
+
+    it("HG-4 positive: destination=human@host (bare human prefix) open qitem is returned", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human@host",
+          body: "needs human attention",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as unknown[];
+      expect(data).toHaveLength(1);
+    });
+
+    it("HG-4 negative: routine pending qitem (non-attention tier + non-human destination) is NOT returned", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "b@r",
+          body: "routine work",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as unknown[];
+      expect(data).toHaveLength(0);
+    });
+
+    it("HG-4 negative: closed attention qitem (state=done) is NOT returned", async () => {
+      const create = await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-x@kernel",
+          body: "done already",
+        }),
+      });
+      const item = (await create.json()) as { qitemId: string };
+      await app.request(`/api/queue/${item.qitemId}/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actorSession: "human-x@kernel",
+          state: "done",
+          closureReason: "no-follow-on",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as unknown[];
+      expect(data).toHaveLength(0);
+    });
+
+    it("HG-5/HG-7 sane bound: ?attention=1&limit=N caps the result", async () => {
+      // Seed 5 attention-class qitems
+      for (let i = 0; i < 5; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: "a@r",
+            destinationSession: `human-${i}@kernel`,
+            body: `attn ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1&limit=3");
+      const data = (await res.json()) as unknown[];
+      expect(data.length).toBeLessThanOrEqual(3);
+    });
+
+    it("HG-2 (the headline): attention-class items survive >100 unrelated routine qitems being created (queue is durable source)", async () => {
+      // Seed ONE attention-class item first
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "b@r",
+          body: "approve me",
+          tier: "human-gate",
+        }),
+      });
+      // Then create >100 routine qitems (no attention markers); these
+      // would saturate any FIFO window in the UI but the queue is the
+      // durable source — the attention filter must still surface the
+      // human-gate item.
+      for (let i = 0; i < 110; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `routine-${i}@r`,
+            destinationSession: `other-${i}@r`,
+            body: `noise ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as Array<{ tier: string | null }>;
+      // Attention item still present despite 110 routine qitems written
+      // after it.
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      expect(data.some((q) => q.tier === "human-gate")).toBe(true);
+    });
+
+    // Guard re-verify-2 (qitem-20260518192210) BLOCKER-1: the prior
+    // forward-fix dropped destinationSession/sourceSession/targetRepo
+    // composition. The fix routes those params through listAttention
+    // into the SQL WHERE so scoped attention queries return only the
+    // matching attention items.
+
+    it("BLOCKER re-verify-2: attention=1 + destinationSession=X returns only X-scoped attention items", async () => {
+      // Seed 2 attention items at different destinations.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r1",
+          destinationSession: "human-alice@kernel",
+          body: "for alice",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r2",
+          destinationSession: "human-bob@kernel",
+          body: "for bob",
+          tier: "human-gate",
+        }),
+      });
+      // Also create a non-attention routine qitem destined to alice;
+      // it must not appear.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r1",
+          destinationSession: "human-alice@kernel",
+          state: "pending",
+          body: "another for alice",
+        }),
+      });
+
+      const res = await app.request("/api/queue/list?attention=1&destinationSession=human-alice@kernel");
+      const data = (await res.json()) as Array<{ destinationSession: string; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.destinationSession).toBe("human-alice@kernel");
+      }
+      // None of them should be for bob.
+      expect(data.some((q) => q.destinationSession === "human-bob@kernel")).toBe(false);
+    });
+
+    it("BLOCKER re-verify-2: attention=1 + sourceSession=X returns only X-sourced attention items", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor-a@r",
+          destinationSession: "human-x@kernel",
+          body: "from advisor-a",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor-b@r",
+          destinationSession: "human-y@kernel",
+          body: "from advisor-b",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1&sourceSession=advisor-a@r");
+      const data = (await res.json()) as Array<{ sourceSession: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.sourceSession).toBe("advisor-a@r");
+      }
+    });
+
+    it("BLOCKER re-verify-2: attention=1 unscoped still returns the global attention set (composition is OPT-IN, not required)", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-x@kernel",
+          body: "global x",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "b@r",
+          destinationSession: "human-y@kernel",
+          body: "global y",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as unknown[];
+      expect(data.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // Guard re-verify BLOCKER 1 (qitem-20260518190827): the prior
+    // fetch-then-filter approach (ATTENTION_FETCH_BOUND=1000 then
+    // JS filter) would have hidden an attention item behind 1001+
+    // newer routine open qitems. The fix pushes the attention
+    // predicate INTO SQL so the LIMIT applies AFTER attention
+    // filtering. This test scales the routine churn well past the
+    // old ATTENTION_FETCH_BOUND to prove window-independence by
+    // construction.
+    // Guard re-verify-3 (qitem-20260518193005) BLOCKER 1: SQL LIKE
+    // was a superset of the regex. Malformed rows like
+    // `destination_session='human-@kernel'` (empty name segment)
+    // match LIKE `human-%@kernel` but FAIL the strict regex. >LIMIT
+    // such rows could fill the SQL window pre-JS-filter and hide
+    // valid attention items behind them.
+    //
+    // Fix: SQLite function `is_human_seat_session` evaluates the
+    // exact regex in SQL — malformed rows are rejected BEFORE LIMIT.
+    it("BLOCKER re-verify-3: malformed superset rows ('human-@kernel') do NOT evict valid attention items", async () => {
+      // Seed 1 valid attention item.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r",
+          destinationSession: "human-alice@kernel",
+          body: "valid attention",
+        }),
+      });
+      // Seed 1100 malformed rows that match LIKE 'human-%@kernel' or
+      // similar but FAIL the strict regex (empty name segment;
+      // forbidden chars). Mix forms to ensure no single LIKE branch
+      // is the leak.
+      for (let i = 0; i < 1100; i++) {
+        const variant = i % 4;
+        const dest = variant === 0
+          ? "human-@kernel"          // empty segment between hyphen and @
+          : variant === 1
+            ? "human- @kernel"       // space (forbidden char) — would match LIKE 'human-%@kernel'
+            : variant === 2
+              ? "human-x:@kernel"    // colon (forbidden char)
+              : "human-x/@kernel";   // slash (forbidden char)
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `garbage-${i}@r`,
+            destinationSession: dest,
+            body: `malformed ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1&limit=100");
+      const data = (await res.json()) as Array<{ destinationSession: string; body: string }>;
+      // Valid item must surface — it is the ONLY row matching the
+      // strict regex. Malformed rows must NOT appear.
+      const valid = data.find((q) => q.destinationSession === "human-alice@kernel");
+      expect(valid).toBeDefined();
+      expect(valid!.body).toBe("valid attention");
+      // No malformed rows in the result set.
+      for (const q of data) {
+        expect(q.destinationSession).not.toBe("human-@kernel");
+        expect(q.destinationSession).not.toContain(" ");
+        expect(q.destinationSession).not.toContain(":");
+        expect(q.destinationSession).not.toContain("/");
+      }
+    });
+
+    // Guard re-verify-3 (qitem-20260518193005) BLOCKER 2: targetRepo
+    // composition was implemented in the previous forward-fix but
+    // never pinned by a test. This discriminator proves
+    // attention=1&targetRepo=X scopes the result + composes with the
+    // attention predicate at the SQL stage (LIMIT applies AFTER).
+    it("BLOCKER re-verify-3: attention=1 + targetRepo=X scopes attention to repo X", async () => {
+      // Seed attention items in different repos.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-bob@kernel",
+          body: "for repo-a",
+          targetRepo: "repo-a",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-carol@kernel",
+          body: "for repo-b",
+          targetRepo: "repo-b",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1&targetRepo=repo-a");
+      const data = (await res.json()) as Array<{ targetRepo: string | null; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.targetRepo).toBe("repo-a");
+      }
+    });
+
+    it("BLOCKER re-verify-3: targetRepo composition preserves the >1100-routine-open durability guarantee", async () => {
+      // Seed 1 attention item with targetRepo=repo-X.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-z@kernel",
+          body: "repo-X attention",
+          targetRepo: "repo-X",
+        }),
+      });
+      // 1100 newer routine open qitems in OTHER repos that would
+      // otherwise dominate the window if the targetRepo predicate
+      // were applied post-LIMIT.
+      for (let i = 0; i < 1100; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `routine-${i}@r`,
+            destinationSession: `other-${i}@r`,
+            body: `noise ${i}`,
+            targetRepo: "repo-other",
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1&targetRepo=repo-X");
+      const data = (await res.json()) as Array<{ targetRepo: string | null; body: string }>;
+      expect(data.length).toBe(1);
+      expect(data[0]!.targetRepo).toBe("repo-X");
+      expect(data[0]!.body).toBe("repo-X attention");
+    });
+
+    it("BLOCKER-1: attention item surfaces even when >1100 newer routine OPEN qitems exist (SQL predicate pushdown)", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "old@r",
+          destinationSession: "b@r",
+          body: "approve me — oldest",
+          tier: "human-gate",
+        }),
+      });
+      // 1100 routine OPEN qitems land AFTER the attention item. They
+      // each get a newer ts_created than the attention item; a
+      // fetch-then-filter with LIMIT 1000 would never return the
+      // attention item.
+      for (let i = 0; i < 1100; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `routine-${i}@r`,
+            destinationSession: `other-${i}@r`,
+            body: `noise ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as Array<{ tier: string | null; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      const found = data.find((q) => q.tier === "human-gate");
+      expect(found).toBeDefined();
+      expect(found!.body).toContain("oldest");
+    });
   });
 
   // ---- PL-004 Phase A revision (R1) route tests ----

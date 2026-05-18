@@ -90,6 +90,38 @@ export function useActivityFeed(): UseActivityFeedResult {
       queryClient.invalidateQueries({ queryKey: ["rigs", "summary"] });
       queryClient.invalidateQueries({ queryKey: ["ps"] });
     }
+
+    // OPR.0.3.2.20 — keep the For You attention surface live without
+    // hard reload. Any queue/qitem/inbox event can change the open-
+    // attention set (item created at human-gate tier, destination
+    // routed to a human seat, item claimed/closed/denied, fallback
+    // route added, closure overdue). Invalidate the durable query
+    // so useAttentionItems refetches and the lens updates within
+    // the same browser session.
+    //
+    // QA BLOCKING-A qitem-20260518195533: attention API returned the
+    // newly-created qitem immediately, but the open Approval lens
+    // did not show it until a hard reload — react-query cache
+    // wasn't invalidated on queue.created.
+    //
+    // The string-match pattern mirrors the feed-classifier's
+    // isQueueVisibilityEvent + closed-state branch. Broad-by-prefix
+    // means a future new event type (e.g., `qitem.escalated`)
+    // auto-invalidates without a code edit.
+    if (
+      event.type.startsWith("queue.")
+      || event.type.startsWith("qitem.")
+      || event.type.startsWith("inbox.")
+    ) {
+      queryClient.invalidateQueries({ queryKey: ["attention-items"] });
+      const qitemId = (event.payload["qitemId"] as string | undefined)
+        ?? (event.payload["qitem_id"] as string | undefined);
+      if (qitemId) {
+        // Already-fetched detail (useQueueItem*); invalidate so the
+        // hydrated FeedCard picks up the new state too.
+        queryClient.invalidateQueries({ queryKey: ["queue", "item", qitemId] });
+      }
+    }
   }, [queryClient]);
 
   useEffect(() => {

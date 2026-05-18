@@ -323,7 +323,15 @@ export function FeedCard({
   queueItem?: QueueItemDetail;
   proofPreview?: FeedProofPreview | null;
   actionOutcome?: FeedActionOutcome | null;
-  onDismiss?: (seq: number) => void;
+  /**
+   * OPR.0.3.2.20 — receives the FULL card on dismiss so the parent
+   * can route the dismissal to the right dismissal-set (event-seq
+   * for event-derived cards, string-id for queue-derived attention
+   * cards). The prior `(seq: number)` signature collided across all
+   * queue-derived cards (all share synthetic seq=-1) — banked guard
+   * BLOCKER qitem-20260518190827.
+   */
+  onDismiss?: (card: FeedCardModel) => void;
   /**
    * 0.3.1 demo-bug fix — fired by VerbActions on mutation success
    * so the parent (Feed.tsx) can render the ActionOutcomePanel
@@ -339,7 +347,7 @@ export function FeedCard({
     if (event.target !== event.currentTarget) return;
     if (event.key === "Backspace" || event.key === "Delete") {
       event.preventDefault();
-      onDismiss(card.source.seq);
+      onDismiss(card);
     }
   };
 
@@ -362,14 +370,14 @@ export function FeedCard({
     const rect = target.getBoundingClientRect();
     if (rect.width <= 0) return;
     if (deltaX / rect.width >= SWIPE_DISMISS_THRESHOLD) {
-      onDismiss(card.source.seq);
+      onDismiss(card);
     }
   };
 
   const handleDismissClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
     event.stopPropagation();
     if (!onDismiss) return;
-    onDismiss(card.source.seq);
+    onDismiss(card);
   };
   const qitemViewerData = qitemViewerDataFromItem(card, queueItem);
   const body = compactQueueBody(queueItem?.body || card.body);
