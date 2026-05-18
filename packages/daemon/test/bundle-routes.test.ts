@@ -820,6 +820,94 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 3 / slice-05 Checkpoint 4.2: install conflict gate. Conflict path:
+  // a running rig with the same name as the bundle's rig must produce a
+  // 3-part error response from /install BEFORE bootstrap delegation.
+  // Force-bypass path: same bundle with force=true must skip the conflict
+  // check.
+  it("POST /api/bundles/install fails with 3-part conflict error when bundle rig name collides with a running rig", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "conflict-test.rigbundle");
+
+    // Create bundle whose rig.yaml declares name 'test-rig' (matches VALID_SPEC)
+    const createRes = await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ specPath, bundleName: "conflict-test", bundleVersion: "0.1.0", outputPath: bundlePath }),
+    });
+    expect(createRes.status).toBe(201);
+
+    // Seed a running rig with the same name as the bundle's rig
+    setup.rigRepo.createRig("test-rig");
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true }),
+    });
+    expect(installRes.status).toBe(400);
+    const body = await installRes.json();
+    expect(body.error).toBe("Bundle install conflict check failed");
+    expect(Array.isArray(body.conflicts)).toBe(true);
+    expect(body.conflicts.length).toBeGreaterThan(0);
+    const rigConflict = body.conflicts.find((c: { kind: string }) => c.kind === "rig_name_collision");
+    expect(rigConflict).toBeDefined();
+    expect(rigConflict.bundleRigName).toBe("test-rig");
+    expect(typeof rigConflict.collisionWith.rigId).toBe("string");
+    expect(rigConflict.collisionWith.rigName).toBe("test-rig");
+    expect(Array.isArray(body.resolutions)).toBe(true);
+    expect(body.resolutions.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("POST /api/bundles/install with force=true bypasses the conflict check on a name collision", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "conflict-force.rigbundle");
+
+    await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ specPath, bundleName: "conflict-force", bundleVersion: "0.1.0", outputPath: bundlePath }),
+    });
+
+    setup.rigRepo.createRig("test-rig");
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true, force: true }),
+    });
+    // Conflict check was bypassed. Bootstrap may return any status; what we
+    // assert is the absence of the conflict-check failure shape.
+    if (installRes.status === 400) {
+      const body = await installRes.json();
+      expect(body.error).not.toBe("Bundle install conflict check failed");
+    }
+  });
+
+  it("POST /api/bundles/install passes the conflict check when no running rig matches the bundle's rig name", async () => {
+    const { specPath } = seedPackage();
+    const bundlePath = path.join(tmpDir, "no-conflict.rigbundle");
+
+    await app.request("/api/bundles/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ specPath, bundleName: "no-conflict", bundleVersion: "0.1.0", outputPath: bundlePath }),
+    });
+
+    // No rigs created — running set is empty
+
+    const installRes = await app.request("/api/bundles/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath, plan: true }),
+    });
+    // Must NOT be the conflict-fail shape. Bootstrap may return any status.
+    if (installRes.status === 400) {
+      const body = await installRes.json();
+      expect(body.error).not.toBe("Bundle install conflict check failed");
+    }
+  });
+
   // T11: Install concurrency lock
   it("concurrent bundle install returns 409", async () => {
     // Acquire lock manually

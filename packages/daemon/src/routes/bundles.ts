@@ -17,6 +17,8 @@ import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest, normalizeProvenanceBlock, normalizeCompatibilityBlock } from "../domain/bundle-types.js";
 import type { PodBundleManifest, BundleProvenance, BundleCompatibility } from "../domain/bundle-types.js";
 import { fileURLToPath } from "node:url";
+import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-conflict-detector.js";
+import type { RigRepository } from "../domain/rig-repository.js";
 
 /**
  * Read the daemon's own package.json version at call time (Item 1 / slice-05).
@@ -105,14 +107,46 @@ function checkBundleCompatibility(
  * / parse failures; the caller converts these into a 3-part 400 response.
  */
 async function extractManifestForCompatCheck(bundlePath: string): Promise<Record<string, unknown>> {
-  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-compat-"));
+  const meta = await extractInstallTimeMetadata(bundlePath);
+  return meta.bundleManifest;
+}
+
+/**
+ * Extract both the bundle.yaml manifest AND the rig name from the bundle's
+ * rig.yaml in one safe pass (Item 3 / slice-05 Checkpoint 4.2). The /install
+ * handler uses bundleManifest for the compat check (Item 2) and rigName for
+ * the conflict check (Item 3). Reuses unpack — single trust boundary.
+ */
+async function extractInstallTimeMetadata(bundlePath: string): Promise<{
+  bundleManifest: Record<string, unknown>;
+  rigName: string | undefined;
+}> {
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-meta-"));
   try {
     await unpack(bundlePath, tmpDir);
     const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
     if (!fs.existsSync(manifestPath)) throw new Error("Bundle missing bundle.yaml");
     const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
-    const parsed = parsePodBundleManifest(manifestYaml);
-    return parsed as Record<string, unknown>;
+    const bundleManifest = parsePodBundleManifest(manifestYaml) as Record<string, unknown>;
+    // Rig name lives in the bundle's rig.yaml (path referenced by bundle.yaml's
+    // rig_spec field; defaults to rig.yaml for legacy bundles). Read + parse;
+    // missing-or-malformed rig name leaves rigName undefined which the detector
+    // fail-opens on (no rig name to compare).
+    let rigName: string | undefined;
+    const rigSpecRel = typeof bundleManifest["rig_spec"] === "string" ? bundleManifest["rig_spec"] : "rig.yaml";
+    const rigSpecPath = nodePath.join(tmpDir, rigSpecRel);
+    if (fs.existsSync(rigSpecPath)) {
+      try {
+        const rigYaml = fs.readFileSync(rigSpecPath, "utf-8");
+        const rigParsed = parsePodBundleManifest(rigYaml) as Record<string, unknown>;
+        if (typeof rigParsed["name"] === "string" && rigParsed["name"].length > 0) {
+          rigName = rigParsed["name"];
+        }
+      } catch {
+        // rig.yaml malformed — leave rigName undefined; conflict check skips
+      }
+    }
+    return { bundleManifest, rigName };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -160,6 +194,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     eventBus: c.get("eventBus" as never) as EventBus,
     bootstrapOrchestrator: c.get("bootstrapOrchestrator" as never) as BootstrapOrchestrator,
     bootstrapRepo: c.get("bootstrapRepo" as never) as BootstrapRepository,
+    rigRepo: c.get("rigRepo" as never) as RigRepository | undefined,
   };
 }
 
@@ -426,7 +461,7 @@ bundleRoutes.post("/inspect", async (c) => {
 
 // POST /api/bundles/install — reuses full bootstrap lifecycle
 bundleRoutes.post("/install", async (c) => {
-  const { bootstrapOrchestrator, bootstrapRepo, eventBus } = getDeps(c);
+  const { bootstrapOrchestrator, bootstrapRepo, eventBus, rigRepo } = getDeps(c);
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const bundlePath = typeof body["bundlePath"] === "string" ? body["bundlePath"] : "";
   const plan = body["plan"] === true;
@@ -435,6 +470,8 @@ bundleRoutes.post("/install", async (c) => {
   // Item 2 / slice-05 Checkpoint 3.3: install-time compatibility check inputs
   const skipVersionCheck = body["skipVersionCheck"] === true;
   const clientCliVersion = typeof body["cliVersion"] === "string" ? body["cliVersion"] : undefined;
+  // Item 3 / slice-05 Checkpoint 4.2: install-time conflict check inputs
+  const force = body["force"] === true;
 
   if (!bundlePath) return c.json({ error: "bundlePath is required" }, 400);
   if (!plan && !targetRoot) return c.json({ error: "targetRoot is required for apply mode" }, 400);
@@ -451,32 +488,61 @@ bundleRoutes.post("/install", async (c) => {
   // 3-part error and exits the lifecycle (lock releases via the outer
   // finally). Operator override via --skip-version-check (request body
   // skipVersionCheck=true).
-  if (!skipVersionCheck) {
+  // Item 2 + Item 3 / slice-05: single safe extract pass yields both the
+  // bundle manifest (for compat check) and the rig name (for conflict check).
+  // Caller can skip the compat check via skipVersionCheck; the conflict check
+  // also runs from this same extract pass unless --force bypasses it.
+  let installMeta: { bundleManifest: Record<string, unknown>; rigName: string | undefined } | null = null;
+  if (!skipVersionCheck || !force) {
     try {
-      const manifest = await extractManifestForCompatCheck(bundlePath);
-      const compatibility = normalizeCompatibilityBlock(manifest["compatibility"]);
-      const failures = checkBundleCompatibility(compatibility, getDaemonVersion(), clientCliVersion);
-      if (failures) {
-        return c.json({
-          error: "Bundle compatibility check failed",
-          failures,
-          resolutions: [
-            "upgrade the affected runtime to the required version (recommended)",
-            "use a bundle with relaxed minimum requirements",
-            "pass --skip-version-check to bypass for an operator-explicit override (NOT recommended for routine use)",
-          ],
-        }, 400);
-      }
+      installMeta = await extractInstallTimeMetadata(bundlePath);
     } catch (err) {
-      // Extraction failure here is treated as honest fast-fail rather than
-      // silently skipping the check; bootstrap would surface the same error
-      // anyway. 3-part shape preserved.
       return c.json({
-        error: "Bundle compatibility check could not run (extraction failed)",
+        error: "Bundle install pre-check could not run (extraction failed)",
         detail: (err as Error).message,
         resolutions: [
           "confirm the bundle path is correct and the archive is readable",
-          "pass --skip-version-check to bypass the check (NOT recommended unless intentional)",
+          "pass --skip-version-check and --force to bypass both pre-checks (NOT recommended unless intentional)",
+        ],
+      }, 400);
+    }
+  }
+
+  if (!skipVersionCheck && installMeta) {
+    const compatibility = normalizeCompatibilityBlock(installMeta.bundleManifest["compatibility"]);
+    const failures = checkBundleCompatibility(compatibility, getDaemonVersion(), clientCliVersion);
+    if (failures) {
+      return c.json({
+        error: "Bundle compatibility check failed",
+        failures,
+        resolutions: [
+          "upgrade the affected runtime to the required version (recommended)",
+          "use a bundle with relaxed minimum requirements",
+          "pass --skip-version-check to bypass for an operator-explicit override (NOT recommended for routine use)",
+        ],
+      }, 400);
+    }
+  }
+
+  // Item 3 / slice-05 Checkpoint 4.2: install-time conflict check
+  // Runs AFTER the compat check + BEFORE bootstrap delegation. Mismatch
+  // returns a 400 with the 3-part error shape (error + conflicts[] +
+  // resolutions[]). Operator override via --force (request body force=true).
+  // The check fails CLOSED on extraction failure (handled above) and
+  // fail-OPEN on missing rig name in the bundle (no rig name to compare).
+  if (!force && installMeta && rigRepo) {
+    const runningRigs = rigRepo.listRigs().map((r) => ({ rigId: r.id, name: r.name }));
+    const report = detectBundleConflicts({
+      bundleRigName: installMeta.rigName ?? "",
+      runningRigs,
+    });
+    if (report.hasConflicts) {
+      return c.json({
+        error: "Bundle install conflict check failed",
+        conflicts: report.conflicts,
+        resolutions: [
+          "stop the conflicting running rig and re-attempt install",
+          "use --force to bypass for an operator-explicit override (NOT recommended for routine use; conflicts may produce partial install state)",
         ],
       }, 400);
     }

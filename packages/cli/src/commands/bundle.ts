@@ -141,8 +141,9 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
     .option("--yes", "Auto-approve")
     .option("--target <root>", "Target root directory")
     .option("--skip-version-check", "Operator-explicit override of the Item-2 install-time compatibility check (NOT recommended for routine use)")
+    .option("--force", "Operator-explicit override of the Item-3 install-time conflict check (NOT recommended; conflicts may produce partial install state)")
     .option("--json", "JSON output")
-    .action(async (bundlePath: string, opts: { plan?: boolean; yes?: boolean; target?: string; skipVersionCheck?: boolean; json?: boolean }) => {
+    .action(async (bundlePath: string, opts: { plan?: boolean; yes?: boolean; target?: string; skipVersionCheck?: boolean; force?: boolean; json?: boolean }) => {
       const deps = getDepsF();
       const client = await getClient(deps);
       if (!client) { process.exitCode = 1; return; }
@@ -154,6 +155,9 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
         // time (no module-level constant) via the existing getCliVersion helper.
         cliVersion: getCliVersion(),
         skipVersionCheck: opts.skipVersionCheck ?? false,
+        // Item 3 / slice-05 Checkpoint 4.2: send force flag for the daemon-side
+        // install-time conflict check. Operator-explicit override only.
+        force: opts.force ?? false,
       });
 
       if (opts.json) {

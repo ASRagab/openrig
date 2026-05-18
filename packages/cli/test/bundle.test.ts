@@ -323,6 +323,34 @@ describe("Bundle CLI", () => {
     expect(typeof installBody!["cliVersion"]).toBe("string");
   });
 
+  // Item 3 / slice-05 Checkpoint 4.2: --force flag wires through to request body
+  it("bundle install --force sets force=true in request body", async () => {
+    capturedInstallBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "install", "/tmp/test.rigbundle",
+        "--yes", "--target", "/tmp/target",
+        "--force",
+      ]);
+    });
+    const installBody = capturedInstallBodies[capturedInstallBodies.length - 1];
+    expect(installBody).toBeTruthy();
+    expect(installBody!["force"]).toBe(true);
+  });
+
+  it("bundle install without --force sets force=false in request body (operator-explicit opt-in only)", async () => {
+    capturedInstallBodies = [];
+    await captureLogs(async () => {
+      await makeCmd().parseAsync([
+        "node", "rig", "bundle", "install", "/tmp/test.rigbundle",
+        "--yes", "--target", "/tmp/target",
+      ]);
+    });
+    const installBody = capturedInstallBodies[capturedInstallBodies.length - 1];
+    expect(installBody).toBeTruthy();
+    expect(installBody!["force"]).toBe(false);
+  });
+
   // Item 2 / slice-05: no flags → compatibility omitted (no empty object sent)
   it("bundle create with neither min-version flag omits compatibility from request body", async () => {
     capturedCreateBodies = [];
