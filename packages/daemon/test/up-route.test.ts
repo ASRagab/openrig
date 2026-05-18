@@ -633,4 +633,134 @@ edges: []
       expect(r!.error.consequence).toContain("(rigId unavailable)");
     });
   });
+
+  // OPR.0.3.2.CT — route-level POST /api/up discriminator
+  //
+  // Guard re-verify (qitem-20260518083805) BLOCKER: the prior
+  // forward-fix added pure helper tests on buildAttentionResponse,
+  // but those would still pass even if the route stopped calling
+  // the helper or dropped 409. This test exercises the real route
+  // by stubbing bootstrapOrchestrator.bootstrap with a
+  // partial+blocked+attention result; it fails red if up.ts returns
+  // 200 (normal partial path) or 201 (completed path) instead of
+  // 409 with a 3-part body.
+  describe("OPR.0.3.2.CT BLOCKER-2 (route-level): POST /api/up surfaces 409 with 3-part body on attention_required partial", () => {
+    it("attention_required partial → 409 with error.fact / error.consequence / error.action / attentionNodes", async () => {
+      // Build a fresh app instance so we can monkey-patch the
+      // orchestrator without leaking state into other tests.
+      db.close();
+      const freshDb = createFullTestDb();
+      // Use real-fs upRouter so the spec file we write is resolvable.
+      const setup = createTestApp(freshDb, {
+        upRouterFsOps: {
+          exists: (p: string) => fs.existsSync(p),
+          readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+          readHead: (p: string, n: number) => {
+            const fd = fs.openSync(p, "r");
+            try {
+              const buf = Buffer.alloc(n);
+              const bytes = fs.readSync(fd, buf, 0, n, 0);
+              return buf.subarray(0, bytes);
+            } finally {
+              fs.closeSync(fd);
+            }
+          },
+        },
+      });
+      const freshApp = setup.app;
+      const bootstrapOrch = setup.bootstrapOrchestrator;
+
+      // Write a valid pod spec file so the route's pre-bootstrap
+      // resolution path succeeds and reaches the bootstrap() call.
+      const podSpecYaml = `
+version: "0.2"
+name: conveyor-attention-route-test
+pods:
+  - id: dev
+    label: Dev
+    members:
+      - id: impl
+        agent_ref: "local:agents/impl"
+        profile: default
+        runtime: claude-code
+        cwd: .
+    edges: []
+edges: []
+`.trim();
+      const specPath = path.join(tmpDir, "attention-route-spec.yaml");
+      fs.writeFileSync(specPath, podSpecYaml);
+
+      // Stub the orchestrator's bootstrap to emit the
+      // partial+blocked+attention shape we expect from a real
+      // trust-gated launch. The route MUST translate this to 409.
+      const stubResult = {
+        runId: "run-stub-1",
+        status: "partial" as const,
+        rigId: "rig-stub-1",
+        stages: [
+          { stage: "resolve_spec" as const, status: "ok" as const, detail: {} },
+          {
+            stage: "import_rig" as const,
+            status: "blocked" as const,
+            detail: {
+              code: "attention_required",
+              message: "1 node requires attention before becoming interactive (rig parked, NOT failed; approve and resume to proceed).",
+              rigId: "rig-stub-1",
+              specName: "conveyor-attention-route-test",
+              nodes: [{ logicalId: "dev.impl", status: "attention_required" as const, sessionName: "dev-impl@conveyor-attention-route-test", evidence: "trust prompt" }],
+              attentionNodes: [
+                { logicalId: "dev.impl", sessionName: "dev-impl@conveyor-attention-route-test", evidence: "trust prompt", reason: "trust_gate" },
+              ],
+            },
+          },
+        ],
+        errors: ["1 node requires attention before becoming interactive (rig parked, NOT failed; approve and resume to proceed)."],
+        warnings: [],
+      };
+      const origBootstrap = bootstrapOrch.bootstrap.bind(bootstrapOrch);
+      bootstrapOrch.bootstrap = (async () => stubResult) as typeof bootstrapOrch.bootstrap;
+      // Also stub release() so we don't try to release an unknown
+      // sourceRef key in the orchestrator's internal map.
+      const origRelease = bootstrapOrch.release.bind(bootstrapOrch);
+      bootstrapOrch.release = (() => undefined) as typeof bootstrapOrch.release;
+
+      try {
+        const res = await freshApp.request("/api/up", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceRef: specPath }),
+        });
+
+        // BLOCKER-2 from re-verify: route MUST return 409 (not 200
+        // partial-success, not 201 completed).
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        // HG-4 3-part error shape.
+        expect(body.error).toBeDefined();
+        expect(body.error.fact).toMatch(/require[s]? attention/i);
+        expect(body.error.consequence).toMatch(/rig-stub-1/);
+        expect(body.error.consequence).toMatch(/rig ps/);
+        expect(body.error.action).toMatch(/tmux attach -t dev-impl@conveyor-attention-route-test/);
+        expect(body.error.action).toMatch(/rig setup --cwd/);
+        // attentionNodes array carried through to operator
+        expect(body.attentionNodes).toBeInstanceOf(Array);
+        expect(body.attentionNodes).toHaveLength(1);
+        expect(body.attentionNodes[0].logicalId).toBe("dev.impl");
+        // The bootstrap's partial result still carries the rigId
+        // for `rig ps` lookups
+        expect(body.rigId).toBe("rig-stub-1");
+        // status remains "partial" so downstream tooling can branch
+        expect(body.status).toBe("partial");
+      } finally {
+        bootstrapOrch.bootstrap = origBootstrap;
+        bootstrapOrch.release = origRelease;
+        freshDb.close();
+      }
+      // Restore db so afterEach's close() doesn't double-close —
+      // but afterEach closes the original `db` which we already
+      // closed above. Replace it with a no-op stub for the rest of
+      // teardown.
+      db = { close: () => undefined } as unknown as Database.Database;
+    });
+  });
 });
