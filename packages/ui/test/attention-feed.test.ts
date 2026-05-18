@@ -8,7 +8,10 @@
 import { describe, it, expect } from "vitest";
 import {
   attentionItemToFeedCard,
+  eventDerivedSeqsForPrune,
+  isQueueDerivedFeedCard,
   mergeAttentionIntoFeed,
+  QUEUE_DERIVED_CARD_ID_PREFIX,
 } from "../src/lib/attention-feed.js";
 import type { AttentionQueueItem } from "../src/hooks/useAttentionItems.js";
 import type { FeedCard } from "../src/lib/feed-classifier.js";
@@ -182,5 +185,70 @@ describe("mergeAttentionIntoFeed — queue supersedes events for attention kinds
     const attentionCards = merged.filter((c) => c.kind === "action-required");
     expect(attentionCards).toHaveLength(1);
     expect(attentionCards[0]!.id).toContain("qitem-survives");
+  });
+});
+
+// Guard re-verify-2 (qitem-20260518192210) CLEANUP-1: useDismissedSeqs
+// auto-prunes by min-seq across currentSeqs. Queue-derived synthetic
+// cards carry seq=-1 (no real event). If those -1 sentinels reach
+// useDismissedSeqs, min-seq pins at -1 → event-seq dismissals never
+// auto-prune. eventDerivedSeqsForPrune filters queue-derived cards
+// OUT before they reach the seq input.
+
+describe("CLEANUP-1: eventDerivedSeqsForPrune isolates seq-prune from queue-derived sentinels", () => {
+  it("isQueueDerivedFeedCard returns true for queue-attention-* ids, false otherwise", () => {
+    const eventCard = makeFeedCard({ kind: "approval", qitemId: "q1" });
+    const queueCard = attentionItemToFeedCard(makeAttention({ qitemId: "qitem-Q", destinationSession: "human-bob@kernel" }));
+    expect(isQueueDerivedFeedCard(eventCard)).toBe(false);
+    expect(isQueueDerivedFeedCard(queueCard)).toBe(true);
+    expect(QUEUE_DERIVED_CARD_ID_PREFIX).toBe("queue-attention-");
+  });
+
+  it("returns only event-derived seqs when input mixes event + queue cards", () => {
+    const cards: FeedCard[] = [
+      makeFeedCard({ kind: "approval", qitemId: "q1", id: "queue.created-42" }),
+      attentionItemToFeedCard(makeAttention({ qitemId: "qitem-Q1", destinationSession: "human-x@kernel" })),
+      makeFeedCard({ kind: "shipped", qitemId: "q2", id: "queue.created-50" }),
+      attentionItemToFeedCard(makeAttention({ qitemId: "qitem-Q2", tier: "human-gate" })),
+    ];
+    const seqs = eventDerivedSeqsForPrune(cards);
+    // Event-derived seqs are positive (real events); queue-derived
+    // synthetic seq=-1 must be filtered out.
+    expect(seqs).toEqual([1, 1]); // makeFeedCard uses seq=1 by default
+    expect(seqs).not.toContain(-1);
+  });
+
+  it("returns empty array when every input is queue-derived", () => {
+    const cards: FeedCard[] = [
+      attentionItemToFeedCard(makeAttention({ qitemId: "qitem-a", destinationSession: "human-a@kernel" })),
+      attentionItemToFeedCard(makeAttention({ qitemId: "qitem-b", destinationSession: "human-b@kernel" })),
+    ];
+    expect(eventDerivedSeqsForPrune(cards)).toEqual([]);
+  });
+
+  it("CLEANUP-1 regression: queue-derived synthetic seq=-1 does NOT pin min-seq when fed into useDismissedSeqs", async () => {
+    // Discriminator: import useDismissedSeqs in isolation and prove
+    // that with the FILTERED seq input (only event-derived seqs),
+    // auto-prune correctly drops a dismissed seq once it falls
+    // below the min. With the UNFILTERED input (mixed -1 sentinel +
+    // real seqs), min would be -1 and the prune would never fire.
+    const { renderHook, act } = await import("@testing-library/react");
+    const { useDismissedSeqs } = await import("../src/hooks/useDismissedSeqs.js");
+    localStorage.clear();
+
+    // Initial render: dismissed seq 50 is in current set.
+    const { result, rerender } = renderHook(({ seqs }) => useDismissedSeqs(seqs), {
+      initialProps: { seqs: [50, 100, 200] },
+    });
+    act(() => result.current.dismiss(50));
+    expect(result.current.dismissedSeqs.has(50)).toBe(true);
+
+    // The FIFO drops the older events: only newer ones remain.
+    // With CLEANUP-1 in place (queue-derived sentinels filtered),
+    // min-seq advances to 150 → dismissed 50 is correctly pruned.
+    rerender({ seqs: [150, 200, 300] });
+    // Wait for the useEffect prune to run.
+    await act(() => Promise.resolve());
+    expect(result.current.dismissedSeqs.has(50)).toBe(false);
   });
 });

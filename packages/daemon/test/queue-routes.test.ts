@@ -387,6 +387,107 @@ describe("queue routes", () => {
       expect(data.some((q) => q.tier === "human-gate")).toBe(true);
     });
 
+    // Guard re-verify-2 (qitem-20260518192210) BLOCKER-1: the prior
+    // forward-fix dropped destinationSession/sourceSession/targetRepo
+    // composition. The fix routes those params through listAttention
+    // into the SQL WHERE so scoped attention queries return only the
+    // matching attention items.
+
+    it("BLOCKER re-verify-2: attention=1 + destinationSession=X returns only X-scoped attention items", async () => {
+      // Seed 2 attention items at different destinations.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r1",
+          destinationSession: "human-alice@kernel",
+          body: "for alice",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r2",
+          destinationSession: "human-bob@kernel",
+          body: "for bob",
+          tier: "human-gate",
+        }),
+      });
+      // Also create a non-attention routine qitem destined to alice;
+      // it must not appear.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r1",
+          destinationSession: "human-alice@kernel",
+          state: "pending",
+          body: "another for alice",
+        }),
+      });
+
+      const res = await app.request("/api/queue/list?attention=1&destinationSession=human-alice@kernel");
+      const data = (await res.json()) as Array<{ destinationSession: string; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.destinationSession).toBe("human-alice@kernel");
+      }
+      // None of them should be for bob.
+      expect(data.some((q) => q.destinationSession === "human-bob@kernel")).toBe(false);
+    });
+
+    it("BLOCKER re-verify-2: attention=1 + sourceSession=X returns only X-sourced attention items", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor-a@r",
+          destinationSession: "human-x@kernel",
+          body: "from advisor-a",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor-b@r",
+          destinationSession: "human-y@kernel",
+          body: "from advisor-b",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1&sourceSession=advisor-a@r");
+      const data = (await res.json()) as Array<{ sourceSession: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.sourceSession).toBe("advisor-a@r");
+      }
+    });
+
+    it("BLOCKER re-verify-2: attention=1 unscoped still returns the global attention set (composition is OPT-IN, not required)", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-x@kernel",
+          body: "global x",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "b@r",
+          destinationSession: "human-y@kernel",
+          body: "global y",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as unknown[];
+      expect(data.length).toBeGreaterThanOrEqual(2);
+    });
+
     // Guard re-verify BLOCKER 1 (qitem-20260518190827): the prior
     // fetch-then-filter approach (ATTENTION_FETCH_BOUND=1000 then
     // JS filter) would have hidden an attention item behind 1001+

@@ -369,15 +369,18 @@ export function queueRoutes(): Hono {
     // shape (ATTENTION_FETCH_BOUND) is gone — the LIMIT bound is the
     // user-facing one only, applied at the SQL layer post-predicate.
     //
-    // destinationSession / sourceSession / targetRepo composition is
-    // intentionally NOT applied to the attention path — the For You
-    // surface is global to the operator (no rig/session filter); a
-    // future surface that needs scope can add params then. The state
-    // override is supported via the existing `state` query param,
-    // passed through.
+    // destinationSession/sourceSession/targetRepo are composable with
+    // the attention predicate at the SQL layer (guard re-verify
+    // qitem-20260518192210 BLOCKER 1 — the previous forward-fix
+    // dropped composition). Scoped attention queries (e.g.,
+    // attention=1&destinationSession=...) return ONLY the matching
+    // attention items.
     const items = getRepo(c).listAttention({
       limit: userLimit,
       state,
+      destinationSession,
+      sourceSession,
+      targetRepo,
     });
     // Defense-in-depth: refine with the JS predicate so the SQL
     // LIKE superset cannot leak a malformed destination through.

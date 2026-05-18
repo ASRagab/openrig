@@ -1008,26 +1008,56 @@ export class QueueRepository {
    * Default open state set: pending|in-progress|blocked. Caller may
    * override via `state`.
    */
-  listAttention(opts?: { limit?: number; state?: QueueState | QueueState[] }): QueueItem[] {
+  listAttention(opts?: {
+    limit?: number;
+    state?: QueueState | QueueState[];
+    destinationSession?: string;
+    sourceSession?: string;
+    targetRepo?: string;
+  }): QueueItem[] {
     const limit = opts?.limit ?? 100;
     const states = opts?.state
       ? Array.isArray(opts.state) ? opts.state : [opts.state]
       : ["pending" as QueueState, "in-progress" as QueueState, "blocked" as QueueState];
-    const placeholders = states.map(() => "?").join(", ");
+
+    // Compose the WHERE clause: state-set + attention predicate +
+    // optional scope filters (mirrors list() composition so
+    // `attention=1` query params remain composable with
+    // destinationSession/sourceSession/targetRepo — guard re-verify
+    // qitem-20260518192210 BLOCKER 1).
+    const statePlaceholders = states.map(() => "?").join(", ");
+    const conditions: string[] = [
+      `state IN (${statePlaceholders})`,
+      `(
+        tier = 'human-gate'
+        OR destination_session = 'human@kernel'
+        OR destination_session = 'human@host'
+        OR destination_session LIKE 'human-%@kernel'
+        OR destination_session LIKE 'human-%@host'
+      )`,
+    ];
+    const params: unknown[] = [...states];
+    if (opts?.destinationSession) {
+      conditions.push("destination_session = ?");
+      params.push(opts.destinationSession);
+    }
+    if (opts?.sourceSession) {
+      conditions.push("source_session = ?");
+      params.push(opts.sourceSession);
+    }
+    if (opts?.targetRepo && this.hasTargetRepoColumn) {
+      conditions.push("target_repo = ?");
+      params.push(opts.targetRepo);
+    }
+    params.push(limit);
+
     const sql = `
       SELECT * FROM queue_items
-      WHERE state IN (${placeholders})
-        AND (
-          tier = 'human-gate'
-          OR destination_session = 'human@kernel'
-          OR destination_session = 'human@host'
-          OR destination_session LIKE 'human-%@kernel'
-          OR destination_session LIKE 'human-%@host'
-        )
+      WHERE ${conditions.join(" AND ")}
       ORDER BY ts_created DESC
       LIMIT ?
     `;
-    const rows = this.db.prepare(sql).all(...states, limit) as QueueItemRow[];
+    const rows = this.db.prepare(sql).all(...params) as QueueItemRow[];
     return rows.map((r) => this.rowToItem(r));
   }
 

@@ -114,6 +114,30 @@ export function mergeAttentionIntoFeed(
   return [...queueDerived, ...filtered];
 }
 
+/**
+ * OPR.0.3.2.20 — queue-derived card identifier prefix. Used by
+ * Feed.tsx to route dismissal (queue → string-keyed dismissedIds;
+ * event → numeric dismissedSeqs) AND to filter queue-derived cards
+ * out of the seq-prune input (queue cards have synthetic seq=-1
+ * and would otherwise pin min-seq at -1, breaking the
+ * useDismissedSeqs auto-prune for event-derived dismissals — guard
+ * re-verify-2 qitem-20260518192210 CLEANUP-1).
+ */
+export const QUEUE_DERIVED_CARD_ID_PREFIX = "queue-attention-";
+
+export function isQueueDerivedFeedCard(card: FeedCard): boolean {
+  return card.id.startsWith(QUEUE_DERIVED_CARD_ID_PREFIX);
+}
+
+/**
+ * Filter rawCards to ONLY event-derived cards' seqs for useDismissedSeqs.
+ * Queue-derived cards (synthetic seq=-1) are excluded; their dismissal
+ * lives in useDismissedCardIds.
+ */
+export function eventDerivedSeqsForPrune(rawCards: FeedCard[]): number[] {
+  return rawCards.filter((c) => !isQueueDerivedFeedCard(c)).map((c) => c.source.seq);
+}
+
 function qitemIdFromCard(card: FeedCard): string | null {
   const payload = (card.source.payload ?? {}) as Record<string, unknown>;
   const fromPayload =

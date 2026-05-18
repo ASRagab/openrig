@@ -24,6 +24,8 @@ import {
 } from "../../lib/feed-classifier.js";
 import {
   attentionItemToFeedCard,
+  eventDerivedSeqsForPrune,
+  isQueueDerivedFeedCard,
   mergeAttentionIntoFeed,
 } from "../../lib/attention-feed.js";
 import {
@@ -258,7 +260,13 @@ export function Feed() {
     () => mergeAttentionIntoFeed(eventDerivedCards, queueDerivedAttention),
     [eventDerivedCards, queueDerivedAttention],
   );
-  const rawCardSeqs = useMemo(() => rawCards.map((c) => c.source.seq), [rawCards]);
+  // OPR.0.3.2.20 — useDismissedSeqs auto-prunes by min-seq across
+  // currentSeqs. Queue-derived synthetic cards carry seq=-1, which
+  // would pin min-seq at -1 and prevent the auto-prune for
+  // event-derived dismissals (guard re-verify-2
+  // qitem-20260518192210 CLEANUP-1). eventDerivedSeqsForPrune
+  // filters them OUT — their dismissal lives in useDismissedCardIds.
+  const rawCardSeqs = useMemo(() => eventDerivedSeqsForPrune(rawCards), [rawCards]);
   const rawCardIds = useMemo(() => rawCards.map((c) => c.id), [rawCards]);
   const { dismissedSeqs, dismiss: dismissSeq, undismiss: undismissSeq } = useDismissedSeqs(rawCardSeqs);
   // OPR.0.3.2.20 — string-keyed dismissal parallel to event-seq
@@ -272,18 +280,14 @@ export function Feed() {
   const { dismissedIds, dismiss: dismissId, undismiss: undismissId } = useDismissedCardIds(rawCardIds);
   const [pendingUndo, setPendingUndo] = useState<{ kind: "seq"; seq: number } | { kind: "id"; id: string } | null>(null);
 
-  // Predicate used to route a dismiss call: queue-derived synthetic
-  // cards are identified by their stable card.id prefix. Avoids
-  // collision on the synthetic seq=-1 (banked guard verdict
-  // qitem-20260518190827 BLOCKER 2).
-  const isQueueDerivedCard = useCallback(
-    (card: FeedCardModel): boolean => card.id.startsWith("queue-attention-"),
-    [],
-  );
-
+  // Routes a dismiss call: queue-derived synthetic cards
+  // (isQueueDerivedFeedCard) use the string-keyed dismissedIds set;
+  // event-derived cards continue using the seq-keyed dismissedSeqs
+  // set. Avoids collision on the synthetic seq=-1 (banked guard
+  // verdict qitem-20260518190827 BLOCKER 2).
   const handleDismiss = useCallback(
     (card: FeedCardModel) => {
-      if (isQueueDerivedCard(card)) {
+      if (isQueueDerivedFeedCard(card)) {
         dismissId(card.id);
         setPendingUndo({ kind: "id", id: card.id });
       } else {
@@ -291,7 +295,7 @@ export function Feed() {
         setPendingUndo({ kind: "seq", seq: card.source.seq });
       }
     },
-    [dismissSeq, dismissId, isQueueDerivedCard],
+    [dismissSeq, dismissId],
   );
 
   const handleUndo = useCallback(() => {
@@ -330,10 +334,10 @@ export function Feed() {
     );
     const lensFiltered = lens === "all" ? subscribed : subscribed.filter((c) => c.kind === lens);
     return lensFiltered.filter((c) => {
-      if (isQueueDerivedCard(c)) return !dismissedIds.has(c.id);
+      if (isQueueDerivedFeedCard(c)) return !dismissedIds.has(c.id);
       return !dismissedSeqs.has(c.source.seq);
     });
-  }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds, isQueueDerivedCard]);
+  }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds]);
   const slicesQuery = useSlices("all");
   const sliceRows = useMemo(() => {
     if (!slicesQuery.data || "unavailable" in slicesQuery.data) return [];
