@@ -386,6 +386,48 @@ describe("queue routes", () => {
       expect(data.length).toBeGreaterThanOrEqual(1);
       expect(data.some((q) => q.tier === "human-gate")).toBe(true);
     });
+
+    // Guard re-verify BLOCKER 1 (qitem-20260518190827): the prior
+    // fetch-then-filter approach (ATTENTION_FETCH_BOUND=1000 then
+    // JS filter) would have hidden an attention item behind 1001+
+    // newer routine open qitems. The fix pushes the attention
+    // predicate INTO SQL so the LIMIT applies AFTER attention
+    // filtering. This test scales the routine churn well past the
+    // old ATTENTION_FETCH_BOUND to prove window-independence by
+    // construction.
+    it("BLOCKER-1: attention item surfaces even when >1100 newer routine OPEN qitems exist (SQL predicate pushdown)", async () => {
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "old@r",
+          destinationSession: "b@r",
+          body: "approve me — oldest",
+          tier: "human-gate",
+        }),
+      });
+      // 1100 routine OPEN qitems land AFTER the attention item. They
+      // each get a newer ts_created than the attention item; a
+      // fetch-then-filter with LIMIT 1000 would never return the
+      // attention item.
+      for (let i = 0; i < 1100; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `routine-${i}@r`,
+            destinationSession: `other-${i}@r`,
+            body: `noise ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1");
+      const data = (await res.json()) as Array<{ tier: string | null; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      const found = data.find((q) => q.tier === "human-gate");
+      expect(found).toBeDefined();
+      expect(found!.body).toContain("oldest");
+    });
   });
 
   // ---- PL-004 Phase A revision (R1) route tests ----

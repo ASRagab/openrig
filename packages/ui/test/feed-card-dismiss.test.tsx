@@ -35,11 +35,14 @@ describe("FeedCard dismiss surfaces", () => {
     expect(screen.getByTestId("feed-card-dismiss")).toBeTruthy();
   });
 
-  it("clicking dismiss button calls onDismiss with card.source.seq", () => {
+  // OPR.0.3.2.20 — onDismiss now receives the full card (not just the
+  // seq) so the parent can route to the right dismissal-set
+  // (event-seq vs card-id for queue-derived synthetic cards).
+  it("clicking dismiss button calls onDismiss with the full card (includes source.seq)", () => {
     const onDismiss = vi.fn();
     render(<FeedCard card={makeCard({ source: { seq: 42, type: "queue.enqueued", payload: {} } as unknown as FeedCardModel["source"] })} onDismiss={onDismiss} />);
     fireEvent.click(screen.getByTestId("feed-card-dismiss"));
-    expect(onDismiss).toHaveBeenCalledWith(42);
+    expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ source: expect.objectContaining({ seq: 42 }) }));
   });
 
   it("Backspace key on focused card calls onDismiss", () => {
@@ -47,7 +50,7 @@ describe("FeedCard dismiss surfaces", () => {
     render(<FeedCard card={makeCard()} onDismiss={onDismiss} />);
     const article = screen.getByTestId("feed-card-progress");
     fireEvent.keyDown(article, { key: "Backspace" });
-    expect(onDismiss).toHaveBeenCalledWith(42);
+    expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ source: expect.objectContaining({ seq: 42 }) }));
   });
 
   it("Delete key on focused card calls onDismiss", () => {
@@ -55,7 +58,7 @@ describe("FeedCard dismiss surfaces", () => {
     render(<FeedCard card={makeCard()} onDismiss={onDismiss} />);
     const article = screen.getByTestId("feed-card-progress");
     fireEvent.keyDown(article, { key: "Delete" });
-    expect(onDismiss).toHaveBeenCalledWith(42);
+    expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ source: expect.objectContaining({ seq: 42 }) }));
   });
 
   it("other keys (e.g. Enter, Escape) do NOT call onDismiss", () => {
@@ -105,7 +108,7 @@ describe("FeedCard dismiss surfaces", () => {
     fireEvent.touchStart(article, { touches: [{ clientX: 50, clientY: 50, identifier: 1 }] });
     fireEvent.touchEnd(article, { changedTouches: [{ clientX: 300, clientY: 50, identifier: 1 }] });
 
-    expect(onDismiss).toHaveBeenCalledWith(42);
+    expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ source: expect.objectContaining({ seq: 42 }) }));
   });
 
   it("touch swipe-right BELOW threshold does NOT trigger onDismiss", () => {

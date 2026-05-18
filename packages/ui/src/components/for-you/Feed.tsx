@@ -39,6 +39,7 @@ import {
   isCardKindSubscribed,
 } from "../../hooks/useFeedSubscriptions.js";
 import { useDismissedSeqs } from "../../hooks/useDismissedSeqs.js";
+import { useDismissedCardIds } from "../../hooks/useDismissedCardIds.js";
 import { useCompletedMissions } from "../../hooks/useCompletedMissions.js";
 import { useMissionStatuses } from "../../hooks/useMissionStatuses.js";
 import { FeedCard } from "./FeedCard.js";
@@ -258,24 +259,50 @@ export function Feed() {
     [eventDerivedCards, queueDerivedAttention],
   );
   const rawCardSeqs = useMemo(() => rawCards.map((c) => c.source.seq), [rawCards]);
-  const { dismissedSeqs, dismiss, undismiss } = useDismissedSeqs(rawCardSeqs);
-  const [pendingUndoSeq, setPendingUndoSeq] = useState<number | null>(null);
+  const rawCardIds = useMemo(() => rawCards.map((c) => c.id), [rawCards]);
+  const { dismissedSeqs, dismiss: dismissSeq, undismiss: undismissSeq } = useDismissedSeqs(rawCardSeqs);
+  // OPR.0.3.2.20 — string-keyed dismissal parallel to event-seq
+  // dismissal. Queue-derived attention cards share synthetic
+  // ActivityEvent.seq = -1 (no real event), so seq-keyed dismissal
+  // collides across them; routing those dismissals to a string-id
+  // set (FeedCard.id is stable + unique) keeps each queue-derived
+  // card's dismissal independent. Auto-prune is membership-based:
+  // when the qitem closes the card disappears from rawCardIds and
+  // the dismissal is dropped.
+  const { dismissedIds, dismiss: dismissId, undismiss: undismissId } = useDismissedCardIds(rawCardIds);
+  const [pendingUndo, setPendingUndo] = useState<{ kind: "seq"; seq: number } | { kind: "id"; id: string } | null>(null);
+
+  // Predicate used to route a dismiss call: queue-derived synthetic
+  // cards are identified by their stable card.id prefix. Avoids
+  // collision on the synthetic seq=-1 (banked guard verdict
+  // qitem-20260518190827 BLOCKER 2).
+  const isQueueDerivedCard = useCallback(
+    (card: FeedCardModel): boolean => card.id.startsWith("queue-attention-"),
+    [],
+  );
 
   const handleDismiss = useCallback(
-    (seq: number) => {
-      dismiss(seq);
-      setPendingUndoSeq(seq);
+    (card: FeedCardModel) => {
+      if (isQueueDerivedCard(card)) {
+        dismissId(card.id);
+        setPendingUndo({ kind: "id", id: card.id });
+      } else {
+        dismissSeq(card.source.seq);
+        setPendingUndo({ kind: "seq", seq: card.source.seq });
+      }
     },
-    [dismiss],
+    [dismissSeq, dismissId, isQueueDerivedCard],
   );
 
   const handleUndo = useCallback(() => {
-    if (pendingUndoSeq !== null) undismiss(pendingUndoSeq);
-    setPendingUndoSeq(null);
-  }, [pendingUndoSeq, undismiss]);
+    if (pendingUndo === null) return;
+    if (pendingUndo.kind === "seq") undismissSeq(pendingUndo.seq);
+    else undismissId(pendingUndo.id);
+    setPendingUndo(null);
+  }, [pendingUndo, undismissSeq, undismissId]);
 
   const handleUndoExpire = useCallback(() => {
-    setPendingUndoSeq(null);
+    setPendingUndo(null);
   }, []);
   const qitemIds = useMemo(
     () => rawCards.map(qitemIdForCard).filter((id): id is string => Boolean(id)),
@@ -302,8 +329,11 @@ export function Feed() {
       isCardKindSubscribed(c.kind, subs.state),
     );
     const lensFiltered = lens === "all" ? subscribed : subscribed.filter((c) => c.kind === lens);
-    return lensFiltered.filter((c) => !dismissedSeqs.has(c.source.seq));
-  }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs]);
+    return lensFiltered.filter((c) => {
+      if (isQueueDerivedCard(c)) return !dismissedIds.has(c.id);
+      return !dismissedSeqs.has(c.source.seq);
+    });
+  }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds, isQueueDerivedCard]);
   const slicesQuery = useSlices("all");
   const sliceRows = useMemo(() => {
     if (!slicesQuery.data || "unavailable" in slicesQuery.data) return [];
@@ -461,9 +491,9 @@ export function Feed() {
           })}
         </div>
       )}
-      {pendingUndoSeq !== null ? (
+      {pendingUndo !== null ? (
         <UndoToast
-          key={pendingUndoSeq}
+          key={pendingUndo.kind === "seq" ? `seq-${pendingUndo.seq}` : `id-${pendingUndo.id}`}
           label="Card dismissed"
           onUndo={handleUndo}
           onExpire={handleUndoExpire}

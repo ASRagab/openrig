@@ -980,6 +980,58 @@ export class QueueRepository {
   }
 
   /**
+   * OPR.0.3.2.20 — durable attention-class query.
+   *
+   * Returns OPEN attention-class qitems (the source of truth for the
+   * For You Action-required + Approval lenses) by pushing the
+   * attention predicate INTO the SQL WHERE clause so the LIMIT
+   * applies AFTER attention filtering. This makes the result
+   * window-INDEPENDENT by construction: an old human-gate item
+   * cannot be evicted past LIMIT by routine open qitems even when
+   * there are >>LIMIT of them. (Guard verdict qitem-20260518190827
+   * BLOCKER 1 — the prior fetch-then-filter approach in the route
+   * could still hide attention items behind ATTENTION_FETCH_BOUND
+   * newer routine open qitems.)
+   *
+   * Attention predicate in SQL (mirror of mission-control read
+   * layer + the route-level `isAttentionItem`):
+   *   tier = 'human-gate'                              (approval)
+   *   OR destination_session matches human-seat regex  (action-required)
+   *
+   * SQLite has no native regex; LIKE patterns are used as a
+   * SUPER-SET (every regex match also matches one of the LIKE
+   * patterns). Callers can refine in JS with isAttentionItem if
+   * they need strict regex semantics — but for the LIMIT-pushdown
+   * guarantee, the SQL superset is what matters: NO attention item
+   * is filtered out by the SQL stage.
+   *
+   * Default open state set: pending|in-progress|blocked. Caller may
+   * override via `state`.
+   */
+  listAttention(opts?: { limit?: number; state?: QueueState | QueueState[] }): QueueItem[] {
+    const limit = opts?.limit ?? 100;
+    const states = opts?.state
+      ? Array.isArray(opts.state) ? opts.state : [opts.state]
+      : ["pending" as QueueState, "in-progress" as QueueState, "blocked" as QueueState];
+    const placeholders = states.map(() => "?").join(", ");
+    const sql = `
+      SELECT * FROM queue_items
+      WHERE state IN (${placeholders})
+        AND (
+          tier = 'human-gate'
+          OR destination_session = 'human@kernel'
+          OR destination_session = 'human@host'
+          OR destination_session LIKE 'human-%@kernel'
+          OR destination_session LIKE 'human-%@host'
+        )
+      ORDER BY ts_created DESC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(...states, limit) as QueueItemRow[];
+    return rows.map((r) => this.rowToItem(r));
+  }
+
+  /**
    * Find qitems whose `closure_required_at` is past now. Used by watchdog;
    * does NOT itself emit events — callers decide whether to nudge or escalate.
    */

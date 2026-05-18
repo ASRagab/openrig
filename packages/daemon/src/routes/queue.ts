@@ -38,13 +38,6 @@ export function isAttentionItem(q: { tier: string | null; destinationSession: st
   return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(q.destinationSession ?? "");
 }
 
-/**
- * OPR.0.3.2.20 — internal fetch cap for the attention filter so an
- * attention item can't be evicted past the repo's default list limit
- * by routine churn. Far above realistic open-attention set sizes and
- * well below SQL pagination concerns.
- */
-const ATTENTION_FETCH_BOUND = 1000;
 
 export function queueRoutes(): Hono {
   const app = new Hono();
@@ -366,26 +359,29 @@ export function queueRoutes(): Hono {
       return c.json(items);
     }
 
-    // OPR.0.3.2.20 — attention query fetch-then-filter. The repo's
-    // default list() limit (100) sorts by ts_created DESC and can
-    // evict an older attention item when 100+ routine qitems land
-    // after it — the exact eviction defect this slice fixes. Fetch
-    // with a generous internal cap (ATTENTION_FETCH_BOUND) so attention
-    // items are not missed; apply the operator's `limit` AFTER
-    // filtering. The attention set is small by nature (PRD §1.5
-    // "sane bound") — a 1000-row internal cap is well above realistic
-    // open-attention sizes and well below SQL-pagination cost concerns.
-    const items = getRepo(c).list({
-      destinationSession,
-      sourceSession,
+    // OPR.0.3.2.20 — attention path goes through
+    // QueueRepository.listAttention, which pushes the attention
+    // predicate INTO the SQL WHERE clause so the LIMIT applies AFTER
+    // attention filtering. Window-independent by construction: an
+    // old human-gate item is never evicted by routine open qitems,
+    // however many of them land after it (guard re-verify
+    // qitem-20260518190827 BLOCKER 1). The earlier fetch-then-filter
+    // shape (ATTENTION_FETCH_BOUND) is gone — the LIMIT bound is the
+    // user-facing one only, applied at the SQL layer post-predicate.
+    //
+    // destinationSession / sourceSession / targetRepo composition is
+    // intentionally NOT applied to the attention path — the For You
+    // surface is global to the operator (no rig/session filter); a
+    // future surface that needs scope can add params then. The state
+    // override is supported via the existing `state` query param,
+    // passed through.
+    const items = getRepo(c).listAttention({
+      limit: userLimit,
       state,
-      targetRepo,
-      limit: ATTENTION_FETCH_BOUND,
     });
-    let filtered = items.filter(isAttentionItem);
-    if (userLimit !== undefined && Number.isFinite(userLimit) && userLimit > 0) {
-      filtered = filtered.slice(0, userLimit);
-    }
+    // Defense-in-depth: refine with the JS predicate so the SQL
+    // LIKE superset cannot leak a malformed destination through.
+    const filtered = items.filter(isAttentionItem);
     return c.json(filtered);
   });
 
