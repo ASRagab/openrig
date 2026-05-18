@@ -3,7 +3,7 @@
 // adapter boundary; in-memory SQLite via createDaemon/createFullTestDb.
 //
 // Slice packet:
-//   substrate/shared-docs/openrig-work/missions/primitive-hardening/
+//   <shared-docs>/missions/primitive-hardening/
 //   slices/lifecycle-reboot-recovery-scenario-matrix/
 
 import { describe, it, expect, vi } from "vitest";

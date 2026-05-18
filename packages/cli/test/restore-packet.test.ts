@@ -1468,7 +1468,7 @@ describe("M2c-CLI R2 --source-jsonl provenance from parsed session_meta", () => 
 
 describe("M2c-Daemon final regression — Velocity 4-pack round-trip via CLI", () => {
   let tmpRoot: string;
-  const VELOCITY_ROOT = "/Users/example/code/substrate/shared-docs/openrig-work/field-notes/2026-04-27-velocity-claude-from-codex-restore";
+  const VELOCITY_ROOT = "/Users/example/.openrig/shared-docs/internal-docs/field-notes/2026-04-27-velocity-claude-from-codex-restore";
 
   beforeEach(async () => {
     const fs = await import("node:fs");

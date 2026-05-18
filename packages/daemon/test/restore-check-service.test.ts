@@ -2,27 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry } from "../src/domain/restore-check-service.js";
-
-const CLAUDE_HOOKS_ROOT = path.join(
-  os.homedir(),
-  "code",
-  "substrate",
-  "shared-docs",
-  "control-plane",
-  "services",
-  "claude-hooks",
-);
-const REQUIRED_SESSION_START_COMPACT_COMMAND = path.join(
+import {
+  RestoreCheckService,
+  type RestoreCheckDeps,
+  type NodeInventoryEntry,
+  // OPR.0.3.2.14 — these used to be copy-pasted in 7+ test files;
+  // exported from source now so any future scrub/refactor only
+  // touches one place. See restore-check-service.ts L204-224.
   CLAUDE_HOOKS_ROOT,
-  "bin",
-  "session-start-compact-context.sh",
-);
-const REQUIRED_USER_PROMPT_SUBMIT_COMMAND = path.join(
-  CLAUDE_HOOKS_ROOT,
-  "bin",
-  "userpromptsubmit-queue-attention.sh",
-);
+  CLAUDE_SESSION_START_COMPACT_COMMAND as REQUIRED_SESSION_START_COMPACT_COMMAND,
+  CLAUDE_USER_PROMPT_SUBMIT_COMMAND as REQUIRED_USER_PROMPT_SUBMIT_COMMAND,
+} from "../src/domain/restore-check-service.js";
 
 const VALID_HOST_INFRA_DECLARATION = JSON.stringify({
   schemaVersion: 1,

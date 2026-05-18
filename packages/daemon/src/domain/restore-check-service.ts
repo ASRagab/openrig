@@ -199,25 +199,32 @@ interface HostInfraCheckResult {
 // --- Service ---
 
 const DAEMON_HEALTHY_PATTERN = /^Daemon running\b/m;
+// OPR.0.3.2.14 — fallback subpath uses a generic .openrig placeholder
+// rather than an internal-team layout, to close the source-side
+// privacy leak. Fallback preserved per slice README §"Architecture
+// note" (option-A removal cascaded 36 test yellows in 0.3.1 cleanup).
 const SUBSTRATE_SHARED_DOCS_ROOT = process.env["OPENRIG_SUBSTRATE_SHARED_DOCS"]
-  ?? join(homedir(), "code", "substrate", "shared-docs");
-const CLAUDE_HOOKS_ROOT = join(
+  ?? join(homedir(), ".openrig", "shared-docs");
+// OPR.0.3.2.14 — these four constants used to be copy-pasted in 7+
+// test files. Exporting from source + importing in tests eliminates
+// the divergence class that broke 17 tests during 0.3.1 cleanup.
+export const CLAUDE_HOOKS_ROOT = join(
   SUBSTRATE_SHARED_DOCS_ROOT,
   "control-plane",
   "services",
   "claude-hooks",
 );
-const CLAUDE_SESSION_START_COMPACT_COMMAND = join(
+export const CLAUDE_SESSION_START_COMPACT_COMMAND = join(
   CLAUDE_HOOKS_ROOT,
   "bin",
   "session-start-compact-context.sh",
 );
-const CLAUDE_USER_PROMPT_SUBMIT_COMMAND = join(
+export const CLAUDE_USER_PROMPT_SUBMIT_COMMAND = join(
   CLAUDE_HOOKS_ROOT,
   "bin",
   "userpromptsubmit-queue-attention.sh",
 );
-const CLAUDE_HOOK_FRAGMENT_PATH = join(
+export const CLAUDE_HOOK_FRAGMENT_PATH = join(
   CLAUDE_HOOKS_ROOT,
   "config",
   "settings.fragment.json",
@@ -879,7 +886,8 @@ export class RestoreCheckService {
       return { check, status: "yellow", evidence: "Cannot derive queue path (no pod namespace)", remediation: "" };
     }
 
-    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", "code", "substrate", "shared-docs");
+    // OPR.0.3.2.14 — subpath scrubbed (internal-team layout → generic placeholder).
+    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", ".openrig", "shared-docs");
     const queuePath = join(substrateRoot, "rigs", rigName, "state", podName, `${memberName}.queue.md`);
 
     if (this.deps.exists(queuePath)) {
@@ -1021,7 +1029,8 @@ export class RestoreCheckService {
   }
 
   private checkSpecPresent(rig: { rigId: string; name: string }): CheckEntry {
-    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", "code", "substrate", "shared-docs");
+    // OPR.0.3.2.14 — subpath scrubbed (internal-team layout → generic placeholder).
+    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", ".openrig", "shared-docs");
     const rigRoot = join(substrateRoot, "rigs", rig.name);
     const rigYaml = join(rigRoot, "rig.yaml");
 

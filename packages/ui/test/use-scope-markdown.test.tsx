@@ -40,12 +40,12 @@ describe("resolveScopePathToAllowlist (pure)", () => {
   it("matches the deepest root that prefixes the absolute scope path", () => {
     const roots = [
       { name: "home", path: "/Users/x" },
-      { name: "substrate", path: "/Users/x/code/substrate" },
-      { name: "workspace", path: "/Users/x/code/substrate/shared-docs/openrig-work" },
+      { name: "substrate", path: "/Users/x/.openrig" },
+      { name: "workspace", path: "/Users/x/.openrig/shared-docs/internal-docs" },
     ];
     const r = resolveScopePathToAllowlist(
       roots,
-      "/Users/x/code/substrate/shared-docs/openrig-work/missions/release-0.3.1",
+      "/Users/x/.openrig/shared-docs/internal-docs/missions/release-0.3.1",
     );
     expect(r).not.toBeNull();
     expect(r!.rootName).toBe("workspace");
@@ -53,7 +53,7 @@ describe("resolveScopePathToAllowlist (pure)", () => {
   });
 
   it("returns null when no allowlist root contains the absolute path", () => {
-    const roots = [{ name: "ws", path: "/Users/x/code/openrig-work" }];
+    const roots = [{ name: "ws", path: "/Users/x/.openrig/shared-docs/internal-docs" }];
     expect(resolveScopePathToAllowlist(roots, "/somewhere/else")).toBeNull();
   });
 });
@@ -64,7 +64,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
       if (url.startsWith("/api/files/roots")) {
         return new Response(JSON.stringify({
           roots: [
-            { name: "workspace", path: "/Users/example/code/openrig-work" },
+            { name: "workspace", path: "/Users/example/.openrig/shared-docs/internal-docs" },
           ],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -72,7 +72,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
         return new Response(JSON.stringify({
           root: "workspace",
           path: "missions/getting-started/README.md",
-          absolutePath: "/Users/example/code/openrig-work/missions/getting-started/README.md",
+          absolutePath: "/Users/example/.openrig/shared-docs/internal-docs/missions/getting-started/README.md",
           content: "---\nstatus: active\n---\n# Getting Started\n",
           mtime: "2026-05-11T00:00:00Z",
           contentHash: "rdme",
@@ -84,7 +84,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
 
     const { result } = renderHook(
       () => useScopeMarkdown(
-        "/Users/example/code/openrig-work/missions/getting-started",
+        "/Users/example/.openrig/shared-docs/internal-docs/missions/getting-started",
         "README.md",
       ),
       { wrapper: makeWrapper() },
@@ -102,7 +102,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
     fetchSpy.mockImplementation(async (url: string) => {
       if (url.startsWith("/api/files/roots")) {
         return new Response(JSON.stringify({
-          roots: [{ name: "ws", path: "/Users/example/code/openrig-work" }],
+          roots: [{ name: "ws", path: "/Users/example/.openrig/shared-docs/internal-docs" }],
         }), { status: 200 });
       }
       if (url.startsWith("/api/files/read")) {
@@ -111,7 +111,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
         return new Response(JSON.stringify({
           root: "ws",
           path: "missions/getting-started/PROGRESS.md",
-          absolutePath: "/Users/example/code/openrig-work/missions/getting-started/PROGRESS.md",
+          absolutePath: "/Users/example/.openrig/shared-docs/internal-docs/missions/getting-started/PROGRESS.md",
           content: "# Progress\n\n## Done\n- thing 1\n",
           mtime: "2026-05-11T00:00:00Z",
           contentHash: "prog",
@@ -123,7 +123,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
 
     const { result } = renderHook(
       () => useScopeMarkdown(
-        "/Users/example/code/openrig-work/missions/getting-started",
+        "/Users/example/.openrig/shared-docs/internal-docs/missions/getting-started",
         "PROGRESS.md",
       ),
       { wrapper: makeWrapper() },
@@ -148,7 +148,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
     fetchSpy.mockImplementation(async (url: string) => {
       if (url.startsWith("/api/files/roots")) {
         return new Response(JSON.stringify({
-          roots: [{ name: "ws", path: "/Users/example/code/openrig-work" }],
+          roots: [{ name: "ws", path: "/Users/example/.openrig/shared-docs/internal-docs" }],
         }), { status: 200 });
       }
       if (url.startsWith("/api/files/read")) return new Response("missing", { status: 404 });
@@ -156,7 +156,7 @@ describe("useScopeMarkdown — production wire honors arbitrary filename", () =>
     });
     const { result } = renderHook(
       () => useScopeMarkdown(
-        "/Users/example/code/openrig-work/missions/empty",
+        "/Users/example/.openrig/shared-docs/internal-docs/missions/empty",
         "PROGRESS.md",
       ),
       { wrapper: makeWrapper() },

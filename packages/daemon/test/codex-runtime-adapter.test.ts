@@ -52,7 +52,7 @@ function makeEntry(overrides?: Partial<ProjectionEntry>): ProjectionEntry {
   };
 }
 
-function testQueueRoot(sharedDocsRoot = nodePath.join(os.homedir(), "code", "substrate", "shared-docs")): string {
+function testQueueRoot(sharedDocsRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs")): string {
   return nodePath.join(sharedDocsRoot, "rigs", "test-rig", "state", "dev");
 }
 

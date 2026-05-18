@@ -258,7 +258,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!identity) return "";
 
     const sharedDocsRoot = process.env.OPENRIG_SHARED_DOCS_ROOT?.trim()
-      || nodePath.join(this.fs.homedir ?? os.homedir(), "code", "substrate", "shared-docs");
+      // OPR.0.3.2.14 — subpath scrubbed (internal-team layout → generic placeholder).
+      || nodePath.join(this.fs.homedir ?? os.homedir(), ".openrig", "shared-docs");
     const queueStateRoot = nodePath.join(sharedDocsRoot, "rigs", identity.rig, "state", identity.pod);
     return ` --add-dir ${shellQuote(queueStateRoot)}`;
   }

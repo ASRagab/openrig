@@ -9,27 +9,13 @@ import { createApp } from "../src/server.js";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotRepository } from "../src/domain/snapshot-repository.js";
-import { RestoreCheckService } from "../src/domain/restore-check-service.js";
-
-const CLAUDE_HOOKS_ROOT = path.join(
-  os.homedir(),
-  "code",
-  "substrate",
-  "shared-docs",
-  "control-plane",
-  "services",
-  "claude-hooks",
-);
-const REQUIRED_SESSION_START_COMPACT_COMMAND = path.join(
+import {
+  RestoreCheckService,
+  // OPR.0.3.2.14 — imported from source; previously copy-pasted here.
   CLAUDE_HOOKS_ROOT,
-  "bin",
-  "session-start-compact-context.sh",
-);
-const REQUIRED_USER_PROMPT_SUBMIT_COMMAND = path.join(
-  CLAUDE_HOOKS_ROOT,
-  "bin",
-  "userpromptsubmit-queue-attention.sh",
-);
+  CLAUDE_SESSION_START_COMPACT_COMMAND as REQUIRED_SESSION_START_COMPACT_COMMAND,
+  CLAUDE_USER_PROMPT_SUBMIT_COMMAND as REQUIRED_USER_PROMPT_SUBMIT_COMMAND,
+} from "../src/domain/restore-check-service.js";
 
 const VALID_HOST_INFRA_DECLARATION = JSON.stringify({
   schemaVersion: 1,

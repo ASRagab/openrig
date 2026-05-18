@@ -128,7 +128,7 @@ export function resolveMissionsRoot(opts: {
   throw new ScopeCliError({
     fact: `Could not locate a missions/ root from cwd ${cwd}.`,
     consequence: "No mission tree to operate on.",
-    action: "cd into the substrate workspace, or set OPENRIG_WORK_ROOT=/path/to/substrate/shared-docs/openrig-work.",
+    action: "cd into the substrate workspace, or set OPENRIG_WORK_ROOT=/path/to/your/workspace.",
   });
 }
 

@@ -301,7 +301,7 @@ describe("TranscriptStore", () => {
           "  ⏵⏵ accept edits on (shift+tab to cycle)                 new task? /clear to save 248.6k tokens",
           "                                                                            Checking for updates",
           "  1 background terminal running · /ps to view · /stop to close",
-          "  gpt-5.4 xhigh fast · Context [█▏   ] · ~/code/substrate/shared-docs/rigs/kernel",
+          "  gpt-5.4 xhigh fast · Context [█▏   ] · ~/.openrig/shared-docs/rigs/kernel",
           "OpenRig session identity:",
           "- rig: kernel",
           "- member: advisor-lead3",
