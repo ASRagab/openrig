@@ -256,6 +256,19 @@ export class QueueRepository {
     this.validateRig = opts?.validateRig ?? (() => true);
     this.transport = opts?.transport;
     this.hasTargetRepoColumn = detectQueueColumn(db, "target_repo");
+
+    // OPR.0.3.2.20 — register the EXACT human-seat regex predicate as
+    // a SQLite function so the attention query can apply the strict
+    // check BEFORE LIMIT. LIKE / GLOB patterns are supersets that
+    // would let malformed rows (e.g., 'human-@kernel' — empty name
+    // segment) occupy the LIMIT window and hide valid attention items
+    // behind them (guard re-verify-3 qitem-20260518193005 BLOCKER 1).
+    // better-sqlite3 db.function is idempotent; safe to call once at
+    // construction.
+    db.function("is_human_seat_session", { deterministic: true }, (value: unknown) => {
+      if (typeof value !== "string") return 0;
+      return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(value) ? 1 : 0;
+    });
   }
 
   /**
@@ -1026,14 +1039,18 @@ export class QueueRepository {
     // destinationSession/sourceSession/targetRepo — guard re-verify
     // qitem-20260518192210 BLOCKER 1).
     const statePlaceholders = states.map(() => "?").join(", ");
+    // The attention predicate is EXACT in SQL (guard re-verify-3
+    // qitem-20260518193005 BLOCKER 1): is_human_seat_session evaluates
+    // the strict regex registered in the QueueRepository constructor.
+    // Malformed rows that would have slipped through a LIKE superset
+    // (e.g., 'human-@kernel' — empty name segment) are rejected at
+    // the SQL stage, BEFORE LIMIT, so they cannot saturate the LIMIT
+    // window and hide valid attention items.
     const conditions: string[] = [
       `state IN (${statePlaceholders})`,
       `(
         tier = 'human-gate'
-        OR destination_session = 'human@kernel'
-        OR destination_session = 'human@host'
-        OR destination_session LIKE 'human-%@kernel'
-        OR destination_session LIKE 'human-%@host'
+        OR is_human_seat_session(destination_session) = 1
       )`,
     ];
     const params: unknown[] = [...states];

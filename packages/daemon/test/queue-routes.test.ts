@@ -9,6 +9,7 @@ import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
 import { inboxEntriesSchema } from "../src/db/migrations/026_inbox_entries.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
+import { queueTargetRepoSchema } from "../src/db/migrations/039_queue_target_repo.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { InboxHandler } from "../src/domain/inbox-handler.js";
@@ -51,6 +52,7 @@ describe("queue routes", () => {
       queueTransitionsSchema,
       inboxEntriesSchema,
       outboxEntriesSchema,
+      queueTargetRepoSchema, // OPR.0.3.2.20: required for attention=1&targetRepo=X composition tests
     ]);
     bus = new EventBus(db);
     queueRepo = new QueueRepository(db, bus);
@@ -496,6 +498,134 @@ describe("queue routes", () => {
     // filtering. This test scales the routine churn well past the
     // old ATTENTION_FETCH_BOUND to prove window-independence by
     // construction.
+    // Guard re-verify-3 (qitem-20260518193005) BLOCKER 1: SQL LIKE
+    // was a superset of the regex. Malformed rows like
+    // `destination_session='human-@kernel'` (empty name segment)
+    // match LIKE `human-%@kernel` but FAIL the strict regex. >LIMIT
+    // such rows could fill the SQL window pre-JS-filter and hide
+    // valid attention items behind them.
+    //
+    // Fix: SQLite function `is_human_seat_session` evaluates the
+    // exact regex in SQL — malformed rows are rejected BEFORE LIMIT.
+    it("BLOCKER re-verify-3: malformed superset rows ('human-@kernel') do NOT evict valid attention items", async () => {
+      // Seed 1 valid attention item.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "advisor@r",
+          destinationSession: "human-alice@kernel",
+          body: "valid attention",
+        }),
+      });
+      // Seed 1100 malformed rows that match LIKE 'human-%@kernel' or
+      // similar but FAIL the strict regex (empty name segment;
+      // forbidden chars). Mix forms to ensure no single LIKE branch
+      // is the leak.
+      for (let i = 0; i < 1100; i++) {
+        const variant = i % 4;
+        const dest = variant === 0
+          ? "human-@kernel"          // empty segment between hyphen and @
+          : variant === 1
+            ? "human- @kernel"       // space (forbidden char) — would match LIKE 'human-%@kernel'
+            : variant === 2
+              ? "human-x:@kernel"    // colon (forbidden char)
+              : "human-x/@kernel";   // slash (forbidden char)
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `garbage-${i}@r`,
+            destinationSession: dest,
+            body: `malformed ${i}`,
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1&limit=100");
+      const data = (await res.json()) as Array<{ destinationSession: string; body: string }>;
+      // Valid item must surface — it is the ONLY row matching the
+      // strict regex. Malformed rows must NOT appear.
+      const valid = data.find((q) => q.destinationSession === "human-alice@kernel");
+      expect(valid).toBeDefined();
+      expect(valid!.body).toBe("valid attention");
+      // No malformed rows in the result set.
+      for (const q of data) {
+        expect(q.destinationSession).not.toBe("human-@kernel");
+        expect(q.destinationSession).not.toContain(" ");
+        expect(q.destinationSession).not.toContain(":");
+        expect(q.destinationSession).not.toContain("/");
+      }
+    });
+
+    // Guard re-verify-3 (qitem-20260518193005) BLOCKER 2: targetRepo
+    // composition was implemented in the previous forward-fix but
+    // never pinned by a test. This discriminator proves
+    // attention=1&targetRepo=X scopes the result + composes with the
+    // attention predicate at the SQL stage (LIMIT applies AFTER).
+    it("BLOCKER re-verify-3: attention=1 + targetRepo=X scopes attention to repo X", async () => {
+      // Seed attention items in different repos.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-bob@kernel",
+          body: "for repo-a",
+          targetRepo: "repo-a",
+        }),
+      });
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-carol@kernel",
+          body: "for repo-b",
+          targetRepo: "repo-b",
+        }),
+      });
+      const res = await app.request("/api/queue/list?attention=1&targetRepo=repo-a");
+      const data = (await res.json()) as Array<{ targetRepo: string | null; body: string }>;
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      for (const item of data) {
+        expect(item.targetRepo).toBe("repo-a");
+      }
+    });
+
+    it("BLOCKER re-verify-3: targetRepo composition preserves the >1100-routine-open durability guarantee", async () => {
+      // Seed 1 attention item with targetRepo=repo-X.
+      await app.request("/api/queue/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSession: "a@r",
+          destinationSession: "human-z@kernel",
+          body: "repo-X attention",
+          targetRepo: "repo-X",
+        }),
+      });
+      // 1100 newer routine open qitems in OTHER repos that would
+      // otherwise dominate the window if the targetRepo predicate
+      // were applied post-LIMIT.
+      for (let i = 0; i < 1100; i++) {
+        await app.request("/api/queue/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceSession: `routine-${i}@r`,
+            destinationSession: `other-${i}@r`,
+            body: `noise ${i}`,
+            targetRepo: "repo-other",
+          }),
+        });
+      }
+      const res = await app.request("/api/queue/list?attention=1&targetRepo=repo-X");
+      const data = (await res.json()) as Array<{ targetRepo: string | null; body: string }>;
+      expect(data.length).toBe(1);
+      expect(data[0]!.targetRepo).toBe("repo-X");
+      expect(data[0]!.body).toBe("repo-X attention");
+    });
+
     it("BLOCKER-1: attention item surfaces even when >1100 newer routine OPEN qitems exist (SQL predicate pushdown)", async () => {
       await app.request("/api/queue/create", {
         method: "POST",
