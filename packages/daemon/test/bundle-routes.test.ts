@@ -1671,12 +1671,21 @@ describe("Bundle API routes", () => {
         '        profile: default', '        runtime: claude-code', '        cwd: .',
         '    edges: []', 'edges: []',
       ].join("\n"));
-      // Just plugins + skills for compactness; consumer fields are the
-      // same shape across all 5 kinds via the inspect normalization.
+      // All 5 cross-primitive kinds — per banked guard catch on dc4df12f:
+      // testing only 2 leaves the workflow_specs/context_packs/agent_images
+      // snake_case→camelCase mappings unproven. Each kind's content + author
+      // declaration + response assertion below.
       fs.mkdirSync(path.join(sourceRoot, "skills/inspect-skill"), { recursive: true });
       fs.writeFileSync(path.join(sourceRoot, "skills/inspect-skill/SKILL.md"), "# inspect skill");
       fs.mkdirSync(path.join(sourceRoot, "plugins/inspect-plugin"), { recursive: true });
       fs.writeFileSync(path.join(sourceRoot, "plugins/inspect-plugin/plugin.json"), '{"name":"inspect-plugin","version":"1.0"}');
+      fs.mkdirSync(path.join(sourceRoot, "workflows"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "workflows/inspect-flow.yaml"), "workflow:\n  id: inspect-flow\n  version: '1'\n  roles: { producer: {} }\n  steps:\n    - id: produce\n      actor_role: producer\n");
+      fs.mkdirSync(path.join(sourceRoot, "context-packs/inspect-pack"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "context-packs/inspect-pack/manifest.yaml"), "name: inspect-pack\nversion: '1'\nfiles:\n  - path: brief.md\n    role: brief\n");
+      fs.writeFileSync(path.join(sourceRoot, "context-packs/inspect-pack/brief.md"), "# brief");
+      fs.mkdirSync(path.join(sourceRoot, "agent-images/inspect-image"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agent-images/inspect-image/manifest.yaml"), "name: inspect-image\nversion: '1'\nruntime: claude-code\nsource_seat: x@y\nsource_session_id: aaa\nsource_resume_token: aaa\ncreated_at: '2026-05-31T00:00:00Z'\nfiles: []\n");
       fs.writeFileSync(path.join(sourceRoot, "bundle.yaml"), [
         'skills:',
         '  - skills/inspect-skill/SKILL.md',
@@ -1685,6 +1694,12 @@ describe("Bundle API routes", () => {
         '    source:',
         '      kind: local',
         '      path: plugins/inspect-plugin',
+        'workflow_specs:',
+        '  - workflows/inspect-flow.yaml',
+        'context_packs:',
+        '  - context-packs/inspect-pack/manifest.yaml',
+        'agent_images:',
+        '  - agent-images/inspect-image',
       ].join("\n"));
 
       const createRes = await app.request("/api/bundles/create", {
@@ -1704,13 +1719,16 @@ describe("Bundle API routes", () => {
       });
       expect(inspectRes.status).toBe(200);
       const inspectBody = await inspectRes.json();
-      // QA-C1 repair: cross-primitive fields surfaced in the normalized
+      // QA-C1 repair: ALL 5 cross-primitive fields surfaced in the normalized
       // manifest. v2 archive → response.manifest carries camelCase keys.
-      expect(inspectBody.manifest.skills).toBeDefined();
+      // Per banked guard catch on dc4df12f: each snake_case→camelCase
+      // mapping individually proven, not just skills+plugins.
       expect(inspectBody.manifest.skills).toEqual(["skills/inspect-skill/SKILL.md"]);
-      expect(inspectBody.manifest.plugins).toBeDefined();
       expect(inspectBody.manifest.plugins).toHaveLength(1);
       expect(inspectBody.manifest.plugins[0].id).toBe("inspect-plugin");
+      expect(inspectBody.manifest.workflowSpecs).toEqual(["workflows/inspect-flow.yaml"]);
+      expect(inspectBody.manifest.contextPacks).toEqual(["context-packs/inspect-pack/manifest.yaml"]);
+      expect(inspectBody.manifest.agentImages).toEqual(["agent-images/inspect-image"]);
     } finally {
       fs.rmSync(sourceRoot, { recursive: true, force: true });
       if (fs.existsSync(outputPath)) fs.rmSync(outputPath);
