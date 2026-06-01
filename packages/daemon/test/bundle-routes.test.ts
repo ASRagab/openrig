@@ -1648,6 +1648,124 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.5 B1 repair (banked 79a89d40 guard catch):
+  // symlink escape via author bundle.yaml — FILE shape. A skill path
+  // that looks lexically contained but symlinks to an outside file must
+  // be rejected. Without realpath validation, dereference at vendor
+  // time would copy outside content into the archive as a regular file.
+  it("POST /api/bundles/create rejects author bundle.yaml skill that is a symlink targeting outside sourceRoot", async () => {
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "create-symlink-escape-file-src-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "create-symlink-escape-file-outside-"));
+    const outputPath = path.join(tmpDir, "symlink-escape-file.rigbundle");
+    try {
+      // Outside content (private/secret file the bundle should NEVER contain)
+      const outsideFile = path.join(outsideDir, "secret.md");
+      fs.writeFileSync(outsideFile, "SECRET CONTENT");
+
+      // Pod-aware sourceRoot fixture
+      fs.mkdirSync(path.join(sourceRoot, "agents/impl"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agents/impl/agent.yaml"), [
+        'name: impl-agent', 'version: "1.0.0"', 'resources:', '  skills: []',
+        'profiles:', '  default:', '    uses:', '      skills: []',
+      ].join("\n"));
+      const specPath = path.join(sourceRoot, "rig.yaml");
+      fs.writeFileSync(specPath, [
+        'version: "0.2"', 'name: symlink-escape-file-rig', 'pods:',
+        '  - id: dev', '    label: Dev', '    members:',
+        '      - id: impl', '        agent_ref: "local:agents/impl"',
+        '        profile: default', '        runtime: claude-code', '        cwd: .',
+        '    edges: []', 'edges: []',
+      ].join("\n"));
+
+      // Symlink inside sourceRoot → outside file
+      fs.mkdirSync(path.join(sourceRoot, "skills/escape"), { recursive: true });
+      fs.symlinkSync(outsideFile, path.join(sourceRoot, "skills/escape/SKILL.md"));
+
+      fs.writeFileSync(path.join(sourceRoot, "bundle.yaml"), [
+        'skills:',
+        '  - skills/escape/SKILL.md',
+      ].join("\n"));
+
+      const createRes = await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          specPath, rigRoot: sourceRoot,
+          bundleName: "symlink-escape-file-test", bundleVersion: "0.1.0", outputPath,
+        }),
+      });
+      // /create catch returns 500 with the message (per banked 79a89d40
+      // comment-honesty update). Body.error names the symlink escape.
+      expect(createRes.status).toBe(500);
+      const body = await createRes.json();
+      expect(body.error).toMatch(/symlink escape|outside bundle source root/i);
+      // CRUCIAL: no archive at outputPath (create failed before pack)
+      expect(fs.existsSync(outputPath)).toBe(false);
+    } finally {
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      if (fs.existsSync(outputPath)) fs.rmSync(outputPath);
+    }
+  });
+
+  // Item 6 / Checkpoint 7.5 B1 repair (banked 79a89d40 guard catch):
+  // symlink escape via author bundle.yaml — DIR shape. A plugin path
+  // that looks lexically contained but symlinks to an outside dir must
+  // be rejected. Without realpath validation, cpSync dereference would
+  // copy the outside dir tree into the archive.
+  it("POST /api/bundles/create rejects author bundle.yaml plugin that is a symlink targeting outside sourceRoot", async () => {
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "create-symlink-escape-dir-src-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "create-symlink-escape-dir-outside-"));
+    const outputPath = path.join(tmpDir, "symlink-escape-dir.rigbundle");
+    try {
+      // Outside dir tree (private content the bundle should NEVER contain)
+      fs.writeFileSync(path.join(outsideDir, "private.json"), '{"secret":"data"}');
+
+      fs.mkdirSync(path.join(sourceRoot, "agents/impl"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agents/impl/agent.yaml"), [
+        'name: impl-agent', 'version: "1.0.0"', 'resources:', '  skills: []',
+        'profiles:', '  default:', '    uses:', '      skills: []',
+      ].join("\n"));
+      const specPath = path.join(sourceRoot, "rig.yaml");
+      fs.writeFileSync(specPath, [
+        'version: "0.2"', 'name: symlink-escape-dir-rig', 'pods:',
+        '  - id: dev', '    label: Dev', '    members:',
+        '      - id: impl', '        agent_ref: "local:agents/impl"',
+        '        profile: default', '        runtime: claude-code', '        cwd: .',
+        '    edges: []', 'edges: []',
+      ].join("\n"));
+
+      // Symlink inside sourceRoot/plugins → outside dir
+      fs.mkdirSync(path.join(sourceRoot, "plugins"), { recursive: true });
+      fs.symlinkSync(outsideDir, path.join(sourceRoot, "plugins/escape"));
+
+      fs.writeFileSync(path.join(sourceRoot, "bundle.yaml"), [
+        'plugins:',
+        '  - id: escape',
+        '    source:',
+        '      kind: local',
+        '      path: plugins/escape',
+      ].join("\n"));
+
+      const createRes = await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          specPath, rigRoot: sourceRoot,
+          bundleName: "symlink-escape-dir-test", bundleVersion: "0.1.0", outputPath,
+        }),
+      });
+      expect(createRes.status).toBe(500);
+      const body = await createRes.json();
+      expect(body.error).toMatch(/symlink escape|outside bundle source root/i);
+      expect(fs.existsSync(outputPath)).toBe(false);
+    } finally {
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      if (fs.existsSync(outputPath)) fs.rmSync(outputPath);
+    }
+  });
+
   // Item 6 / Checkpoint 7.3e step 3: /install routes declared workflow_specs
   // after successful bootstrap. Target = SettingsStore-resolved
   // <workspaceSpecsRoot>/workflows. Bundle has workflow_specs[] with a path

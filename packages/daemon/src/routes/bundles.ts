@@ -645,8 +645,13 @@ function writeInstallAudit(opts: {
  *   file copy); plugins + context_packs (manifest.yaml path → parent
  *   dir) + agent_images are dir paths (recursive copy with symlink
  *   dereference).
- * - Throws on missing source path or path-containment violation; the
- *   /create route catches + returns a 400 with the message.
+ * - Throws on missing source path / path-containment violation /
+ *   realpath escape (banked 79a89d40 B1: lexical containment alone is
+ *   insufficient — symlinks under sourceRoot can target outside content;
+ *   each declared path is realpath-validated, and dir vendoring pre-
+ *   walks the tree with lstat to catch nested symlink escapes). The
+ *   /create route's outer catch returns 500 with the message; if this
+ *   maps poorly to operator UX, a follow-up can wrap to 400.
  *
  * Returns the cross-primitive blocks to populate on the manifest the
  * assembler returned. The /create route writes the manifest AFTER
@@ -664,8 +669,71 @@ interface AuthorBundleCrossPrimitives {
 function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBundleCrossPrimitives {
   const authorBundlePath = nodePath.join(sourceRoot, "bundle.yaml");
   if (!fs.existsSync(authorBundlePath)) return {};
-  const sourceRootResolved = nodePath.resolve(sourceRoot);
+  // Canonicalize sourceRoot before vendoring (banked 79a89d40 B1 guard
+  // catch: lexical containment + dereference allows symlinks under
+  // sourceRoot to escape). realpath the root once; every declared path's
+  // realpath must stay within this boundary.
+  const sourceRootReal = fs.realpathSync(sourceRoot);
   const stagingResolved = nodePath.resolve(staging);
+
+  /** Realpath-contain check: the actual file/dir behind `absPath` (after
+   * symlink resolution) must live under sourceRootReal. Catches symlinks
+   * whose targets escape the source tree even when the lexical path is
+   * inside sourceRoot. Throws on escape. */
+  const assertSourceRealContained = (absPath: string, kindLabel: string, declared: string): string => {
+    let realPath: string;
+    try {
+      realPath = fs.realpathSync(absPath);
+    } catch (err) {
+      throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source: ${(err as Error).message}`);
+    }
+    if (realPath !== sourceRootReal && !realPath.startsWith(sourceRootReal + nodePath.sep)) {
+      throw new Error(`author bundle ${kindLabel} '${declared}' resolves outside bundle source root (symlink escape); rejected`);
+    }
+    return realPath;
+  };
+
+  /** Pre-walk a directory tree with lstat; for every symlink encountered,
+   * realpath-check containment under sourceRootReal. Regular files and
+   * dirs need no special check (they're inherently contained — the
+   * problem class is symlinks escaping). Throws on any escape. */
+  const assertNoSymlinkEscapeInTree = (dirAbs: string, kindLabel: string, declared: string): void => {
+    const stack: string[] = [dirAbs];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(cur, { withFileTypes: true });
+      } catch {
+        // Unreadable dir — skip; cpSync will surface the failure if material
+        continue;
+      }
+      for (const entry of entries) {
+        const entryAbs = nodePath.join(cur, entry.name);
+        if (entry.isSymbolicLink()) {
+          // Realpath the symlink target; reject if escapes sourceRootReal
+          let entryReal: string;
+          try {
+            entryReal = fs.realpathSync(entryAbs);
+          } catch (err) {
+            throw new Error(`author bundle ${kindLabel} '${declared}' has unreadable symlink at '${nodePath.relative(sourceRootReal, entryAbs)}': ${(err as Error).message}`);
+          }
+          if (entryReal !== sourceRootReal && !entryReal.startsWith(sourceRootReal + nodePath.sep)) {
+            throw new Error(`author bundle ${kindLabel} '${declared}' contains nested symlink at '${nodePath.relative(sourceRootReal, entryAbs)}' escaping bundle source root; rejected`);
+          }
+          // If the symlink target is a directory under sourceRoot, walk it
+          // (cpSync with dereference:true will follow it; we need to
+          // validate any nested symlinks too)
+          try {
+            const st = fs.statSync(entryReal);
+            if (st.isDirectory()) stack.push(entryReal);
+          } catch { /* unreadable — skip */ }
+        } else if (entry.isDirectory()) {
+          stack.push(entryAbs);
+        }
+      }
+    }
+  };
 
   const authorYaml = fs.readFileSync(authorBundlePath, "utf-8");
   const authorParsed = parsePodBundleManifest(authorYaml) as Record<string, unknown>;
@@ -673,33 +741,42 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
 
   const vendorFile = (declared: string, kindLabel: string): void => {
     if (!isRelativeSafePath(declared)) throw new Error(`author bundle ${kindLabel} path '${declared}' is not safe`);
-    const sourceAbs = nodePath.resolve(sourceRoot, declared);
-    if (sourceAbs !== sourceRootResolved && !sourceAbs.startsWith(sourceRootResolved + nodePath.sep)) {
+    const sourceAbs = nodePath.resolve(sourceRootReal, declared);
+    // Lexical containment + realpath containment (banked 79a89d40 B1)
+    if (sourceAbs !== sourceRootReal && !sourceAbs.startsWith(sourceRootReal + nodePath.sep)) {
       throw new Error(`author bundle ${kindLabel} path '${declared}' escapes bundle source root`);
     }
+    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
+    assertSourceRealContained(sourceAbs, kindLabel, declared);
     const targetAbs = nodePath.resolve(staging, declared);
     if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
       throw new Error(`author bundle ${kindLabel} target '${declared}' escapes staging`);
     }
-    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
     fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
-    // Dereference symlinks (tar safety per banked pre-existing-trust-boundary)
+    // readFileSync follows the symlink; we already validated its realpath
+    // stays in sourceRootReal. Write as regular file (tar safety).
     const content = fs.readFileSync(sourceAbs);
     fs.writeFileSync(targetAbs, content);
   };
   const vendorDir = (declared: string, kindLabel: string): void => {
     if (!isRelativeSafePath(declared)) throw new Error(`author bundle ${kindLabel} path '${declared}' is not safe`);
-    const sourceAbs = nodePath.resolve(sourceRoot, declared);
-    if (sourceAbs !== sourceRootResolved && !sourceAbs.startsWith(sourceRootResolved + nodePath.sep)) {
+    const sourceAbs = nodePath.resolve(sourceRootReal, declared);
+    if (sourceAbs !== sourceRootReal && !sourceAbs.startsWith(sourceRootReal + nodePath.sep)) {
       throw new Error(`author bundle ${kindLabel} path '${declared}' escapes bundle source root`);
     }
+    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
+    // Realpath-validate the declared dir itself (catches symlink-to-outside-dir)
+    const sourceReal = assertSourceRealContained(sourceAbs, kindLabel, declared);
+    // Pre-walk the realpath-resolved dir to catch nested symlink escapes
+    // before cpSync dereferences anything
+    assertNoSymlinkEscapeInTree(sourceReal, kindLabel, declared);
     const targetAbs = nodePath.resolve(staging, declared);
     if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
       throw new Error(`author bundle ${kindLabel} target '${declared}' escapes staging`);
     }
-    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
     fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
-    // dereference: true → symlinks are followed and written as regular files
+    // dereference: true → symlinks followed (now validated safe) and
+    // written as regular files for tar safety
     fs.cpSync(sourceAbs, targetAbs, { recursive: true, dereference: true });
   };
 
