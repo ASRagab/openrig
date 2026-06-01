@@ -292,7 +292,7 @@ export class QueueRepository {
    * can invoke after its outer transaction commits, completing the
    * createWithinTransaction()'s deferred post-commit side effects.
    *
-   * V0.3.1 slice 23 founder-walk-queue-handoff-envelope: the nudge body
+   * V0.3.1 slice 23 queue-handoff-envelope: the nudge body
    * is now wrapped with the same From/To/---/body/---/↩ Reply envelope
    * that `rig send` uses. `sourceSession` is the seat that triggered
    * the create/handoff so the recipient pane shows where the nudge
