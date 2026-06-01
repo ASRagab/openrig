@@ -35,7 +35,11 @@ import type { Migration } from "../migrate.js";
  *   - reason (TEXT) — required for hold + drop
  *   - annotation (TEXT) — required for annotate
  *   - notify_attempted (INTEGER 0|1) — for handoff
- *   - notify_result (TEXT) — verified | sent-unverified | failed:<reason>
+ *   - notify_result (TEXT) — verified | delivered-ack-pending | failed:<reason>
+ *     (post-OPR.0.3.2.21.FR-4(c) wording: "sent-unverified" was misleading
+ *     because it read as a partial-failure even when delivery was fine;
+ *     "delivered-ack-pending" reads as the normal-and-expected case for
+ *     codex seats whose synchronous ack window expired while busy)
  *   - audit_notes_json (TEXT) — operator-supplied evidence map
  *
  * Indexes:

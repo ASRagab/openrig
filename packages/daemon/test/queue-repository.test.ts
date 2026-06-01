@@ -343,6 +343,29 @@ describe("QueueRepository", () => {
       expect(fresh.state).toBe("pending");
     });
 
+    // OPR.0.3.2.21.FR-4(c) — wording rename for the delivered-but-ack-expired
+    // case. Prior literal "sent-unverified" read as a partial-failure even
+    // when the underlying delivery was fine; "delivered-ack-pending" reads
+    // as the healthy-and-expected case (codex seats mid-task commonly miss
+    // the synchronous ack window).
+    it("ok-but-unverified nudge records lastNudgeResult as 'delivered-ack-pending' (was 'sent-unverified')", async () => {
+      const stubTransport = {
+        send: async () => ({ ok: true, verified: false }),
+      };
+      const nudgingRepo = new QueueRepository(db, bus, { transport: stubTransport });
+      const item = await nudgingRepo.create({
+        sourceSession: "alice@rig",
+        destinationSession: "bob@rig",
+        body: "delivered but ack window expired",
+      });
+      const fresh = nudgingRepo.getById(item.qitemId)!;
+      expect(fresh.lastNudgeResult).toBe("delivered-ack-pending");
+      // Discriminator: the old wording must NOT appear anywhere on
+      // the freshly-read row (proves the literal was renamed end-to-end,
+      // not just shadowed).
+      expect(fresh.lastNudgeResult).not.toBe("sent-unverified");
+    });
+
     it("handoff nudges new destination by default", async () => {
       const sends: Array<{ session: string }> = [];
       const stubTransport = {

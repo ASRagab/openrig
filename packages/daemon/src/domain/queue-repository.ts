@@ -311,8 +311,15 @@ export class QueueRepository {
     const text = wrapPaneEnvelope(sourceSession, destinationSession, bareBody);
     try {
       const res = await this.transport.send(destinationSession, text, { verify: true });
+      // OPR.0.3.2.21.FR-4(c) — wording rename: the prior literal
+      // "sent-unverified" read as a failure even in the common case
+      // (delivery confirmed but the synchronous ack window expired,
+      // which is normal for codex seats mid-task). The new literal
+      // "delivered-ack-pending" reads as healthy. The old "verified"
+      // case is unchanged for backward-compat with any tooling that
+      // already consumed the positive literal.
       const result = res.ok
-        ? (res.verified ? "verified" : "sent-unverified")
+        ? (res.verified ? "verified" : "delivered-ack-pending")
         : `failed:${res.error ?? res.reason ?? "unknown"}`;
       this.recordNudgeAttempt(qitemId, result);
     } catch (err) {
