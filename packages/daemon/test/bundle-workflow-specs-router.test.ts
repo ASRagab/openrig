@@ -24,7 +24,16 @@ function mockFs(initialFiles: Record<string, string> = {}): WorkflowSpecsRouterF
 }
 
 const BUNDLE_ROOT = "/bundle/root";
-const TARGET = "/operator/.openrig/workflow-specs";
+// TARGET reflects the CALLER CONTRACT documented in
+// bundle-workflow-specs-router.ts RouteWorkflowSpecsInput.targetWorkflowSpecsDir:
+// the operator workflow-specs library is `<workspace.specs_root>/workflows`,
+// the path the live spec-library-workflow-scanner reads from
+// (see daemon startup.ts:903-916 + scanner.ts:320-342). Default
+// workspace.specs_root layout = <openrigHome>/specs, so the workflows folder
+// resolves to <openrigHome>/specs/workflows. The router itself is parametric
+// on targetWorkflowSpecsDir; this test fixture pins the contract so step 3
+// integration cannot drift to an unscanned location.
+const TARGET = "/operator/.openrig/specs/workflows";
 
 function makeInput(overrides?: Partial<RouteWorkflowSpecsInput>): RouteWorkflowSpecsInput {
   return {

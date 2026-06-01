@@ -42,7 +42,21 @@ export interface RouteWorkflowSpecsInput {
   bundleRoot: string;
   /** Relative workflow_spec paths declared in the manifest's workflow_specs[] block. */
   declaredWorkflowSpecs: string[];
-  /** Absolute path to the operator workflow-specs library (default ~/.openrig/workflow-specs). */
+  /**
+   * Absolute path to the operator workflow-specs library that the
+   * spec-library-workflow-scanner ACTUALLY reads from. **CALLER CONTRACT**:
+   * this MUST be `<workspace.specs_root>/workflows` — the folder discovered
+   * by `scanWorkflowSpecFolder` in
+   * `packages/daemon/src/domain/spec-library-workflow-scanner.ts:320-342`
+   * and exposed via `deps.workflowsFolderDir` in
+   * `packages/daemon/src/startup.ts:903-916` (resolved from
+   * ContextPackSettingsStore: env > config > workspace-default, default
+   * `<openrigHome>/specs/workflows`). Writing anywhere else (e.g.
+   * `~/.openrig/workflow-specs/`) will succeed silently but be invisible
+   * to the live workflow scanner — operator dead-end. The /install
+   * integration helper (Checkpoint 7.3e step 3) MUST resolve this path
+   * before calling routeWorkflowSpecs.
+   */
   targetWorkflowSpecsDir: string;
 }
 
