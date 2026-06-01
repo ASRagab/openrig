@@ -469,6 +469,14 @@ describe("rig scope mission create (HG-14 + HG-15)", () => {
       const parsed = JSON.parse(r.stdout);
       expect(parsed.ok).toBe(false);
       expect(parsed.error.fact).toMatch(/OPENRIG_MISSION_NOTES_TEMPLATE_PATH/);
+      // Discriminator (guard catch qitem-20260601121058): the failed scaffold
+      // MUST NOT leave a half-created mission dir behind. Without the
+      // verify-first-then-write reorder, the mission dir + README would
+      // exist after this command, and a retry would hit
+      // "Mission folder already exists." which the operator would
+      // reasonably read as a CLI bug.
+      const leakedPath = path.join(env.missionsRoot, "release-0.9.0");
+      expect(fs.existsSync(leakedPath), `expected no half-created mission at ${leakedPath} after stale env-var failure`).toBe(false);
     } finally {
       if (prior === undefined) delete process.env.OPENRIG_MISSION_NOTES_TEMPLATE_PATH;
       else process.env.OPENRIG_MISSION_NOTES_TEMPLATE_PATH = prior;
