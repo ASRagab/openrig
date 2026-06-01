@@ -67,8 +67,11 @@ export async function defaultStdinReader(): Promise<string> {
     process.stdin.on("end", () => resolve(data));
     process.stdin.on("error", reject);
     if (process.stdin.isTTY) {
-      // Resolve immediately to empty if nothing is piped; the caller's
-      // empty-body check turns this into a 3-part error.
+      // No pipe is connected to stdin; resolve immediately to empty
+      // rather than blocking forever waiting for data on a TTY. The
+      // empty body then flows through to the daemon's content
+      // validation (queue-repository owns the body contract); the CLI
+      // does not error locally on empty stdin.
       resolve("");
     }
   });
@@ -106,6 +109,14 @@ export async function resolveQueueBody(
     err.fact = `--body-file path does not exist: ${absPath}`;
     err.consequence = "rig queue create did not run; daemon was not contacted.";
     err.action = "Check the path; pass an absolute path; or use --body-file - to read from stdin.";
+    throw err;
+  }
+  const stat = fs.statSync(absPath);
+  if (!stat.isFile()) {
+    const err = new Error(`--body-file path is not a regular file: ${absPath}`) as Error & { fact?: string; consequence?: string; action?: string };
+    err.fact = `--body-file path is not a regular file: ${absPath}`;
+    err.consequence = "rig queue create did not run; daemon was not contacted.";
+    err.action = "Pass a path to a readable file (not a directory, symlink-to-directory, or block device). Use --body-file - to read from stdin.";
     throw err;
   }
   return fs.readFileSync(absPath, "utf8");

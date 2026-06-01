@@ -188,6 +188,25 @@ describe("rig queue CLI", () => {
       });
     });
 
+    // OPR.0.3.2.21.FR-4 cleanup (guard non-blocking note on FR-4a CLEAR): a
+    // directory passed to --body-file used to fall through to fs.readFileSync
+    // and surface a bare Error("EISDIR: illegal operation on a directory") with
+    // blank consequence/action. The cleanup commit emits the 3-part shape
+    // explicitly so the error reads consistently with the other body-resolve
+    // failure modes.
+    it("resolveQueueBody throws 3-part error when --body-file path is a directory (not a regular file)", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "queue-body-isdir-"));
+      try {
+        await expect(resolveQueueBody({ bodyFile: tmp })).rejects.toMatchObject({
+          fact: expect.stringMatching(/not a regular file/),
+          consequence: expect.stringMatching(/did not run/),
+          action: expect.stringMatching(/Pass a path to a readable file/),
+        });
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
     it("resolveQueueBody calls the injected stdin reader when --body is -", async () => {
       const stdinReader = vi.fn(async () => "from stdin\n");
       const out = await resolveQueueBody({ body: "-" }, stdinReader);
