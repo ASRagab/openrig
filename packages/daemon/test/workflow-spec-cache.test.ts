@@ -157,4 +157,44 @@ describe("WorkflowSpecCache (PL-004 Phase D)", () => {
     const found = cache.getByNameVersion("test-three-step", "1");
     expect(found?.specId).toBe(cached.specId);
   });
+
+  // OPR.0.3.2.22 Bug 4 — startup prune removes legacy cache rows whose
+  // source_path lives in noise directories that walkYamlFiles' new
+  // SKIP_DIRS guard now refuses to scan. Without this prune, stale
+  // rows from before SKIP_DIRS shipped would survive forever and keep
+  // showing up in `rig specs show` / `rig specs preview` candidates.
+  it("pruneNoiseDirRows removes cache rows from .worktrees/node_modules paths and preserves canonical-path rows", () => {
+    const fixtures: Array<{ path: string; specName: string; noise: boolean }> = [
+      { path: join(tmp, "workflows", "canon.yaml"), specName: "canonical-spec", noise: false },
+      { path: join(tmp, ".worktrees", "feature-branch", "workflows", "stale.yaml"), specName: "stale-worktree-spec", noise: true },
+      { path: join(tmp, "node_modules", "@vendor", "spec", "stale.yaml"), specName: "stale-node-modules-spec", noise: true },
+      { path: join(tmp, "dist", "stale.yaml"), specName: "stale-dist-spec", noise: true },
+    ];
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    for (const f of fixtures) {
+      mkdirSync(join(f.path, ".."), { recursive: true });
+      writeFileSync(f.path, SAMPLE_SPEC.replace("test-three-step", f.specName));
+      cache.readThrough(f.path);
+    }
+
+    expect(cache.listAll()).toHaveLength(4);
+
+    const removed = cache.pruneNoiseDirRows();
+    expect(removed, "expected 3 noise rows removed (.worktrees + node_modules + dist)").toBe(3);
+
+    const remaining = cache.listAll();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.sourcePath).toBe(fixtures[0]!.path);
+  });
+
+  it("pruneNoiseDirRows returns 0 when there are no noise rows", () => {
+    const canonicalPath = join(tmp, "workflows", "canon.yaml");
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    mkdirSync(join(canonicalPath, ".."), { recursive: true });
+    writeFileSync(canonicalPath, SAMPLE_SPEC);
+    cache.readThrough(canonicalPath);
+
+    expect(cache.pruneNoiseDirRows()).toBe(0);
+    expect(cache.listAll()).toHaveLength(1);
+  });
 });

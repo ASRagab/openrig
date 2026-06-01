@@ -907,6 +907,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // `<workspace.specs_root>/workflows`; SettingsStore resolves
     // workspaceSpecsRoot from env > config > workspace-default.
     deps.workflowSpecCache = workflowRuntime.specCache;
+
+    // OPR.0.3.2.22 Bug 4 — one-time prune of cache rows whose source_path
+    // lives in noise directories (.worktrees, node_modules, etc.). The
+    // post-Bug-4 walkYamlFiles SKIP_DIRS guard prevents NEW rows from
+    // those locations, but legacy rows from prior daemon versions (or
+    // operators who hand-imported a spec via path-form before SKIP_DIRS
+    // shipped) would persist without this prune. Cheap (single DELETE
+    // with bounded LIKE patterns) and safe (matches only the same
+    // directories the walker now refuses to enter).
+    workflowRuntime.specCache.pruneNoiseDirRows();
+
     try {
       const settingsStore = new ContextPackSettingsStore();
       const cfg = settingsStore.resolveConfig();
