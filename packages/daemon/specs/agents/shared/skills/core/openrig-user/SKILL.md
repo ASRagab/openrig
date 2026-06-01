@@ -137,6 +137,141 @@ Default posture:
 - Do not perform daemon stop/start, production DB copy/mutation, release, publish, or other
   consequence-boundary actions unless the operator/workstream has granted that specific gate.
 
+## First-user workspace setup
+
+When booting into a rig on a host where the workspace is unset, gap-ridden, or
+points at a stale layout, address that before substantive project work. The
+shipped surface is small + bounded — reach for the canonical commands rather
+than improvising.
+
+### Detect workspace state at boot
+
+Agent-actionable when the daemon is reachable.
+
+```bash
+rig workspace validate --json
+rig workspace validate <path> --kind <user|project|knowledge|lab|delivery> --json
+```
+
+`rig workspace validate` walks the workspace root and emits a structured
+frontmatter-gap report against the v0 contract. Exit code is non-zero when
+gaps exist (operators chain into hygiene fix loops). Default root is the
+current directory; pass a positional path to validate elsewhere. `--kind`
+scopes the contract to a specific workspace kind; omit for a kind-agnostic
+structural check.
+
+If `rig workspace validate` reports a non-zero `gapCount` OR the workspace
+root is unset / unwritable, the workspace needs instantiation — see the next
+section.
+
+### Instantiate the canonical workspace scaffold
+
+Agent-actionable. Idempotent on existing dirs without `--force`.
+
+```bash
+rig config init-workspace
+rig config init-workspace --root <path>
+rig config init-workspace --dry-run --json
+```
+
+`rig config init-workspace` scaffolds the canonical workspace layout at the
+configured `workspace.root` (default `~/.openrig/workspace`):
+
+- `missions/` — release missions + slices
+- `artifacts/` — work artifacts produced inside the workspace
+- `evidence/` — non-dogfood evidence (release evidence, proof packets, etc.)
+- `progress/` — progress index + per-mission rails
+- `field-notes/` — operator + agent observations
+- `specs/` — spec library (rig + agent + workflow YAML lives here)
+- `dogfood-evidence/` — dogfood proof packets + run artifacts
+
+The scaffold seeds one example mission (`getting-started`) with multiple
+slices, and drops a workspace README.md + STEERING.md so a fresh install has
+browsable Project content. `--root <path>` targets a non-default root for
+this call; `--dry-run` reports what would be created without writing.
+`--force` overwrites existing FILES but never deletes
+directories — operator content is safe.
+
+### Redirect the workspace root
+
+Operator-gated when persistent. Agent-actionable when one-shot via env-var.
+
+For a single command:
+
+```bash
+OPENRIG_WORKSPACE_ROOT=<path> rig <command> ...
+```
+
+For a persistent host-level redirect, the operator changes the config file or
+runs the setter:
+
+```bash
+rig config set workspace.root <path>
+```
+
+ConfigStore precedence: `OPENRIG_WORKSPACE_ROOT` env > config-file
+`workspace.root` > built-in default `~/.openrig/workspace`. The same
+precedence governs `OPENRIG_WORKSPACE_SPECS_ROOT` → `workspace.specs_root`
+(default `<workspace_root>/specs`).
+
+Prefer the env-var form for one-shot redirects (transparent to operators);
+reserve `rig config set` for changes the operator owns.
+
+### Build a workspace from scratch
+
+Agent-actionable. Same surface as the canonical scaffold above; the
+`workspace.root` cascade handles non-existent host paths.
+
+```bash
+rig config init-workspace --root /path/to/new/workspace
+```
+
+The command creates the root dir if missing (idempotent: existing root +
+populated subdirs is a no-op). Run
+`rig workspace validate /path/to/new/workspace --json` after to confirm the
+contract holds.
+
+### Create a workflow inside an existing workspace
+
+Authoring is operator-or-agent; validation + instantiation are
+agent-actionable.
+
+Workflow spec files live at:
+
+```
+<workspace_root>/specs/workflows/<name>.yaml
+```
+
+`<workspace_root>` resolves via the ConfigStore precedence named above.
+There is no `rig workflow create` verb in v0.3.x — the spec YAML is authored
+directly. Template by hand from the documented schema, or copy a built-in
+starter from `<openrig install>/dist/builtins/workflow-specs/` and adapt.
+Once written:
+
+```bash
+rig workflow validate <workspace_root>/specs/workflows/<name>.yaml --json
+
+rig workflow instantiate <workspace_root>/specs/workflows/<name>.yaml \
+  --root-objective "<one-line objective for the run>" \
+  --created-by <your-session>@<your-rig> \
+  --json
+```
+
+Both `--root-objective <text>` and `--created-by <session>` are REQUIRED
+on `instantiate` — omitting either yields a Commander required-option
+error before the daemon is contacted. `--entry-owner <session>` is an
+optional override for the entry-step owner; default routing is per the
+workflow spec.
+
+`validate` returns a structured ok/error report; `instantiate` creates a
+workflow instance + entry-step qitem. Inspect existing surface state with:
+
+```bash
+rig workflow specs --json   # list registered specs (built-in + operator-authored)
+rig workflow list --json    # list active workflow instances
+rig workflow show <instanceId> --json
+```
+
 ## v0.3.x Starter, Workspace, And Plugin Surfaces
 
 OpenRig v0.3.0 adds `rig agent-image`, `rig context-pack`, `rig workspace`, and
