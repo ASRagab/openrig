@@ -1533,6 +1533,220 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.3e step 3: /install routes declared workflow_specs
+  // after successful bootstrap. Target = SettingsStore-resolved
+  // <workspaceSpecsRoot>/workflows. Bundle has workflow_specs[] with a path
+  // pointing to a workflow YAML file in the bundle tree. Verifies the file
+  // lands at <env-overridden specs root>/workflows/<basename>.
+  it("POST /api/bundles/install routes declared workflow_specs after successful bootstrap (completed branch)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-workflow-specs-route-test-"));
+    const specsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-workflow-specs-route-target-"));
+    process.env.OPENRIG_HOME = auditHome;
+    process.env.OPENRIG_WORKSPACE_SPECS_ROOT = specsRoot;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "with-workflow-specs.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wflow-target-"));
+      try {
+        // Put a workflow_spec YAML inside the bundle's package source
+        const workflowSrcDir = path.join(tmpDir, "test-pkg", "workflows");
+        fs.mkdirSync(workflowSrcDir, { recursive: true });
+        fs.writeFileSync(path.join(workflowSrcDir, "onboarding.yaml"), "name: onboarding\nversion: '1.0'\nsteps: []\n");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "with-workflow-specs", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "wflow-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          // Declare the verbatim package path (no leading "workflows/"), mirror of
+          // the skills-test pattern at line 1258. File is already in the bundle via
+          // the test-pkg source; integrity manifest unchanged.
+          const tampered = `${original}\nworkflow_specs:\n  - packages/test-pkg/workflows/onboarding.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-workflow-specs",
+          rigId: "01H000000000000000WSPEC01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.workflowSpecsRouting).toBeDefined();
+        expect(body.workflowSpecsRouting.routedCount).toBe(1);
+        expect(body.workflowSpecsRouting.records[0].status).toBe("routed");
+        // Declared path has no leading "workflows/" so routes verbatim;
+        // file lands at <specsRoot>/workflows/<verbatim-path>
+        const expectedTarget = path.join(specsRoot, "workflows", "packages", "test-pkg", "workflows", "onboarding.yaml");
+        expect(fs.existsSync(expectedTarget)).toBe(true);
+        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("name: onboarding\nversion: '1.0'\nsteps: []\n");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+      else process.env.OPENRIG_WORKSPACE_SPECS_ROOT = origSpecsRoot;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+      fs.rmSync(specsRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Item 6 / Checkpoint 7.3e step 3 / B1-mirror discipline (banked 5f410eee
+  // decoupling lesson): workflow_specs routing must fire even when operator
+  // uses BOTH --skip-version-check and --force pre-check overrides. The
+  // routing is independent of the pre-check extraction gate. Discriminator:
+  // re-coupling routeWorkflowSpecsAfterBootstrap to installMeta would make
+  // this test fail (workflowSpecsRouting undefined when both flags set on a
+  // bundle that declares workflow_specs[]).
+  it("POST /api/bundles/install routes declared workflow_specs even when both --skip-version-check and --force are set (B1 mirror)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-wflow-dual-override-"));
+    const specsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-wflow-dual-override-target-"));
+    process.env.OPENRIG_HOME = auditHome;
+    process.env.OPENRIG_WORKSPACE_SPECS_ROOT = specsRoot;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "dual-override-wflow.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-wflow-target-"));
+      try {
+        const workflowSrcDir = path.join(tmpDir, "test-pkg", "workflows");
+        fs.mkdirSync(workflowSrcDir, { recursive: true });
+        fs.writeFileSync(path.join(workflowSrcDir, "dualflow.yaml"), "name: dualflow\nversion: '2.0'\nsteps: []\n");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "dual-override-wflow", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-wflow-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\nworkflow_specs:\n  - packages/test-pkg/workflows/dualflow.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-wflow-dual",
+          rigId: "01H000000000000000WDUAL01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        // Critical: both override flags set — installMeta is null at the pre-check
+        // site in this path; the workflow_specs-routing wrapper must STILL fire
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bundlePath, targetRoot, autoApprove: true,
+            skipVersionCheck: true, force: true,
+          }),
+        });
+        const body = await installRes.json();
+        expect(body.workflowSpecsRouting).toBeDefined();
+        expect(body.workflowSpecsRouting.routedCount).toBe(1);
+        expect(body.workflowSpecsRouting.records[0].status).toBe("routed");
+        const expectedTarget = path.join(specsRoot, "workflows", "packages", "test-pkg", "workflows", "dualflow.yaml");
+        expect(fs.existsSync(expectedTarget)).toBe(true);
+        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("name: dualflow\nversion: '2.0'\nsteps: []\n");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+      else process.env.OPENRIG_WORKSPACE_SPECS_ROOT = origSpecsRoot;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+      fs.rmSync(specsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install does NOT include workflowSpecsRouting when bundle has no workflow_specs[]", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-wflow-test-"));
+    const specsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-wflow-target-"));
+    process.env.OPENRIG_HOME = auditHome;
+    process.env.OPENRIG_WORKSPACE_SPECS_ROOT = specsRoot;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "no-wflow.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "no-wflow-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "no-wflow-installer", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed", runId: "test-run-no-wflow",
+          rigId: "01H000000000000000NOWFLW",
+          stages: [], errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.workflowSpecsRouting).toBeUndefined();
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+      else process.env.OPENRIG_WORKSPACE_SPECS_ROOT = origSpecsRoot;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+      fs.rmSync(specsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include pluginsRouting when bundle has no plugins[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-plugins-test-"));

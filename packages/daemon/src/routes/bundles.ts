@@ -23,6 +23,8 @@ import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type Bundl
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { routeSkills, type SkillsRouterFsOps, type RouteSkillsResult } from "../domain/bundle-skills-router.js";
 import { routePlugins, type PluginsRouterFsOps, type RoutePluginsResult, type PluginRoutingInput } from "../domain/bundle-plugins-router.js";
+import { routeWorkflowSpecs, type WorkflowSpecsRouterFsOps, type RouteWorkflowSpecsResult } from "../domain/bundle-workflow-specs-router.js";
+import { SettingsStore as ContextPackSettingsStore } from "../domain/user-settings/settings-store.js";
 
 /**
  * Read the daemon's own package.json version at call time (Item 1 / slice-05).
@@ -286,6 +288,70 @@ function pluginsRouterFsOps(): PluginsRouterFsOps {
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
     copyDir: (s, d) => fs.cpSync(s, d, { recursive: true }),
   };
+}
+
+/** Item 6 / slice-05 Checkpoint 7.3e step 3: real WorkflowSpecsRouterFsOps backed by node:fs. */
+function workflowSpecsRouterFsOps(): WorkflowSpecsRouterFsOps {
+  return {
+    exists: (p) => fs.existsSync(p),
+    readFile: (p) => fs.readFileSync(p, "utf-8"),
+    writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+  };
+}
+
+/**
+ * Item 6 / slice-05 Checkpoint 7.3e step 3: extract the bundle safely
+ * (banked unpack trust boundary) and route any declared workflow_specs to
+ * the operator workflow-specs library. Returns null when bundle has no
+ * workflow_specs[] (no-op), no manifest, or workspaceSpecsRoot unresolved.
+ *
+ * Target resolution per the CALLER CONTRACT in
+ * bundle-workflow-specs-router.ts: SettingsStore is the sole authority.
+ * Resolved as nodePath.join(workspaceSpecsRoot, "workflows") — the path
+ * that spec-library-workflow-scanner actually reads (startup.ts:903-916).
+ * If SettingsStore cannot resolve workspaceSpecsRoot (settings not yet
+ * initialized / config error), we return null and the install lifecycle
+ * proceeds without workflow_specs routing — mirror of startup.ts:910-916
+ * try/catch posture.
+ *
+ * Mirror of routeSkillsAfterBootstrap / routePluginsAfterBootstrap pattern:
+ * takes bundlePath only (decoupled from installMeta per the 5f410eee B1
+ * lesson; routing must fire on the dual-override path too).
+ */
+async function routeWorkflowSpecsAfterBootstrap(bundlePath: string): Promise<RouteWorkflowSpecsResult | null> {
+  let workspaceSpecsRoot: string | undefined;
+  try {
+    const settingsStore = new ContextPackSettingsStore();
+    workspaceSpecsRoot = settingsStore.resolveConfig().workspaceSpecsRoot;
+  } catch {
+    return null; // settings unresolvable; no-op routing
+  }
+  if (!workspaceSpecsRoot) return null;
+  const targetWorkflowSpecsDir = nodePath.join(workspaceSpecsRoot, "workflows");
+
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-workflow-specs-route-"));
+  try {
+    await unpack(bundlePath, tmpDir);
+    const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
+    if (!fs.existsSync(manifestPath)) return null;
+    const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
+    const manifest = parsePodBundleManifest(manifestYaml) as Record<string, unknown>;
+    const rawWorkflowSpecs = manifest["workflow_specs"];
+    if (!Array.isArray(rawWorkflowSpecs) || rawWorkflowSpecs.length === 0) return null;
+    const declaredWorkflowSpecs = rawWorkflowSpecs.filter((s): s is string => typeof s === "string" && s.length > 0);
+    if (declaredWorkflowSpecs.length === 0) return null;
+    return routeWorkflowSpecs(
+      {
+        bundleRoot: tmpDir,
+        declaredWorkflowSpecs,
+        targetWorkflowSpecsDir,
+      },
+      workflowSpecsRouterFsOps(),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -815,6 +881,7 @@ bundleRoutes.post("/install", async (c) => {
       // so operators see what landed.
       let skillsRouting: RouteSkillsResult | null = null;
       let pluginsRouting: RoutePluginsResult | null = null;
+      let workflowSpecsRouting: RouteWorkflowSpecsResult | null = null;
       try {
         skillsRouting = await routeSkillsAfterBootstrap(bundlePath);
       } catch {
@@ -825,9 +892,15 @@ bundleRoutes.post("/install", async (c) => {
       } catch {
         // Side-channel failure; install already succeeded
       }
+      try {
+        workflowSpecsRouting = await routeWorkflowSpecsAfterBootstrap(bundlePath);
+      } catch {
+        // Side-channel failure; install already succeeded
+      }
       const extras: Record<string, unknown> = {};
       if (skillsRouting) extras.skillsRouting = skillsRouting;
       if (pluginsRouting) extras.pluginsRouting = pluginsRouting;
+      if (workflowSpecsRouting) extras.workflowSpecsRouting = workflowSpecsRouting;
       return c.json(Object.keys(extras).length > 0 ? { ...result, ...extras } : result, 201);
     }
     if (result.status === "partial") {
