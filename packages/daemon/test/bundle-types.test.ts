@@ -533,6 +533,83 @@ describe("Bundle types", () => {
     const normalized = normalizeBundleManifest(parsed);
     expect(normalized.plugins).toBeUndefined();
   });
+
+  // -- Item 6 workflow_specs block tests (slice-05 Checkpoint 7.3e) --
+
+  it("missing workflow_specs block passes validation (backward compat)", () => {
+    const raw = { ...VALID_RAW };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("workflow_specs as a string array of safe relative paths passes validation", () => {
+    const raw = { ...VALID_RAW, workflow_specs: ["workflows/onboarding.yaml", "workflows/release.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("workflow_specs as a non-array rejected", () => {
+    const raw = { ...VALID_RAW, workflow_specs: "workflows/a.yaml" };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs must be an array"))).toBe(true);
+  });
+
+  it("non-string workflow_specs entry rejected", () => {
+    const raw = { ...VALID_RAW, workflow_specs: [123, "workflows/ok.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs[0]"))).toBe(true);
+  });
+
+  it("unsafe workflow_specs path (dot-dot traversal) rejected", () => {
+    const raw = { ...VALID_RAW, workflow_specs: ["../escape/spec.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs[0]"))).toBe(true);
+    expect(result.errors.some((e) => e.includes("not safe"))).toBe(true);
+  });
+
+  it("round-trip preserves workflow_specs through serialize → parse → normalize", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "rt-workflow-specs",
+      version: "1.0.0",
+      createdAt: "2026-05-18T12:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+      integrity: {
+        algorithm: "sha256",
+        files: { "rig.yaml": "7".repeat(64), "packages/pkg/package.yaml": "8".repeat(64) },
+      },
+      workflowSpecs: ["workflows/onboarding.yaml", "workflows/release.yaml"],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).toContain("workflow_specs:");
+    expect(yaml).toContain("workflows/onboarding.yaml");
+    const parsed = parseBundleManifest(yaml);
+    const validation = validateBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.workflowSpecs).toBeDefined();
+    expect(normalized.workflowSpecs).toEqual(["workflows/onboarding.yaml", "workflows/release.yaml"]);
+  });
+
+  it("missing workflow_specs round-trips cleanly (no field emitted in YAML)", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "no-workflow-specs",
+      version: "1.0.0",
+      createdAt: "2026-05-18T00:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).not.toContain("workflow_specs:");
+    const parsed = parseBundleManifest(yaml);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.workflowSpecs).toBeUndefined();
+  });
 });
 
 describe("isRelativeSafePath", () => {
