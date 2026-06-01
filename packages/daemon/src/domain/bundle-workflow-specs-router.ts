@@ -123,20 +123,29 @@ export function routeWorkflowSpecs(
       });
       continue;
     }
-    // Target path mirrors the declared path under the target workflow-specs
-    // directory. Strip the leading "workflows/" prefix if present so the
-    // target dir is the root of the operator's workflow-specs tree (analogue
-    // of the skills router "skills/" strip).
-    const declaredTrimmed = declared.startsWith("workflows/") ? declared.slice("workflows/".length) : declared;
-    const targetAbs = nodePath.resolve(input.targetWorkflowSpecsDir, declaredTrimmed);
-    // Defense-in-depth path-containment on TARGET (banked both-sides-of-
-    // trust-boundary lesson; mirror of bundle-skills-router B1 repair
-    // 595e9550). Leading prefix strip can promote a relative segment that
-    // looks safe under bundleRoot (e.g. "workflows/../outside/spec.yaml"
-    // passes source-containment because bundleRoot may contain
-    // "outside/spec.yaml", but stripping yields "../outside/spec.yaml" which
-    // would escape targetWorkflowSpecsDir). Reject if the target resolves
-    // outside the target library.
+    // Target = top-level basename under targetWorkflowSpecsDir.
+    //
+    // SCANNER-REACHABILITY CONTRACT: spec-library-workflow-scanner reads
+    // ONLY top-level YAML files via readdirSync(folder) + isFile() (see
+    // spec-library-workflow-scanner.ts:382-397) — no recursion. Nested
+    // YAML inside subdirs is INVISIBLE to the scanner and Library UI.
+    // Workflow specs MUST land at the top of <workspace.specs_root>/workflows
+    // to become operator-visible. Basename-only target computation enforces
+    // this; preserving the bundle's directory layout would silently route
+    // specs to an unscanned location.
+    //
+    // Side benefit: basename can never escape targetWorkflowSpecsDir
+    // (nodePath.basename(any-path) is a leaf name with no separators), so
+    // the "target-side escape after prefix strip" hazard banked on the
+    // skills router (595e9550 B1 repair) is structurally impossible here.
+    //
+    // Basename collisions are an operator concern; two declared paths
+    // sharing the same filename will overwrite each other in declaration
+    // order. The scanner deduplicates by source_path + workflow.id; collision
+    // surfaces in the Library UI on next scan.
+    const targetAbs = nodePath.resolve(input.targetWorkflowSpecsDir, nodePath.basename(declared));
+    // Sanity check (defensive; basename is structurally safe but the resolve
+    // could in theory be a no-op for "" → keep the check, expected always-true).
     if (targetAbs !== targetRootResolved && !targetAbs.startsWith(targetRootResolved + nodePath.sep)) {
       records.push({
         declaredPath: declared,
@@ -145,7 +154,6 @@ export function routeWorkflowSpecs(
       });
       continue;
     }
-    fs.mkdirp(nodePath.dirname(targetAbs));
     const content = fs.readFile(sourceAbs);
     fs.writeFile(targetAbs, content);
     records.push({

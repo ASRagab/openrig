@@ -55,8 +55,8 @@ describe("routeWorkflowSpecs", () => {
     expect(fs._mkdirpCalls).toContain(TARGET);
   });
 
-  // W2: routes one spec end-to-end
-  it("routes one workflow_spec: source YAML copied to target with installedAt populated", () => {
+  // W2: routes one spec end-to-end at top-level basename
+  it("routes one workflow_spec: source YAML copied to target/<basename> with installedAt populated", () => {
     const fs = mockFs({
       [`${BUNDLE_ROOT}/workflows/onboarding.yaml`]: "name: onboarding\nversion: 1.0",
     });
@@ -64,12 +64,15 @@ describe("routeWorkflowSpecs", () => {
     expect(result.routedCount).toBe(1);
     expect(result.rejectedCount).toBe(0);
     expect(result.records[0]!.status).toBe("routed");
+    // Basename-only: declared "workflows/onboarding.yaml" → target/onboarding.yaml
+    // (scanner-reachability contract: spec-library-workflow-scanner reads only
+    // top-level YAML; nested paths would be invisible).
     expect(result.records[0]!.installedAt).toBe(`${TARGET}/onboarding.yaml`);
     expect(fs._written.get(`${TARGET}/onboarding.yaml`)).toBe("name: onboarding\nversion: 1.0");
   });
 
-  // W3: routes multiple specs; preserves directory layout
-  it("routes multiple workflow_specs preserving the directory layout under target", () => {
+  // W3: routes multiple specs ALL FLAT at top level (basename collapses layout)
+  it("routes multiple workflow_specs all flat at top level (basename collapses directory layout)", () => {
     const fs = mockFs({
       [`${BUNDLE_ROOT}/workflows/onboarding.yaml`]: "yaml-1",
       [`${BUNDLE_ROOT}/workflows/release.yaml`]: "yaml-2",
@@ -82,9 +85,13 @@ describe("routeWorkflowSpecs", () => {
       fs,
     );
     expect(result.routedCount).toBe(3);
+    // All land at top-level basename — the "sub/" prefix on entry 3 is stripped
+    // by basename(). This matches scanner-reachability (readdirSync + isFile only).
     expect(fs._written.get(`${TARGET}/onboarding.yaml`)).toBe("yaml-1");
     expect(fs._written.get(`${TARGET}/release.yaml`)).toBe("yaml-2");
-    expect(fs._written.get(`${TARGET}/sub/maintenance.yaml`)).toBe("yaml-3");
+    expect(fs._written.get(`${TARGET}/maintenance.yaml`)).toBe("yaml-3");
+    // Confirm the would-be-nested path is NOT created (basename flattened it).
+    expect(fs._written.has(`${TARGET}/sub/maintenance.yaml`)).toBe(false);
   });
 
   // W4: missing source file → "missing" record (skipped, not error)
@@ -132,32 +139,33 @@ describe("routeWorkflowSpecs", () => {
     expect(result.records[2]!.status).toBe("unsafe");
   });
 
-  // W7-B1: target-side path containment (banked both-sides-trust-boundary).
-  // Declared path "workflows/../outside/spec.yaml" passes SOURCE containment
-  // (resolves under bundleRoot since the leading "workflows/" segment is
-  // consumed before ../) but after the leading "workflows/" strip becomes
-  // "../outside/spec.yaml" which would escape targetWorkflowSpecsDir.
-  it("declared path that would escape target workflow-specs dir after prefix strip is rejected", () => {
+  // W7: target-side escape attempt lands SAFELY at basename (structural
+  // containment via basename — replaces the prior prefix-strip target-escape
+  // hazard from the skills router; basename guarantees no traversal).
+  it("target-escape attempt via traversal still lands safely at basename (structural containment)", () => {
     const fs = mockFs({
       // Source is reachable from bundleRoot via "workflows/../outside/spec.yaml"
       // which resolves to "<bundleRoot>/outside/spec.yaml" — passes source check.
-      [`${BUNDLE_ROOT}/outside/spec.yaml`]: "would-escape-target",
+      [`${BUNDLE_ROOT}/outside/spec.yaml`]: "would-have-escaped-target",
     });
     const result = routeWorkflowSpecs(
       makeInput({ declaredWorkflowSpecs: ["workflows/../outside/spec.yaml"] }),
       fs,
     );
-    expect(result.routedCount).toBe(0);
-    expect(result.rejectedCount).toBe(1);
-    expect(result.records[0]!.status).toBe("unsafe");
-    expect(result.records[0]!.detail).toContain("escapes target workflow-specs library");
-    // Crucially: no write happened outside target.
+    expect(result.routedCount).toBe(1);
+    expect(result.rejectedCount).toBe(0);
+    expect(result.records[0]!.status).toBe("routed");
+    // basename("workflows/../outside/spec.yaml") = "spec.yaml" → lands safely.
+    expect(result.records[0]!.installedAt).toBe(`${TARGET}/spec.yaml`);
+    expect(fs._written.get(`${TARGET}/spec.yaml`)).toBe("would-have-escaped-target");
+    // Confirm: no write outside target dir.
     expect(fs._written.has(`${TARGET}/../outside/spec.yaml`)).toBe(false);
     expect(fs._written.has(nodePath.resolve(`${TARGET}/../outside/spec.yaml`))).toBe(false);
   });
 
-  // W8: non-"workflows/" prefixed declared path is honored as-is (no leading strip)
-  it("declared path without leading workflows/ prefix routes verbatim", () => {
+  // W8: non-prefixed declared path lands at its basename (prefix-strip is
+  // obsoleted by basename — the rule is uniform).
+  it("declared path without any leading prefix routes to target/<basename>", () => {
     const fs = mockFs({
       [`${BUNDLE_ROOT}/custom/path/spec.yaml`]: "custom",
     });
@@ -166,6 +174,8 @@ describe("routeWorkflowSpecs", () => {
       fs,
     );
     expect(result.routedCount).toBe(1);
-    expect(result.records[0]!.installedAt).toBe(`${TARGET}/custom/path/spec.yaml`);
+    // basename("custom/path/spec.yaml") = "spec.yaml" → top-level under target.
+    expect(result.records[0]!.installedAt).toBe(`${TARGET}/spec.yaml`);
+    expect(fs._written.has(`${TARGET}/custom/path/spec.yaml`)).toBe(false);
   });
 });

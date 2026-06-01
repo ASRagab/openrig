@@ -1536,9 +1536,11 @@ describe("Bundle API routes", () => {
   // Item 6 / Checkpoint 7.3e step 3: /install routes declared workflow_specs
   // after successful bootstrap. Target = SettingsStore-resolved
   // <workspaceSpecsRoot>/workflows. Bundle has workflow_specs[] with a path
-  // pointing to a workflow YAML file in the bundle tree. Verifies the file
-  // lands at <env-overridden specs root>/workflows/<basename>.
-  it("POST /api/bundles/install routes declared workflow_specs after successful bootstrap (completed branch)", async () => {
+  // pointing to a workflow YAML file in the bundle tree. Router lands the
+  // file at top-level basename under <specsRoot>/workflows. Scanner-
+  // reachability proven via a real scanWorkflowSpecFolder call against the
+  // target dir (guard d43b7729 + 9f9ebe0a scanner-reachability lesson).
+  it("POST /api/bundles/install routes declared workflow_specs after successful bootstrap (completed branch) — proves scanner-reachability", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
     const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-workflow-specs-route-test-"));
@@ -1551,10 +1553,36 @@ describe("Bundle API routes", () => {
       const bundlePath = path.join(tmpDir, "with-workflow-specs.rigbundle");
       const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wflow-target-"));
       try {
-        // Put a workflow_spec YAML inside the bundle's package source
+        // Valid workflow YAML fixture mirroring workflow-spec-folder-scanner.test.ts:22-43
+        // (workflow.id + workflow.version + workflow.roles + workflow.steps non-empty).
+        // Without these the spec-library-workflow-scanner records it as an error
+        // diagnostic row, not a valid workflow — defeating the scanner-reachability proof.
+        const validWorkflowYaml = `workflow:
+  id: bundle-routed-test
+  version: '1'
+  objective: A bundle-routed workflow fixture
+  target:
+    rig: test-fixture
+  entry:
+    role: producer
+  roles:
+    producer:
+      preferred_targets:
+        - producer@test-fixture
+  steps:
+    - id: produce
+      actor_role: producer
+      objective: Draft.
+      allowed_exits:
+        - done
+  invariants:
+    allowed_exits:
+      - done
+`;
+        // Put the valid YAML inside the bundle's package source
         const workflowSrcDir = path.join(tmpDir, "test-pkg", "workflows");
         fs.mkdirSync(workflowSrcDir, { recursive: true });
-        fs.writeFileSync(path.join(workflowSrcDir, "onboarding.yaml"), "name: onboarding\nversion: '1.0'\nsteps: []\n");
+        fs.writeFileSync(path.join(workflowSrcDir, "onboarding.yaml"), validWorkflowYaml);
 
         await app.request("/api/bundles/create", {
           method: "POST",
@@ -1568,9 +1596,8 @@ describe("Bundle API routes", () => {
           await tar.extract({ file: bundlePath, cwd: stagingDir });
           const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
           const original = fs.readFileSync(bundleYamlPath, "utf-8");
-          // Declare the verbatim package path (no leading "workflows/"), mirror of
-          // the skills-test pattern at line 1258. File is already in the bundle via
-          // the test-pkg source; integrity manifest unchanged.
+          // Declared path can be the verbatim package path; the router uses
+          // basename() to land it at top-level (scanner-reachability contract).
           const tampered = `${original}\nworkflow_specs:\n  - packages/test-pkg/workflows/onboarding.yaml\n`;
           fs.writeFileSync(bundleYamlPath, tampered);
           const { pack } = await import("../src/domain/bundle-archive.js");
@@ -1597,11 +1624,49 @@ describe("Bundle API routes", () => {
         expect(body.workflowSpecsRouting).toBeDefined();
         expect(body.workflowSpecsRouting.routedCount).toBe(1);
         expect(body.workflowSpecsRouting.records[0].status).toBe("routed");
-        // Declared path has no leading "workflows/" so routes verbatim;
-        // file lands at <specsRoot>/workflows/<verbatim-path>
-        const expectedTarget = path.join(specsRoot, "workflows", "packages", "test-pkg", "workflows", "onboarding.yaml");
+        // Router uses basename(): declared "packages/test-pkg/workflows/onboarding.yaml"
+        // → lands at <specsRoot>/workflows/onboarding.yaml (top-level only).
+        const expectedTarget = path.join(specsRoot, "workflows", "onboarding.yaml");
         expect(fs.existsSync(expectedTarget)).toBe(true);
-        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("name: onboarding\nversion: '1.0'\nsteps: []\n");
+        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe(validWorkflowYaml);
+
+        // Scanner-reachability PROOF: invoke the real scanWorkflowSpecFolder
+        // against the target dir with a fresh WorkflowSpecCache; assert at
+        // least one valid (non-diagnostic) cached spec matching the fixture
+        // id+version. This proves the routed file is operator-visible via
+        // the live Library scan path (the d43b7729 / 9f9ebe0a contract).
+        const { createDb } = await import("../src/db/connection.js");
+        const { migrate } = await import("../src/db/migrate.js");
+        const { coreSchema } = await import("../src/db/migrations/001_core_schema.js");
+        const { eventsSchema } = await import("../src/db/migrations/003_events.js");
+        const { workflowSpecsSchema } = await import("../src/db/migrations/033_workflow_specs.js");
+        const { workflowSpecsDiagnosticSchema } = await import("../src/db/migrations/040_workflow_specs_diagnostic.js");
+        const { WorkflowSpecCache } = await import("../src/domain/workflow-spec-cache.js");
+        const { scanWorkflowSpecFolder } = await import("../src/domain/spec-library-workflow-scanner.js");
+        const scanDb = createDb();
+        migrate(scanDb, [coreSchema, eventsSchema, workflowSpecsSchema, workflowSpecsDiagnosticSchema]);
+        const scanCache = new WorkflowSpecCache(scanDb);
+        try {
+          const scanResult = scanWorkflowSpecFolder({
+            db: scanDb,
+            cache: scanCache,
+            folder: path.join(specsRoot, "workflows"),
+            builtinDir: null,
+          });
+          // The fixture is a VALID workflow spec (workflow.id + version + roles +
+          // steps); scanner caches it as `valid`, not `errors`.
+          expect(scanResult.scanned).toBe(1);
+          expect(scanResult.valid).toBe(1);
+          expect(scanResult.errors).toBe(0);
+          // Confirm the cached row matches the fixture's workflow.id + version.
+          const cached = scanDb.prepare(`SELECT name, version FROM workflow_specs ORDER BY name, version`).all() as Array<{ name: string; version: string }>;
+          expect(cached.length).toBeGreaterThanOrEqual(1);
+          const found = cached.find((r) => r.name === "bundle-routed-test");
+          expect(found).toBeDefined();
+          expect(found!.version).toBe("1");
+        } finally {
+          scanDb.close();
+        }
       } finally {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
@@ -1683,7 +1748,8 @@ describe("Bundle API routes", () => {
         expect(body.workflowSpecsRouting).toBeDefined();
         expect(body.workflowSpecsRouting.routedCount).toBe(1);
         expect(body.workflowSpecsRouting.records[0].status).toBe("routed");
-        const expectedTarget = path.join(specsRoot, "workflows", "packages", "test-pkg", "workflows", "dualflow.yaml");
+        // Router uses basename() → top-level under <specsRoot>/workflows
+        const expectedTarget = path.join(specsRoot, "workflows", "dualflow.yaml");
         expect(fs.existsSync(expectedTarget)).toBe(true);
         expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("name: dualflow\nversion: '2.0'\nsteps: []\n");
       } finally {
