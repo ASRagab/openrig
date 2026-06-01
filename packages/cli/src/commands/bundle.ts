@@ -78,13 +78,22 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
       if (opts.minCliVersion) compatibility.minCliVersion = opts.minCliVersion;
       const hasCompatibility = Object.keys(compatibility).length > 0;
 
+      // QA-20260601 A1 repair (banked banked-create-install-long-running):
+      // /create can take seconds-to-minutes (pod-aware assembler walk +
+      // Item-6 cross-primitive vendoring + integrity-over-all-content +
+      // tar pack). Default 5000ms CLI timeout (client.ts:31) is too short
+      // for real-world bundles; daemon completes work but CLI reports
+      // failure. Per-call 120s upper bound covers reasonable real-world
+      // bundle sizes; if a bundle author hits this, the daemon-side
+      // operation is async-completable in a future /bundles/jobs/<id>
+      // surface (not in slice-05 scope).
       const res = await client.post<Record<string, unknown>>("/api/bundles/create", {
         specPath: spec, bundleName: opts.name, bundleVersion: opts.bundleVersion, outputPath: opts.output,
         includePackages: opts.includePackages,
         rigRoot: opts.rigRoot ? nodePath.resolve(opts.rigRoot) : undefined,
         provenance: buildClientProvenance(opts.notes),
         ...(hasCompatibility ? { compatibility } : {}),
-      });
+      }, { timeoutMs: 120_000 });
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));
@@ -148,6 +157,12 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
       const client = await getClient(deps);
       if (!client) { process.exitCode = 1; return; }
 
+      // QA-20260601 A1 repair: /install completes a full bootstrap run
+      // (resolve → vendor sibling primitives → boot rig sessions) which
+      // can take many seconds for real bundles. Default 5000ms CLI
+      // timeout (client.ts:31) caused CLI to report failure while
+      // daemon completed the mutating install — operator-unsafe retry
+      // path (rig_name_collision on second attempt). Bumped to 120s.
       const res = await client.post<Record<string, unknown>>("/api/bundles/install", {
         bundlePath, plan: opts.plan ?? false, autoApprove: opts.yes ?? false, targetRoot: opts.target,
         // Item 2 / slice-05 Checkpoint 3.3: send CLI version + skip flag for the
@@ -158,7 +173,7 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
         // Item 3 / slice-05 Checkpoint 4.2: send force flag for the daemon-side
         // install-time conflict check. Operator-explicit override only.
         force: opts.force ?? false,
-      });
+      }, { timeoutMs: 120_000 });
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));

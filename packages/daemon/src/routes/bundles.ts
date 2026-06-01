@@ -1051,6 +1051,26 @@ bundleRoutes.post("/inspect", async (c) => {
         // (same single-contract reason as provenance above). v1 already
         // surfaces via the normalizer at the end of this handler.
         compatibility: normalizeCompatibilityBlock(rawParsed["compatibility"]),
+        // Item 6 / Checkpoint 7.5 / QA-20260601 C1 repair: surface the 5
+        // cross-primitive blocks normalized to camelCase so /inspect's
+        // contract carries the same shape v1's normalizer already
+        // surfaces. Raw YAML keys are snake_case; expose camelCase to
+        // match the rest of the v2 inspect contract.
+        skills: Array.isArray(rawParsed["skills"])
+          ? (rawParsed["skills"] as unknown[]).filter((s): s is string => typeof s === "string")
+          : undefined,
+        plugins: Array.isArray(rawParsed["plugins"])
+          ? (rawParsed["plugins"] as Array<Record<string, unknown>>).filter((p) => p && typeof p === "object")
+          : undefined,
+        workflowSpecs: Array.isArray(rawParsed["workflow_specs"])
+          ? (rawParsed["workflow_specs"] as unknown[]).filter((s): s is string => typeof s === "string")
+          : undefined,
+        contextPacks: Array.isArray(rawParsed["context_packs"])
+          ? (rawParsed["context_packs"] as unknown[]).filter((s): s is string => typeof s === "string")
+          : undefined,
+        agentImages: Array.isArray(rawParsed["agent_images"])
+          ? (rawParsed["agent_images"] as unknown[]).filter((s): s is string => typeof s === "string")
+          : undefined,
       };
       const integrityCompat = integritySection ? {
         schemaVersion: 2,

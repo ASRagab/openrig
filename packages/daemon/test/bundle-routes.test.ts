@@ -1648,6 +1648,75 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / QA-20260601 C1 repair: /api/bundles/inspect normalized
+  // response on a v2 archive containing cross-primitive blocks must
+  // surface skills + plugins + workflowSpecs + contextPacks +
+  // agentImages alongside provenance + compatibility. Built bundle.yaml
+  // contains the snake_case fields (Checkpoint 7.5); inspect's response
+  // now mirrors them as camelCase per the v2 normalized-manifest contract.
+  it("POST /api/bundles/inspect surfaces cross-primitive fields for a v2 archive built from author bundle.yaml", async () => {
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "inspect-crossprim-src-"));
+    const outputPath = path.join(tmpDir, "inspect-crossprim.rigbundle");
+    try {
+      fs.mkdirSync(path.join(sourceRoot, "agents/impl"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agents/impl/agent.yaml"), [
+        'name: impl-agent', 'version: "1.0.0"', 'resources:', '  skills: []',
+        'profiles:', '  default:', '    uses:', '      skills: []',
+      ].join("\n"));
+      const specPath = path.join(sourceRoot, "rig.yaml");
+      fs.writeFileSync(specPath, [
+        'version: "0.2"', 'name: inspect-crossprim-rig', 'pods:',
+        '  - id: dev', '    label: Dev', '    members:',
+        '      - id: impl', '        agent_ref: "local:agents/impl"',
+        '        profile: default', '        runtime: claude-code', '        cwd: .',
+        '    edges: []', 'edges: []',
+      ].join("\n"));
+      // Just plugins + skills for compactness; consumer fields are the
+      // same shape across all 5 kinds via the inspect normalization.
+      fs.mkdirSync(path.join(sourceRoot, "skills/inspect-skill"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "skills/inspect-skill/SKILL.md"), "# inspect skill");
+      fs.mkdirSync(path.join(sourceRoot, "plugins/inspect-plugin"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "plugins/inspect-plugin/plugin.json"), '{"name":"inspect-plugin","version":"1.0"}');
+      fs.writeFileSync(path.join(sourceRoot, "bundle.yaml"), [
+        'skills:',
+        '  - skills/inspect-skill/SKILL.md',
+        'plugins:',
+        '  - id: inspect-plugin',
+        '    source:',
+        '      kind: local',
+        '      path: plugins/inspect-plugin',
+      ].join("\n"));
+
+      const createRes = await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          specPath, rigRoot: sourceRoot,
+          bundleName: "inspect-crossprim-test", bundleVersion: "0.1.0", outputPath,
+        }),
+      });
+      expect(createRes.status).toBe(201);
+
+      const inspectRes = await app.request("/api/bundles/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bundlePath: outputPath }),
+      });
+      expect(inspectRes.status).toBe(200);
+      const inspectBody = await inspectRes.json();
+      // QA-C1 repair: cross-primitive fields surfaced in the normalized
+      // manifest. v2 archive → response.manifest carries camelCase keys.
+      expect(inspectBody.manifest.skills).toBeDefined();
+      expect(inspectBody.manifest.skills).toEqual(["skills/inspect-skill/SKILL.md"]);
+      expect(inspectBody.manifest.plugins).toBeDefined();
+      expect(inspectBody.manifest.plugins).toHaveLength(1);
+      expect(inspectBody.manifest.plugins[0].id).toBe("inspect-plugin");
+    } finally {
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      if (fs.existsSync(outputPath)) fs.rmSync(outputPath);
+    }
+  });
+
   // Item 6 / Checkpoint 7.5 B1 repair (banked 79a89d40 guard catch):
   // symlink escape via author bundle.yaml — FILE shape. A skill path
   // that looks lexically contained but symlinks to an outside file must
