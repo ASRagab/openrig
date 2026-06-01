@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
@@ -41,6 +42,95 @@ function printResult(json: boolean, body: unknown, status: number): void {
   if (status >= 400) process.exitCode = status >= 500 ? 2 : 1;
 }
 
+// OPR.0.3.2.21.FR-4(a) — body input resolution. Three accepted shapes:
+//   --body "<text>"               inline (legacy; backtick-prone for raw
+//                                 multiline content)
+//   --body-file <path>            read body content from a file path
+//                                 (kills the backtick-corruption class)
+//   --body-file -    or  --body - read body from stdin (pipeline-friendly)
+//
+// Exactly one of --body / --body-file must be provided; the resolver throws
+// a 3-part fact/consequence/action error otherwise.
+//
+// stdinReader is dependency-injected so tests can swap it without touching
+// process.stdin. Default reads UTF-8 from process.stdin until EOF.
+export interface ResolveBodyOpts {
+  body?: string;
+  bodyFile?: string;
+}
+
+export async function defaultStdinReader(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk: string) => { data += chunk; });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", reject);
+    if (process.stdin.isTTY) {
+      // No pipe is connected to stdin; resolve immediately to empty
+      // rather than blocking forever waiting for data on a TTY. The
+      // empty body then flows through to the daemon's content
+      // validation (queue-repository owns the body contract); the CLI
+      // does not error locally on empty stdin.
+      resolve("");
+    }
+  });
+}
+
+export async function resolveQueueBody(
+  opts: ResolveBodyOpts,
+  stdinReader: () => Promise<string> = defaultStdinReader,
+): Promise<string> {
+  const hasInline = opts.body !== undefined && opts.body !== "";
+  const hasFile = opts.bodyFile !== undefined && opts.bodyFile !== "";
+  if (hasInline && hasFile) {
+    const err = new Error("--body and --body-file are mutually exclusive.") as Error & { fact?: string; consequence?: string; action?: string };
+    err.fact = "Both --body and --body-file were passed; the body source is ambiguous.";
+    err.consequence = "rig queue create did not run; daemon was not contacted.";
+    err.action = "Pass exactly one of --body or --body-file.";
+    throw err;
+  }
+  if (!hasInline && !hasFile) {
+    const err = new Error("Missing required body input.") as Error & { fact?: string; consequence?: string; action?: string };
+    err.fact = "Neither --body nor --body-file was provided.";
+    err.consequence = "rig queue create did not run; daemon was not contacted.";
+    err.action = "Pass the qitem body via --body \"<text>\" or --body-file <path> (use - for stdin).";
+    throw err;
+  }
+  if (hasInline) {
+    if (opts.body === "-") return stdinReader();
+    return opts.body!;
+  }
+  // hasFile path
+  if (opts.bodyFile === "-") return stdinReader();
+  const absPath = opts.bodyFile!;
+  if (!fs.existsSync(absPath)) {
+    const err = new Error(`--body-file path does not exist: ${absPath}`) as Error & { fact?: string; consequence?: string; action?: string };
+    err.fact = `--body-file path does not exist: ${absPath}`;
+    err.consequence = "rig queue create did not run; daemon was not contacted.";
+    err.action = "Check the path; pass an absolute path; or use --body-file - to read from stdin.";
+    throw err;
+  }
+  const stat = fs.statSync(absPath);
+  if (!stat.isFile()) {
+    const err = new Error(`--body-file path is not a regular file: ${absPath}`) as Error & { fact?: string; consequence?: string; action?: string };
+    err.fact = `--body-file path is not a regular file: ${absPath}`;
+    err.consequence = "rig queue create did not run; daemon was not contacted.";
+    err.action = "Pass a path to a readable file (not a directory, symlink-to-directory, or block device). Use --body-file - to read from stdin.";
+    throw err;
+  }
+  return fs.readFileSync(absPath, "utf8");
+}
+
+function emitBodyResolveError(err: Error & { fact?: string; consequence?: string; action?: string }, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ ok: false, error: { fact: err.fact ?? err.message, consequence: err.consequence ?? "", action: err.action ?? "" } }, null, 2));
+  } else {
+    process.stderr.write(`Error: ${err.fact ?? err.message}\n${err.consequence ?? ""}\n${err.action ?? ""}\n`);
+  }
+  process.exitCode = 1;
+}
+
 function resolveCurrentSession(explicit: string | undefined, optionName: string): string | undefined {
   const session = explicit ?? readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
   if (session) return session;
@@ -62,10 +152,13 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .description("Create a new qitem")
     .requiredOption("--source <session>", "Source session")
     .requiredOption("--destination <session>", "Destination session (the seat that owns the work)")
-    .requiredOption("--body <text>", "Qitem body")
+    .option("--body <text>", "Qitem body inline (use - to read from stdin; mutually exclusive with --body-file)")
+    .option("--body-file <path>", "Read qitem body from a file path (use - for stdin; mutually exclusive with --body). Kills the backtick-shell-corruption class for multiline bodies.")
+    .option("--mission <id>", "First-class mission scope; translated to a mission:<id> tag (composes with --tags)")
+    .option("--slice <id>", "First-class slice scope; translated to a slice:<id> tag (composes with --tags)")
     .option("--priority <priority>", "Priority: routine | urgent | critical", "routine")
     .option("--tier <tier>", "Tier (e.g. fast, routine, deep, critical) — drives SLA")
-    .option("--tags <tags>", "Comma-separated tags")
+    .option("--tags <tags>", "Comma-separated tags (composes with --mission and --slice)")
     .option("--expires-at <iso>", "ISO timestamp at which the qitem expires")
     .option("--id <qitemId>", "Idempotent qitem_id (skip if not provided)")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
@@ -74,7 +167,10 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .action(async (opts: {
       source: string;
       destination: string;
-      body: string;
+      body?: string;
+      bodyFile?: string;
+      mission?: string;
+      slice?: string;
       priority: string;
       tier?: string;
       tags?: string;
@@ -84,14 +180,35 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       nudge?: boolean;
       json?: boolean;
     }) => {
+      // OPR.0.3.2.21.FR-4(a) — resolve body BEFORE contacting the daemon
+      // so a missing/ambiguous body fails fast and locally.
+      let resolvedBody: string;
+      try {
+        resolvedBody = await resolveQueueBody({ body: opts.body, bodyFile: opts.bodyFile });
+      } catch (err) {
+        emitBodyResolveError(err as Error & { fact?: string; consequence?: string; action?: string }, opts.json ?? false);
+        return;
+      }
       const deps = getDeps();
-      const tags = opts.tags ? opts.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      // OPR.0.3.2.21.FR-4(b) — first-class --mission / --slice flags
+      // translate to canonical mission:<id> / slice:<id> tags. Composes
+      // with --tags (any flag-derived tags prepend; explicit --tags
+      // append). De-duplicates so passing both --mission X and
+      // --tags mission:X yields one mission:X tag.
+      const fromTagsArg = opts.tags ? opts.tags.split(",").map((s) => s.trim()).filter(Boolean) : [];
+      const fromFlags: string[] = [];
+      if (opts.mission) fromFlags.push(`mission:${opts.mission}`);
+      if (opts.slice) fromFlags.push(`slice:${opts.slice}`);
+      const merged = [...fromFlags, ...fromTagsArg];
+      const seen = new Set<string>();
+      const dedupedTags = merged.filter((t) => { if (seen.has(t)) return false; seen.add(t); return true; });
+      const tags = dedupedTags.length > 0 ? dedupedTags : undefined;
       await withClient(deps, async (client) => {
         const res = await client.post<Record<string, unknown>>("/api/queue/create", {
           qitemId: opts.id,
           sourceSession: opts.source,
           destinationSession: opts.destination,
-          body: opts.body,
+          body: resolvedBody,
           priority: opts.priority,
           tier: opts.tier,
           tags,
@@ -141,7 +258,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
 
   cmd
     .command("update <qitemId>")
-    .description("Mutate qitem state. state=done REQUIRES --closure-reason (one of: handed_off_to, blocked_on, denied, canceled, no-follow-on, escalation)")
+    .description("Mutate qitem state. state=done REQUIRES --closure-reason (one of: handed_off_to, blocked_on, denied, canceled, no-follow-on, escalation). Closure ≠ acceptance: handed_off_to records delivery to the next stage; acceptance is the next stage's verdict on its own qitem, not this closure.")
     .option("--actor <session>", "Actor session performing the transition (defaults to OPENRIG_SESSION_NAME)")
     .requiredOption("--state <state>", "New state: pending | in-progress | done | blocked | failed | denied | canceled | handed-off")
     .option("--closure-reason <reason>", "Required for state=done")

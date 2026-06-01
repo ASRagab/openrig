@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import type { QueueDeps } from "../src/commands/queue.js";
+import { resolveQueueBody } from "../src/commands/queue.js";
 import { createProgram } from "../src/index.js";
 
 /**
@@ -132,6 +136,274 @@ describe("rig queue CLI", () => {
     ]);
     const create = calls.find((c) => c.path === "/api/queue/create");
     expect((create!.body as { nudge: boolean }).nudge).toBe(false);
+  });
+
+  // OPR.0.3.2.21.FR-4(a) — body input resolution kills the
+  // backtick-corruption class. Three accepted shapes: --body inline,
+  // --body-file <path>, --body / --body-file - for stdin. Exactly one
+  // of --body / --body-file is required; mutual exclusion validates.
+  describe("FR-4(a) — --body-file + stdin support", () => {
+    it("resolveQueueBody returns inline body when --body is passed", async () => {
+      const out = await resolveQueueBody({ body: "inline value" });
+      expect(out).toBe("inline value");
+    });
+
+    it("resolveQueueBody reads from a file path when --body-file is passed", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "queue-body-"));
+      const bodyPath = path.join(tmp, "body.txt");
+      const content = "Multi-line body with `raw backticks` and\nliteral newlines\n— this is the corruption class --body-file kills.";
+      fs.writeFileSync(bodyPath, content, "utf8");
+      try {
+        const out = await resolveQueueBody({ bodyFile: bodyPath });
+        expect(out).toBe(content);
+        // Discriminator: the backtick-corruption shell class is bypassed
+        // entirely because no shell substitution happens on file content.
+        expect(out).toMatch(/`raw backticks`/);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("resolveQueueBody throws 3-part error when both --body and --body-file are passed", async () => {
+      await expect(resolveQueueBody({ body: "inline", bodyFile: "/tmp/x" })).rejects.toMatchObject({
+        fact: expect.stringMatching(/mutually exclusive|ambiguous/i),
+        consequence: expect.stringMatching(/did not run/),
+        action: expect.stringMatching(/exactly one/),
+      });
+    });
+
+    it("resolveQueueBody throws 3-part error when neither --body nor --body-file is passed", async () => {
+      await expect(resolveQueueBody({})).rejects.toMatchObject({
+        fact: expect.stringMatching(/Neither --body nor --body-file/),
+        consequence: expect.stringMatching(/did not run/),
+        action: expect.stringMatching(/--body|--body-file/),
+      });
+    });
+
+    it("resolveQueueBody throws 3-part error when --body-file path does not exist", async () => {
+      await expect(resolveQueueBody({ bodyFile: "/tmp/this-path-does-not-exist-fr4a-test.md" })).rejects.toMatchObject({
+        fact: expect.stringMatching(/does not exist/),
+        consequence: expect.stringMatching(/did not run/),
+        action: expect.stringMatching(/Check the path/),
+      });
+    });
+
+    // OPR.0.3.2.21.FR-4 cleanup (guard non-blocking note on FR-4a CLEAR): a
+    // directory passed to --body-file used to fall through to fs.readFileSync
+    // and surface a bare Error("EISDIR: illegal operation on a directory") with
+    // blank consequence/action. The cleanup commit emits the 3-part shape
+    // explicitly so the error reads consistently with the other body-resolve
+    // failure modes.
+    it("resolveQueueBody throws 3-part error when --body-file path is a directory (not a regular file)", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "queue-body-isdir-"));
+      try {
+        await expect(resolveQueueBody({ bodyFile: tmp })).rejects.toMatchObject({
+          fact: expect.stringMatching(/not a regular file/),
+          consequence: expect.stringMatching(/did not run/),
+          action: expect.stringMatching(/Pass a path to a readable file/),
+        });
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("resolveQueueBody calls the injected stdin reader when --body is -", async () => {
+      const stdinReader = vi.fn(async () => "from stdin\n");
+      const out = await resolveQueueBody({ body: "-" }, stdinReader);
+      expect(out).toBe("from stdin\n");
+      expect(stdinReader).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolveQueueBody calls the injected stdin reader when --body-file is -", async () => {
+      const stdinReader = vi.fn(async () => "from stdin file dash\n");
+      const out = await resolveQueueBody({ bodyFile: "-" }, stdinReader);
+      expect(out).toBe("from stdin file dash\n");
+      expect(stdinReader).toHaveBeenCalledTimes(1);
+    });
+
+    it("create --body-file <file-with-backticks> POSTs the file content as body (operator-copy-paste-safe)", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "queue-create-body-file-"));
+      const bodyPath = path.join(tmp, "body.txt");
+      const content = "Per-commit handoff for OPR.X.Y.Z\n\n```bash\nrig queue handoff qitem-1 --to next@rig\n```\n\nDone.";
+      fs.writeFileSync(bodyPath, content, "utf8");
+      try {
+        const { deps, calls } = makeDeps({
+          routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "qitem-fr4a-1", state: "pending" } } },
+        });
+        const program = createProgram({ queueDeps: deps });
+        program.exitOverride();
+        await program.parseAsync([
+          "node", "rig", "queue", "create",
+          "--source", "alice@rig",
+          "--destination", "bob@rig",
+          "--body-file", bodyPath,
+          "--json",
+        ]);
+        const create = calls.find((c) => c.path === "/api/queue/create");
+        expect(create, "expected POST /api/queue/create to fire").toBeDefined();
+        const body = create!.body as Record<string, unknown>;
+        expect(body.body).toBe(content);
+        // Discriminator: the backtick fence survived intact, proving the
+        // shell-substitution class never touched the content.
+        expect((body.body as string)).toMatch(/```bash[\s\S]*?```/);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("create with both --body and --body-file errors with exit 1 + 3-part error + does NOT contact the daemon", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "queue-create-conflict-"));
+      const bodyPath = path.join(tmp, "body.txt");
+      fs.writeFileSync(bodyPath, "x", "utf8");
+      try {
+        const { deps, calls } = makeDeps();
+        const program = createProgram({ queueDeps: deps });
+        program.exitOverride();
+        const prevExit = process.exitCode;
+        process.exitCode = undefined;
+        try {
+          await program.parseAsync([
+            "node", "rig", "queue", "create",
+            "--source", "alice@rig",
+            "--destination", "bob@rig",
+            "--body", "inline",
+            "--body-file", bodyPath,
+            "--json",
+          ]);
+          expect(process.exitCode).toBe(1);
+          expect(calls.find((c) => c.path === "/api/queue/create")).toBeUndefined();
+        } finally {
+          process.exitCode = prevExit;
+        }
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("create with neither --body nor --body-file errors with exit 1 + does NOT contact the daemon", async () => {
+      const { deps, calls } = makeDeps();
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      const prevExit = process.exitCode;
+      process.exitCode = undefined;
+      try {
+        await program.parseAsync([
+          "node", "rig", "queue", "create",
+          "--source", "alice@rig",
+          "--destination", "bob@rig",
+          "--json",
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(calls.find((c) => c.path === "/api/queue/create")).toBeUndefined();
+      } finally {
+        process.exitCode = prevExit;
+      }
+    });
+  });
+
+  // OPR.0.3.2.21.FR-4(b) — --mission / --slice first-class flags
+  // translate to mission:<id> / slice:<id> tags and compose with --tags.
+  // This is tag-formalization only — no schema change; the qitem still
+  // stores tags as a flat list.
+  describe("FR-4(b) — --mission / --slice first-class flag-formalization", () => {
+    it("--mission translates to a mission:<id> tag", async () => {
+      const { deps, calls } = makeDeps({
+        routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "q-fr4b-1" } } },
+      });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync([
+        "node", "rig", "queue", "create",
+        "--source", "alice@rig",
+        "--destination", "bob@rig",
+        "--body", "x",
+        "--mission", "release-0.3.2",
+        "--json",
+      ]);
+      const create = calls.find((c) => c.path === "/api/queue/create");
+      expect((create!.body as { tags: string[] }).tags).toEqual(["mission:release-0.3.2"]);
+    });
+
+    it("--slice translates to a slice:<id> tag", async () => {
+      const { deps, calls } = makeDeps({
+        routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "q-fr4b-2" } } },
+      });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync([
+        "node", "rig", "queue", "create",
+        "--source", "alice@rig",
+        "--destination", "bob@rig",
+        "--body", "x",
+        "--slice", "21-fr-4-queue-ergonomics",
+        "--json",
+      ]);
+      const create = calls.find((c) => c.path === "/api/queue/create");
+      expect((create!.body as { tags: string[] }).tags).toEqual(["slice:21-fr-4-queue-ergonomics"]);
+    });
+
+    it("--mission + --slice + --tags merges all three sets (mission/slice first, --tags appended) and de-duplicates", async () => {
+      const { deps, calls } = makeDeps({
+        routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "q-fr4b-3" } } },
+      });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync([
+        "node", "rig", "queue", "create",
+        "--source", "alice@rig",
+        "--destination", "bob@rig",
+        "--body", "x",
+        "--mission", "release-0.3.2",
+        "--slice", "21-fr-4-queue-ergonomics",
+        "--tags", "gate:guard,handoff:per-commit",
+        "--json",
+      ]);
+      const create = calls.find((c) => c.path === "/api/queue/create");
+      expect((create!.body as { tags: string[] }).tags).toEqual([
+        "mission:release-0.3.2",
+        "slice:21-fr-4-queue-ergonomics",
+        "gate:guard",
+        "handoff:per-commit",
+      ]);
+    });
+
+    it("--mission release-0.3.2 + --tags mission:release-0.3.2 de-duplicates the redundant tag (one mission:X kept)", async () => {
+      const { deps, calls } = makeDeps({
+        routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "q-fr4b-4" } } },
+      });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync([
+        "node", "rig", "queue", "create",
+        "--source", "alice@rig",
+        "--destination", "bob@rig",
+        "--body", "x",
+        "--mission", "release-0.3.2",
+        "--tags", "mission:release-0.3.2,gate:guard",
+        "--json",
+      ]);
+      const create = calls.find((c) => c.path === "/api/queue/create");
+      const tags = (create!.body as { tags: string[] }).tags;
+      expect(tags.filter((t) => t === "mission:release-0.3.2")).toHaveLength(1);
+      expect(tags).toContain("gate:guard");
+    });
+
+    it("no --mission/--slice/--tags → tags is undefined on the wire (legacy behavior preserved)", async () => {
+      const { deps, calls } = makeDeps({
+        routes: { "POST /api/queue/create": { status: 201, data: { qitemId: "q-fr4b-5" } } },
+      });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync([
+        "node", "rig", "queue", "create",
+        "--source", "alice@rig",
+        "--destination", "bob@rig",
+        "--body", "x",
+        "--json",
+      ]);
+      const create = calls.find((c) => c.path === "/api/queue/create");
+      expect((create!.body as { tags?: string[] }).tags).toBeUndefined();
+    });
   });
 
   it("update --state done WITHOUT --closure-reason renders structured hot-potato error and exits non-zero", async () => {
