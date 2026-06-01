@@ -1852,6 +1852,299 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.3f step 3: /install routes declared context_packs
+  // after successful bootstrap. Target = <openrigHome>/context-packs
+  // (startup.ts:496 user-file root). Bundle has context_packs[] with paths
+  // to context-pack manifest.yaml files; router copies the parent dir to
+  // <openrigHome>/context-packs/<dirname>/. Consumer-scan reachability
+  // proven via real ContextPackLibraryService.scan() against the routed
+  // root (guard d491eca9 + 3cd581e3 file-vs-dir discrimination lessons).
+  it("POST /api/bundles/install routes declared context_packs after successful bootstrap (completed branch) — proves consumer-scan reachability", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-context-packs-route-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "with-context-packs.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cpacks-target-"));
+      try {
+        // Build a VALID context-pack: dir w/ manifest.yaml (name + version +
+        // files[]) + the file referenced in files[]. Per
+        // packages/daemon/src/domain/context-packs/manifest-parser.ts:
+        // manifest needs name, version, files[{path, role}].
+        const packDir = path.join(tmpDir, "test-pkg", "context-packs", "intent");
+        fs.mkdirSync(packDir, { recursive: true });
+        const validManifest = `name: bundle-routed-intent
+version: '1'
+purpose: A bundle-routed context-pack fixture
+files:
+  - path: brief.md
+    role: brief
+    summary: One-line summary
+`;
+        fs.writeFileSync(path.join(packDir, "manifest.yaml"), validManifest);
+        fs.writeFileSync(path.join(packDir, "brief.md"), "# Brief\nContent.");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "with-context-packs", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "cpacks-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\ncontext_packs:\n  - packages/test-pkg/context-packs/intent/manifest.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-cpacks",
+          rigId: "01H000000000000000CPCK01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.contextPacksRouting).toBeDefined();
+        expect(body.contextPacksRouting.routedCount).toBe(1);
+        expect(body.contextPacksRouting.records[0].status).toBe("routed");
+        // Router copies the PARENT DIR of manifest.yaml: declared
+        // "packages/test-pkg/context-packs/intent/manifest.yaml" → parent
+        // basename "intent" → target/intent/
+        const expectedPackDir = path.join(auditHome, "context-packs", "intent");
+        expect(fs.existsSync(expectedPackDir)).toBe(true);
+        expect(fs.existsSync(path.join(expectedPackDir, "manifest.yaml"))).toBe(true);
+        expect(fs.existsSync(path.join(expectedPackDir, "brief.md"))).toBe(true);
+
+        // CONSUMER-SCAN REACHABILITY PROOF: instantiate the real consumer
+        // against the routed target root + assert the pack is visible.
+        const { ContextPackLibraryService } = await import("../src/domain/context-packs/context-pack-library-service.js");
+        const consumer = new ContextPackLibraryService({
+          roots: [{ path: path.join(auditHome, "context-packs"), sourceType: "user_file" }],
+        });
+        const scanResult = consumer.scan();
+        expect(scanResult.count).toBeGreaterThanOrEqual(1);
+        expect(scanResult.errors).toEqual([]);
+        // Confirm the consumer indexed our routed pack by id (name+version
+        // come from inside the manifest, not the dirname).
+        const entries = consumer.list();
+        const found = entries.find((e) => e.name === "bundle-routed-intent");
+        expect(found).toBeDefined();
+        expect(found!.version).toBe("1");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  // B1-mirror: context_packs routing must fire even when operator uses
+  // BOTH --skip-version-check and --force pre-check overrides (banked
+  // 5f410eee decoupling lesson; PROACTIVELY shipped).
+  it("POST /api/bundles/install routes declared context_packs even when both --skip-version-check and --force are set (B1 mirror)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-cpacks-dual-override-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "dual-override-cpacks.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-cpacks-target-"));
+      try {
+        const packDir = path.join(tmpDir, "test-pkg", "context-packs", "dualcontext");
+        fs.mkdirSync(packDir, { recursive: true });
+        fs.writeFileSync(path.join(packDir, "manifest.yaml"), `name: dualcontext-pack
+version: '2'
+files:
+  - path: notes.md
+    role: notes
+`);
+        fs.writeFileSync(path.join(packDir, "notes.md"), "dual content");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "dual-override-cpacks", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-cpacks-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\ncontext_packs:\n  - packages/test-pkg/context-packs/dualcontext/manifest.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-cpacks-dual",
+          rigId: "01H000000000000000CPDUAL",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        // Both override flags set — installMeta null at pre-check; the
+        // context-packs router must STILL fire.
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bundlePath, targetRoot, autoApprove: true,
+            skipVersionCheck: true, force: true,
+          }),
+        });
+        const body = await installRes.json();
+        expect(body.contextPacksRouting).toBeDefined();
+        expect(body.contextPacksRouting.routedCount).toBe(1);
+        expect(body.contextPacksRouting.records[0].status).toBe("routed");
+        expect(fs.existsSync(path.join(auditHome, "context-packs", "dualcontext", "manifest.yaml"))).toBe(true);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  // Degenerate-input dogfood (per guard 3cd581e3 carry-forward "include
+  // malformed pack rejection if cheap"): bundle declares a context_pack
+  // whose manifest.yaml file is NOT in the bundle tree. routedCount=0,
+  // status=missing, NO pack copied to target.
+  it("POST /api/bundles/install context_packs degenerate-input: declared manifest absent → status=missing, no false routedCount", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-cpacks-degenerate-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "absent-cpacks.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "absent-cpacks-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "absent-cpacks", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "absent-cpacks-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          // Manifest declares a pack path that does NOT exist in the bundle
+          const tampered = `${original}\ncontext_packs:\n  - packages/test-pkg/context-packs/nonexistent/manifest.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-cpacks-absent",
+          rigId: "01H000000000000000CPABS0",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.contextPacksRouting).toBeDefined();
+        // Truthful routedCount: 0 (manifest absent — consumer would skip)
+        expect(body.contextPacksRouting.routedCount).toBe(0);
+        expect(body.contextPacksRouting.rejectedCount).toBe(1);
+        expect(body.contextPacksRouting.records[0].status).toBe("missing");
+        // CRUCIAL: nothing landed at target
+        expect(fs.existsSync(path.join(auditHome, "context-packs", "nonexistent"))).toBe(false);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install does NOT include contextPacksRouting when bundle has no context_packs[]", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-cpacks-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "no-cpacks.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "no-cpacks-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "no-cpacks-installer", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed", runId: "test-run-no-cpacks",
+          rigId: "01H000000000000000NOCPCK",
+          stages: [], errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.contextPacksRouting).toBeUndefined();
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include workflowSpecsRouting when bundle has no workflow_specs[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;

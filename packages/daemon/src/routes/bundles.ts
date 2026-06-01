@@ -24,6 +24,7 @@ import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { routeSkills, type SkillsRouterFsOps, type RouteSkillsResult } from "../domain/bundle-skills-router.js";
 import { routePlugins, type PluginsRouterFsOps, type RoutePluginsResult, type PluginRoutingInput } from "../domain/bundle-plugins-router.js";
 import { routeWorkflowSpecs, type WorkflowSpecsRouterFsOps, type RouteWorkflowSpecsResult } from "../domain/bundle-workflow-specs-router.js";
+import { routeContextPacks, type ContextPacksRouterFsOps, type RouteContextPacksResult } from "../domain/bundle-context-packs-router.js";
 import { SettingsStore as ContextPackSettingsStore } from "../domain/user-settings/settings-store.js";
 
 /**
@@ -298,6 +299,59 @@ function workflowSpecsRouterFsOps(): WorkflowSpecsRouterFsOps {
     writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
   };
+}
+
+/** Item 6 / slice-05 Checkpoint 7.3f step 3: real ContextPacksRouterFsOps backed by node:fs. */
+function contextPacksRouterFsOps(): ContextPacksRouterFsOps {
+  return {
+    exists: (p) => fs.existsSync(p),
+    isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+    copyDir: (s, d) => fs.cpSync(s, d, { recursive: true }),
+  };
+}
+
+/**
+ * Item 6 / slice-05 Checkpoint 7.3f step 3: extract the bundle safely
+ * (banked unpack trust boundary) and route any declared context_packs to
+ * the operator context-packs library. Returns null when bundle has no
+ * context_packs[] (no-op).
+ *
+ * Target resolution: <openrigHome>/context-packs — per startup.ts:496
+ * (the user-file root the live ContextPackLibraryService is constructed
+ * against). No SettingsStore complexity (unlike workflow_specs);
+ * context-packs canonical path is OPENRIG_HOME-rooted per
+ * context-pack-types.ts:9-10.
+ *
+ * Mirror of routeSkillsAfterBootstrap / routePluginsAfterBootstrap /
+ * routeWorkflowSpecsAfterBootstrap pattern: takes bundlePath only
+ * (decoupled from installMeta per the 5f410eee B1 lesson; routing must
+ * fire on the dual-override path too).
+ */
+async function routeContextPacksAfterBootstrap(bundlePath: string): Promise<RouteContextPacksResult | null> {
+  const targetContextPacksDir = getDefaultOpenRigPath("context-packs");
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-context-packs-route-"));
+  try {
+    await unpack(bundlePath, tmpDir);
+    const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
+    if (!fs.existsSync(manifestPath)) return null;
+    const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
+    const manifest = parsePodBundleManifest(manifestYaml) as Record<string, unknown>;
+    const rawContextPacks = manifest["context_packs"];
+    if (!Array.isArray(rawContextPacks) || rawContextPacks.length === 0) return null;
+    const declaredContextPacks = rawContextPacks.filter((s): s is string => typeof s === "string" && s.length > 0);
+    if (declaredContextPacks.length === 0) return null;
+    return routeContextPacks(
+      {
+        bundleRoot: tmpDir,
+        declaredContextPacks,
+        targetContextPacksDir,
+      },
+      contextPacksRouterFsOps(),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -882,6 +936,7 @@ bundleRoutes.post("/install", async (c) => {
       let skillsRouting: RouteSkillsResult | null = null;
       let pluginsRouting: RoutePluginsResult | null = null;
       let workflowSpecsRouting: RouteWorkflowSpecsResult | null = null;
+      let contextPacksRouting: RouteContextPacksResult | null = null;
       try {
         skillsRouting = await routeSkillsAfterBootstrap(bundlePath);
       } catch {
@@ -897,10 +952,16 @@ bundleRoutes.post("/install", async (c) => {
       } catch {
         // Side-channel failure; install already succeeded
       }
+      try {
+        contextPacksRouting = await routeContextPacksAfterBootstrap(bundlePath);
+      } catch {
+        // Side-channel failure; install already succeeded
+      }
       const extras: Record<string, unknown> = {};
       if (skillsRouting) extras.skillsRouting = skillsRouting;
       if (pluginsRouting) extras.pluginsRouting = pluginsRouting;
       if (workflowSpecsRouting) extras.workflowSpecsRouting = workflowSpecsRouting;
+      if (contextPacksRouting) extras.contextPacksRouting = contextPacksRouting;
       return c.json(Object.keys(extras).length > 0 ? { ...result, ...extras } : result, 201);
     }
     if (result.status === "partial") {
