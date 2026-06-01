@@ -50,9 +50,11 @@ function isYamlFile(filename: string): boolean {
 }
 
 // OPR.0.3.2.22 Bug 4 — noise directories that should never enter the
-// spec library walk. Mirrors progress-indexer.ts:81 +
-// frontmatter-validator.ts:103 — when this list grows, update all three
-// for consistency. The `.worktrees` entry closes the stale-row class
+// spec library walk. The set matches progress-indexer.ts:81 exactly.
+// frontmatter-validator.ts:103 is a related scanner that uses a
+// narrower subset (node_modules / .git / .worktrees / dist / build);
+// if this list and the progress-indexer list ever diverge, reconcile
+// there first. The `.worktrees` entry closes the stale-row class
 // where conveyor.yaml inside a worktree was sliding into the library
 // cache and producing the `rig specs show conveyor` ambiguous-match UX.
 const SKIP_DIRS = new Set([

@@ -197,4 +197,35 @@ describe("WorkflowSpecCache (PL-004 Phase D)", () => {
     expect(cache.pruneNoiseDirRows()).toBe(0);
     expect(cache.listAll()).toHaveLength(1);
   });
+
+  // OPR.0.3.2.22 Bug 4 follow-up (guard BLOCKING on 79d06f8d) —
+  // shipped built-in workflow specs live at
+  // `<pkg>/dist/builtins/workflow-specs/` in production
+  // npm-published daemons. The unscoped prune from the prior commit
+  // matched `%/dist/%` and would have nuked every built-in on every
+  // boot. The installRoot guard preserves rows whose source_path
+  // starts with the install root.
+  it("pruneNoiseDirRows with installRoot preserves built-in rows under <installRoot>/dist while removing user noise", () => {
+    const installRoot = join(tmp, "install", "@openrig", "daemon");
+    const builtinPath = join(installRoot, "dist", "builtins", "workflow-specs", "shipped.yaml");
+    const userNoisePath = join(tmp, "user-workspace", "some-project", "dist", "stale.yaml");
+
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    for (const p of [builtinPath, userNoisePath]) {
+      mkdirSync(join(p, ".."), { recursive: true });
+    }
+    writeFileSync(builtinPath, SAMPLE_SPEC.replace("test-three-step", "shipped-builtin-spec"));
+    writeFileSync(userNoisePath, SAMPLE_SPEC.replace("test-three-step", "user-noise-spec"));
+    cache.readThrough(builtinPath);
+    cache.readThrough(userNoisePath);
+
+    expect(cache.listAll()).toHaveLength(2);
+
+    const removed = cache.pruneNoiseDirRows(installRoot);
+    expect(removed, "expected only the user-noise row removed; built-in must survive").toBe(1);
+
+    const remaining = cache.listAll();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.sourcePath).toBe(builtinPath);
+  });
 });
