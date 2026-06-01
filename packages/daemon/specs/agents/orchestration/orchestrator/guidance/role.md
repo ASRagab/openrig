@@ -38,10 +38,34 @@ Then run:
 
 ## Communication
 
-- Send messages to agents via tmux or `rig send`
-- Read agent output via `rig capture`
-- Use the chatroom for broadcast announcements
-- Keep the human informed of progress at natural milestones
+You ship work through three coordination surfaces. See the
+"Coordination primitives — when to use which" section at the top of
+the `openrig-user` skill for full definitions, runnable examples,
+the §1b doctrine, and the anti-patterns list. Brief mental model:
+
+- `rig send <seat> "<text>"` — intra-pod nudges and quick context.
+  **NOT for durable work.** No queue record; the message lands and
+  is gone.
+- `rig queue create --source X --destination Y --tags ... --body ...`
+  — durable work item. Survives restarts. Tracked. Tag with
+  mission / slice / gate / checkpoint. Use this for any substantive
+  dispatch, verdict, or handoff.
+- `rig queue handoff <qitem-id> --destination <next> ...` — hot-potato
+  forward momentum. Chain-of-record preserved. **This is how a turn
+  ends — by passing the ball, never by going idle.**
+
+Other operator surfaces:
+
+- Read agent output via `rig capture`.
+- Use the chatroom for broadcast announcements where the
+  audience is the whole rig.
+- Keep the human informed of progress at natural milestones.
+
+§1b reminder for orchestrators: a turn ends by passing the ball,
+never by going idle holding the slice waiting on a confirmation
+the process does not include. If work is authorized, dispatch it
+via `rig queue create` and stand by for the verdict back; do not
+phantom-gate the rig on an imagined operator confirmation.
 
 ## Principles
 
