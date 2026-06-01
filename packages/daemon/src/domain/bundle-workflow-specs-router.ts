@@ -67,10 +67,15 @@ export interface RouteWorkflowSpecsInput {
 export interface RoutedWorkflowSpecRecord {
   /** Declared path from manifest.workflow_specs[]. */
   declaredPath: string;
-  /** "routed" = copied successfully; "missing" = source not in bundle;
-   * "unsafe" = source escapes bundleRoot OR target escapes
-   * targetWorkflowSpecsDir after leading-prefix strip. */
-  status: "routed" | "missing" | "unsafe";
+  /** "routed" = copied successfully and scanner-visible.
+   * "missing" = source not in bundle (honest skip).
+   * "unsafe" = source escapes bundleRoot OR declared path has a non-YAML
+   * suffix the scanner will ignore (operator-invisible-by-construction).
+   * "conflict" = basename collision with an earlier routed entry — only
+   * the first such declared path is written; later ones flagged so the
+   * routed count stays truthful at the scanner-visible boundary (mirror
+   * of the slice's broader 3-part collision-error posture). */
+  status: "routed" | "missing" | "unsafe" | "conflict";
   /** Where the workflow_spec landed in the target library (absolute path), if routed. */
   installedAt?: string;
   /** Human-readable detail (3-part error shape input for caller). */
@@ -100,8 +105,26 @@ export function routeWorkflowSpecs(
   const bundleRootResolved = nodePath.resolve(input.bundleRoot);
   const targetRootResolved = nodePath.resolve(input.targetWorkflowSpecsDir);
   fs.mkdirp(input.targetWorkflowSpecsDir);
+  // Track basenames already routed so duplicate-basename collisions (after
+  // the basename-flatten) surface as conflict records rather than silent
+  // overwrites with a false routedCount (banked B1 guard catch on d81456dc).
+  const routedBasenames = new Set<string>();
 
   for (const declared of input.declaredWorkflowSpecs) {
+    // Scanner-visibility prefilter: spec-library-workflow-scanner reads only
+    // .yaml/.yml top-level files (spec-library-workflow-scanner.ts:366 +
+    // 390-397). Non-YAML declarations would route to disk but be invisible
+    // to the operator via the Library UI — false-positive class. Reject
+    // here so the routedCount stays truthful at the scanner-visible
+    // boundary.
+    if (!/\.ya?ml$/i.test(declared)) {
+      records.push({
+        declaredPath: declared,
+        status: "unsafe",
+        detail: `workflow_spec '${declared}' is not a .yaml/.yml file; scanner ignores non-YAML suffixes`,
+      });
+      continue;
+    }
     const sourceAbs = nodePath.resolve(input.bundleRoot, declared);
     // Defense-in-depth path-containment on SOURCE (mirrors skills router
     // pattern; the manifest validator already rejects unsafe paths via
@@ -139,11 +162,15 @@ export function routeWorkflowSpecs(
     // the "target-side escape after prefix strip" hazard banked on the
     // skills router (595e9550 B1 repair) is structurally impossible here.
     //
-    // Basename collisions are an operator concern; two declared paths
-    // sharing the same filename will overwrite each other in declaration
-    // order. The scanner deduplicates by source_path + workflow.id; collision
-    // surfaces in the Library UI on next scan.
-    const targetAbs = nodePath.resolve(input.targetWorkflowSpecsDir, nodePath.basename(declared));
+    // Basename collisions caught BEFORE write: see the routedBasenames
+    // dedup-set + the basename-collision branch below. Two declared paths
+    // sharing the same filename → first wins (status=routed), later flagged
+    // status=conflict so routedCount stays truthful at the scanner-visible
+    // boundary (mirror of the slice's 3-part collision-error posture).
+    // Non-YAML suffixes are pre-filtered (status=unsafe) since the scanner
+    // ignores non-.yaml/.yml entries entirely.
+    const basename = nodePath.basename(declared);
+    const targetAbs = nodePath.resolve(input.targetWorkflowSpecsDir, basename);
     // Sanity check (defensive; basename is structurally safe but the resolve
     // could in theory be a no-op for "" → keep the check, expected always-true).
     if (targetAbs !== targetRootResolved && !targetAbs.startsWith(targetRootResolved + nodePath.sep)) {
@@ -154,8 +181,23 @@ export function routeWorkflowSpecs(
       });
       continue;
     }
+    // Basename-collision detection: two declared paths that share a
+    // basename would both target the same file after basename-flatten. Only
+    // the FIRST is written; later ones surface as conflict records so the
+    // routedCount equals scanner-visible specs (banked B1 guard catch on
+    // d81456dc). Operator-actionable: rename the declared path or curate
+    // the bundle manifest.
+    if (routedBasenames.has(basename)) {
+      records.push({
+        declaredPath: declared,
+        status: "conflict",
+        detail: `workflow_spec basename '${basename}' collides with an earlier declared path; only the first is routed (basename-flatten conflict)`,
+      });
+      continue;
+    }
     const content = fs.readFile(sourceAbs);
     fs.writeFile(targetAbs, content);
+    routedBasenames.add(basename);
     records.push({
       declaredPath: declared,
       status: "routed",

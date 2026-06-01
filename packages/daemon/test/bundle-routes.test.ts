@@ -1766,6 +1766,92 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.3e step 3 / guard B1 mirror at integration boundary:
+  // duplicate-basename declared paths must produce routedCount=1 + 1 conflict
+  // record, NOT 2 routed records claiming the same installedAt (the false-
+  // positive class guard caught on d81456dc).
+  it("POST /api/bundles/install duplicate-basename workflow_specs: routedCount=1, second flagged conflict (truthful routedCount)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-wflow-dup-basename-"));
+    const specsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-wflow-dup-basename-target-"));
+    process.env.OPENRIG_HOME = auditHome;
+    process.env.OPENRIG_WORKSPACE_SPECS_ROOT = specsRoot;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "dup-basename.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dup-basename-target-"));
+      try {
+        const wflowA = path.join(tmpDir, "test-pkg", "workflows-a");
+        const wflowB = path.join(tmpDir, "test-pkg", "workflows-b");
+        fs.mkdirSync(wflowA, { recursive: true });
+        fs.mkdirSync(wflowB, { recursive: true });
+        fs.writeFileSync(path.join(wflowA, "shared.yaml"), "content-A");
+        fs.writeFileSync(path.join(wflowB, "shared.yaml"), "content-B");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "dup-basename", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dup-basename-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          // Both declared paths share basename "shared.yaml"
+          const tampered = `${original}\nworkflow_specs:\n  - packages/test-pkg/workflows-a/shared.yaml\n  - packages/test-pkg/workflows-b/shared.yaml\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-dup-basename",
+          rigId: "01H000000000000000WDUPBN",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.workflowSpecsRouting).toBeDefined();
+        // Truthful routedCount: only the first declared path was actually
+        // written. The second is flagged conflict, not silently overwritten.
+        expect(body.workflowSpecsRouting.routedCount).toBe(1);
+        expect(body.workflowSpecsRouting.rejectedCount).toBe(1);
+        expect(body.workflowSpecsRouting.records).toHaveLength(2);
+        expect(body.workflowSpecsRouting.records[0].status).toBe("routed");
+        expect(body.workflowSpecsRouting.records[1].status).toBe("conflict");
+        // Confirm the first content survived (no silent overwrite by 2nd)
+        const expectedTarget = path.join(specsRoot, "workflows", "shared.yaml");
+        expect(fs.existsSync(expectedTarget)).toBe(true);
+        expect(fs.readFileSync(expectedTarget, "utf-8")).toBe("content-A");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
+      else process.env.OPENRIG_WORKSPACE_SPECS_ROOT = origSpecsRoot;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+      fs.rmSync(specsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include workflowSpecsRouting when bundle has no workflow_specs[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const origSpecsRoot = process.env.OPENRIG_WORKSPACE_SPECS_ROOT;

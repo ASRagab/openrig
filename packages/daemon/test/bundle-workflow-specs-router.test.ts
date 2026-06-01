@@ -178,4 +178,55 @@ describe("routeWorkflowSpecs", () => {
     expect(result.records[0]!.installedAt).toBe(`${TARGET}/spec.yaml`);
     expect(fs._written.has(`${TARGET}/custom/path/spec.yaml`)).toBe(false);
   });
+
+  // W9: duplicate basenames — first wins (status=routed), later flagged
+  // status=conflict so routedCount stays truthful at the scanner-visible
+  // boundary (banked B1 guard catch d81456dc → this commit).
+  it("duplicate basenames: first routes, later flagged status=conflict (truthful routedCount)", () => {
+    const fs = mockFs({
+      [`${BUNDLE_ROOT}/a/onboarding.yaml`]: "a-content",
+      [`${BUNDLE_ROOT}/b/onboarding.yaml`]: "b-content",
+    });
+    const result = routeWorkflowSpecs(
+      makeInput({ declaredWorkflowSpecs: ["a/onboarding.yaml", "b/onboarding.yaml"] }),
+      fs,
+    );
+    expect(result.records).toHaveLength(2);
+    expect(result.routedCount).toBe(1);
+    expect(result.rejectedCount).toBe(1);
+    expect(result.records[0]!.status).toBe("routed");
+    expect(result.records[0]!.installedAt).toBe(`${TARGET}/onboarding.yaml`);
+    expect(result.records[1]!.status).toBe("conflict");
+    expect(result.records[1]!.detail).toContain("basename");
+    expect(result.records[1]!.detail).toContain("collides");
+    // Crucially: first content survives (no silent overwrite).
+    expect(fs._written.get(`${TARGET}/onboarding.yaml`)).toBe("a-content");
+  });
+
+  // W10: non-YAML suffix — scanner is YAML-only, route would be invisible.
+  // Reject pre-write so routedCount stays truthful (banked B2 guard catch
+  // d81456dc → this commit).
+  it("non-YAML suffix declared path rejected status=unsafe (scanner-invisible class)", () => {
+    const fs = mockFs({
+      [`${BUNDLE_ROOT}/workflows/readme.txt`]: "not a workflow spec",
+      [`${BUNDLE_ROOT}/workflows/good.yaml`]: "yaml-good",
+    });
+    const result = routeWorkflowSpecs(
+      makeInput({ declaredWorkflowSpecs: ["workflows/readme.txt", "workflows/good.yaml"] }),
+      fs,
+    );
+    expect(result.records).toHaveLength(2);
+    expect(result.routedCount).toBe(1);
+    expect(result.records[0]!.status).toBe("unsafe");
+    expect(result.records[0]!.detail).toContain("not a .yaml/.yml");
+    expect(result.records[1]!.status).toBe("routed");
+    expect(result.records[1]!.installedAt).toBe(`${TARGET}/good.yaml`);
+    // .txt file never written even though source exists in bundle
+    expect(fs._written.has(`${TARGET}/readme.txt`)).toBe(false);
+    // Also covers .yml as accepted suffix
+    const fs2 = mockFs({ [`${BUNDLE_ROOT}/workflows/short.yml`]: "yml-too" });
+    const r2 = routeWorkflowSpecs(makeInput({ declaredWorkflowSpecs: ["workflows/short.yml"] }), fs2);
+    expect(r2.routedCount).toBe(1);
+    expect(r2.records[0]!.status).toBe("routed");
+  });
 });
