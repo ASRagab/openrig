@@ -945,6 +945,18 @@ describe("PodBundleManifest validation", () => {
     expect(result.errors.some((e) => e.includes("workflow_specs must be an array"))).toBe(true);
   });
 
+  it("v2: non-string workflow_specs entry rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-workflow-specs", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      workflow_specs: [123, "workflows/ok.yaml"],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs[0]") && e.includes("must be a string"))).toBe(true);
+  });
+
   it("v2: unsafe workflow_specs path rejected", () => {
     const raw = {
       schema_version: 2, name: "bad-workflow-specs", version: "1.0",
