@@ -42,6 +42,7 @@ import {
   updateFrontmatter,
 } from "../lib/scope/scope-fs.js";
 import {
+  renderMissionNotesTemplate,
   renderMissionTemplate,
   renderSliceTemplate,
   titleFromSlug,
@@ -558,6 +559,7 @@ function buildMissionCreateCommand(): Command {
     .option("--template <kind>", `Template: ${MISSION_TEMPLATE_KINDS.join(" | ")} (auto when name matches release-X.Y.Z)`, "")
     .option("--id <dot-id>", "Explicit dot-ID. Overrides name-pattern inference.")
     .option("--title <text>", "Display title (defaults to titlecased name)")
+    .option("--no-mission-notes", "Skip the auto-scaffold of MISSION_NOTES.md (rare; default is to scaffold from conventions/mission-notes/TEMPLATE.md)")
     .option("--json", "Machine-readable output")
     .action(async (rawName: string, opts, command) => {
       const out = makeStdout();
@@ -614,12 +616,17 @@ function buildMissionCreateCommand(): Command {
           const ordinal = nextEscapeBandOrdinal(peers.map((p) => p.id));
           id = inferMissionDotId(name, ordinal);
         }
-        // Scaffold the mission directory + README.
-        fs.mkdirSync(absPath, { recursive: true });
-        fs.mkdirSync(path.join(absPath, "slices"), { recursive: true });
+        // Resolve titles + render templates BEFORE any filesystem side
+        // effects (banked verify-first-then-write — guard catch on
+        // OPR.0.3.2.21.FR-3 qitem-20260601121058: a stale
+        // OPENRIG_MISSION_NOTES_TEMPLATE_PATH used to throw AFTER
+        // mkdirSync + README write, leaking a half-created mission dir
+        // that future `mission create <same-name>` would reject as
+        // already-existing). Rendering MISSION_NOTES first means a
+        // stale env-var fails before any disk mutation.
         const title = opts.title ?? titleFromSlug(name.replace(/^release-/, ""));
         const releaseVersion = isReleaseName ? name.replace(/^release-/, "") : "";
-        const body = renderMissionTemplate(templateKind, {
+        const readmeBody = renderMissionTemplate(templateKind, {
           id,
           slug: name,
           mission: name,
@@ -627,8 +634,36 @@ function buildMissionCreateCommand(): Command {
           created_date: todayDateISO(),
           release_version: releaseVersion,
         });
+        let missionNotesRendered: { rendered: string; resolvedFrom: "env" | "built-in" } | null = null;
+        if (opts.missionNotes !== false) {
+          const r = renderMissionNotesTemplate({
+            mission_id: id,
+            mission_name: title,
+            created_date: todayDateISO(),
+          });
+          missionNotesRendered = { rendered: r.rendered, resolvedFrom: r.resolvedFrom };
+        }
+        // All renders succeeded — safe to touch the filesystem.
+        fs.mkdirSync(absPath, { recursive: true });
+        fs.mkdirSync(path.join(absPath, "slices"), { recursive: true });
         const readmePath = path.join(absPath, "README.md");
-        fs.writeFileSync(readmePath, body, "utf8");
+        fs.writeFileSync(readmePath, readmeBody, "utf8");
+        let missionNotesPath: string | null = null;
+        let missionNotesResolvedFrom: "env" | "built-in" | null = null;
+        if (missionNotesRendered) {
+          missionNotesPath = path.join(absPath, "MISSION_NOTES.md");
+          fs.writeFileSync(missionNotesPath, missionNotesRendered.rendered, "utf8");
+          missionNotesResolvedFrom = missionNotesRendered.resolvedFrom;
+        }
+        const humanLines = [
+          `Created mission ${name}`,
+          `  id: ${id}`,
+          `  template: ${templateKind}`,
+          `  path: ${absPath}`,
+        ];
+        if (missionNotesPath) {
+          humanLines.push(`  mission-notes: ${missionNotesPath} (template: ${missionNotesResolvedFrom})`);
+        }
         emit(out, {
           ok: true,
           mission: {
@@ -637,13 +672,10 @@ function buildMissionCreateCommand(): Command {
             template: templateKind,
             path: absPath,
             readmePath,
+            missionNotesPath,
+            missionNotesResolvedFrom,
           },
-        }, json, [
-          `Created mission ${name}`,
-          `  id: ${id}`,
-          `  template: ${templateKind}`,
-          `  path: ${absPath}`,
-        ]);
+        }, json, humanLines);
       } catch (err) {
         fail(err, json, out);
       }
