@@ -1375,6 +1375,123 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.3d: /install routes declared plugins after
+  // successful bootstrap. Mirrors skills-routing test; bundle has plugins[]
+  // with source pointing to a directory in the bundle tree. Verifies the
+  // plugin dir lands at OPENRIG_HOME/plugins/<id>/.
+  it("POST /api/bundles/install routes declared plugins after successful bootstrap (completed branch)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-plugins-route-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "with-plugins.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-target-"));
+      try {
+        // Put a plugin tree inside the bundle's package source so it lands in the archive
+        const pluginSrc = path.join(tmpDir, "test-pkg", "plugins", "myplugin");
+        fs.mkdirSync(pluginSrc, { recursive: true });
+        fs.writeFileSync(path.join(pluginSrc, "plugin.json"), '{"name":"myplugin","version":"1.0"}');
+        fs.writeFileSync(path.join(pluginSrc, "README.md"), "# myplugin");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "with-plugins", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        // Tamper bundle.yaml to inject plugins[] referencing the path in the bundle
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\nplugins:\n  - id: myplugin\n    source:\n      kind: local\n      path: packages/test-pkg/plugins/myplugin\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-plugins",
+          rigId: "01H000000000000000PLUG0001",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.pluginsRouting).toBeDefined();
+        expect(body.pluginsRouting.routedCount).toBe(1);
+        expect(body.pluginsRouting.records[0].id).toBe("myplugin");
+        expect(body.pluginsRouting.records[0].status).toBe("routed");
+        // Plugin directory landed at OPENRIG_HOME/plugins/myplugin
+        const expectedPluginDir = path.join(auditHome, "plugins", "myplugin");
+        expect(fs.existsSync(expectedPluginDir)).toBe(true);
+        expect(fs.existsSync(path.join(expectedPluginDir, "plugin.json"))).toBe(true);
+        expect(fs.existsSync(path.join(expectedPluginDir, "README.md"))).toBe(true);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install does NOT include pluginsRouting when bundle has no plugins[]", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-plugins-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "no-plugins.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "no-plugins-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "no-plugins-installer", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed", runId: "test-run-no-plugins",
+          rigId: "01H000000000000000NOPLG01",
+          stages: [], errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.pluginsRouting).toBeUndefined();
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include skillsRouting when bundle has no skills[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-skills-no-test-"));

@@ -22,6 +22,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type BundleAuditRecord } from "../domain/bundle-audit.js";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { routeSkills, type SkillsRouterFsOps, type RouteSkillsResult } from "../domain/bundle-skills-router.js";
+import { routePlugins, type PluginsRouterFsOps, type RoutePluginsResult, type PluginRoutingInput } from "../domain/bundle-plugins-router.js";
 
 /**
  * Read the daemon's own package.json version at call time (Item 1 / slice-05).
@@ -275,6 +276,59 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
     exists: (p) => fs.existsSync(p),
     listFiles: (dir) => realFsOps().listFiles!(dir),
   };
+}
+
+/** Item 6 / slice-05 Checkpoint 7.3d: real PluginsRouterFsOps backed by node:fs. */
+function pluginsRouterFsOps(): PluginsRouterFsOps {
+  return {
+    exists: (p) => fs.existsSync(p),
+    isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+    copyDir: (s, d) => fs.cpSync(s, d, { recursive: true }),
+  };
+}
+
+/**
+ * Item 6 / slice-05 Checkpoint 7.3d: extract the bundle safely (banked unpack
+ * trust boundary) and route any declared plugin references to the operator
+ * plugins library (<OPENRIG_HOME>/plugins/<id>/). Returns null when bundle
+ * has no plugins[] (no-op). Mirror of routeSkillsAfterBootstrap pattern —
+ * takes bundlePath only (decoupled from installMeta per the 5f410eee B1
+ * lesson; routing must fire on the dual-override path too).
+ */
+async function routePluginsAfterBootstrap(bundlePath: string): Promise<RoutePluginsResult | null> {
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-plugins-route-"));
+  try {
+    await unpack(bundlePath, tmpDir);
+    const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
+    if (!fs.existsSync(manifestPath)) return null;
+    const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
+    const manifest = parsePodBundleManifest(manifestYaml) as Record<string, unknown>;
+    const rawPlugins = manifest["plugins"];
+    if (!Array.isArray(rawPlugins) || rawPlugins.length === 0) return null;
+    const declaredPlugins: PluginRoutingInput[] = [];
+    for (const entry of rawPlugins) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const p = entry as Record<string, unknown>;
+      const s = p["source"];
+      if (typeof p["id"] !== "string" || !p["id"]) continue;
+      if (!s || typeof s !== "object" || Array.isArray(s)) continue;
+      const src = s as Record<string, unknown>;
+      if (src["kind"] !== "local" || typeof src["path"] !== "string" || !src["path"]) continue;
+      declaredPlugins.push({ id: p["id"], source: { kind: "local", path: src["path"] } });
+    }
+    if (declaredPlugins.length === 0) return null;
+    return routePlugins(
+      {
+        bundleRoot: tmpDir,
+        declaredPlugins,
+        targetPluginsDir: getDefaultOpenRigPath("plugins"),
+      },
+      pluginsRouterFsOps(),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /** Item 6 / slice-05 Checkpoint 7.3: real SkillsRouterFsOps backed by node:fs. */
@@ -760,12 +814,21 @@ bundleRoutes.post("/install", async (c) => {
       // channel post-install step). Routing result included in response body
       // so operators see what landed.
       let skillsRouting: RouteSkillsResult | null = null;
+      let pluginsRouting: RoutePluginsResult | null = null;
       try {
         skillsRouting = await routeSkillsAfterBootstrap(bundlePath);
       } catch {
         // Side-channel failure; install already succeeded
       }
-      return c.json(skillsRouting ? { ...result, skillsRouting } : result, 201);
+      try {
+        pluginsRouting = await routePluginsAfterBootstrap(bundlePath);
+      } catch {
+        // Side-channel failure; install already succeeded
+      }
+      const extras: Record<string, unknown> = {};
+      if (skillsRouting) extras.skillsRouting = skillsRouting;
+      if (pluginsRouting) extras.pluginsRouting = pluginsRouting;
+      return c.json(Object.keys(extras).length > 0 ? { ...result, ...extras } : result, 201);
     }
     if (result.status === "partial") {
       const ok = result.stages.filter((s: { status: string }) => s.status === "ok").length;
