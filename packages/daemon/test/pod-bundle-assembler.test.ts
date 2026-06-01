@@ -910,6 +910,98 @@ describe("PodBundleManifest validation", () => {
     expect(m["skills"]).toEqual(["skills/v2-foo/SKILL.md", "skills/v2-bar/SKILL.md"]);
   });
 
+  // -- Item 6 workflow_specs block tests for v2 (slice-05 Checkpoint 7.3e) --
+
+  it("v2: missing workflow_specs block passes validation (backward compat)", () => {
+    const raw = {
+      schema_version: 2, name: "no-workflow-specs", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: workflow_specs as string array passes validation", () => {
+    const raw = {
+      schema_version: 2, name: "with-workflow-specs", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      workflow_specs: ["workflows/onboarding.yaml", "workflows/release.yaml"],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("v2: workflow_specs as non-array rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-workflow-specs", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      workflow_specs: "workflows/a.yaml",
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs must be an array"))).toBe(true);
+  });
+
+  it("v2: unsafe workflow_specs path rejected", () => {
+    const raw = {
+      schema_version: 2, name: "bad-workflow-specs", version: "1.0",
+      created_at: "2026-05-18T00:00:00Z", rig_spec: "rig.yaml",
+      agents: [{ name: "impl", version: "1.0", path: "agents/impl", original_ref: "local:agents/impl", hash: "abc", import_entries: [] }],
+      workflow_specs: ["../escape/spec.yaml"],
+    };
+    const result = validatePodBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("workflow_specs[0]") && e.includes("not safe"))).toBe(true);
+  });
+
+  it("v2: round-trip preserves workflow_specs through serialize -> parse", () => {
+    const manifest: PodBundleManifest = {
+      schemaVersion: 2, name: "rt-workflow-specs-v2", version: "2.0",
+      createdAt: "2026-05-18T00:00:00Z", rigSpec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        originalRef: "local:agents/impl", hash: "def",
+        importEntries: [],
+      }],
+      workflowSpecs: ["workflows/v2-onboarding.yaml", "workflows/v2-release.yaml"],
+    };
+    const yaml = serializePodBundleManifest(manifest);
+    expect(yaml).toContain("workflow_specs:");
+    expect(yaml).toContain("workflows/v2-onboarding.yaml");
+    const parsed = parsePodBundleManifest(yaml);
+    const validation = validatePodBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const m = parsed as Record<string, unknown>;
+    expect(m["workflow_specs"]).toEqual(["workflows/v2-onboarding.yaml", "workflows/v2-release.yaml"]);
+  });
+
+  it("v2: round-trip preserves all 3 cross-primitive blocks together (skills + plugins + workflow_specs)", () => {
+    const manifest: PodBundleManifest = {
+      schemaVersion: 2, name: "rt-all-three", version: "2.0",
+      createdAt: "2026-05-18T00:00:00Z", rigSpec: "rig.yaml",
+      agents: [{
+        name: "impl", version: "1.0", path: "agents/impl",
+        originalRef: "local:agents/impl", hash: "def",
+        importEntries: [],
+      }],
+      skills: ["skills/co-test/SKILL.md"],
+      plugins: [{ id: "co-plugin", source: { kind: "local", path: "plugins/co-plugin" } }],
+      workflowSpecs: ["workflows/co-flow.yaml"],
+    };
+    const yaml = serializePodBundleManifest(manifest);
+    const parsed = parsePodBundleManifest(yaml);
+    const validation = validatePodBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const m = parsed as Record<string, unknown>;
+    expect(m["skills"]).toEqual(["skills/co-test/SKILL.md"]);
+    expect(m["workflow_specs"]).toEqual(["workflows/co-flow.yaml"]);
+    const ps = m["plugins"] as Array<Record<string, unknown>>;
+    expect(ps[0]!["id"]).toBe("co-plugin");
+  });
+
   it("v2: round-trip preserves compatibility through serialize -> parse", () => {
     const manifest: PodBundleManifest = {
       schemaVersion: 2, name: "rt-compat", version: "2.0",
