@@ -23,7 +23,7 @@ function writeFile(p: string, content: string): void {
 
 function seedSubstrate(): { root: string; missionsRoot: string } {
   const root = mktemp();
-  const missionsRoot = path.join(root, "openrig-work", "missions");
+  const missionsRoot = path.join(root, "internal-docs", "missions");
   execFileSync("git", ["-C", root, "init", "-q"], { stdio: "ignore" });
   execFileSync("git", ["-C", root, "config", "user.email", "t@e.com"], { stdio: "ignore" });
   execFileSync("git", ["-C", root, "config", "user.name", "T"], { stdio: "ignore" });

@@ -710,7 +710,7 @@ describe("SessionTransport", () => {
         "",
         "› Summarize recent commits",
         "",
-        "  gpt-5.4 xhigh fast · Context [████ ] · ~/code/substrate/shared-docs/rigs/kerne…",
+        "  gpt-5.4 xhigh fast · Context [████ ] · ~/.openrig/shared-docs/rigs/kerne…",
       ].join("\n"),
       sendText: sendTextSpy,
     });
