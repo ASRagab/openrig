@@ -2104,6 +2104,291 @@ files:
     }
   });
 
+  // Item 6 / Checkpoint 7.3g step 3: /install routes declared agent_images
+  // after successful bootstrap. Per PRD line 197 + e7a0b253 contract:
+  // declared paths are image DIRECTORIES (not manifest paths). Target =
+  // <openrigHome>/agent-images (startup.ts:523 user-file root). Router
+  // copies whole image dir to <openrigHome>/agent-images/<basename>/.
+  // Consumer-scan reachability proven via real AgentImageLibraryService.scan
+  // against the routed root (mirror of cb0bf7b9 context_packs proof).
+  it("POST /api/bundles/install routes declared agent_images after successful bootstrap (completed branch) — proves consumer-scan reachability", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-agent-images-route-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "with-agent-images.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aimgs-target-"));
+      try {
+        // Build a VALID agent_image: dir w/ manifest.yaml (name + version +
+        // runtime + sourceSeat + sourceSessionId + sourceResumeToken +
+        // createdAt + files[]) per agent-image-types.ts schema.
+        const imageDir = path.join(tmpDir, "test-pkg", "agent-images", "seat-a");
+        fs.mkdirSync(imageDir, { recursive: true });
+        const validManifest = `name: bundle-routed-seat-a
+version: '1'
+runtime: claude-code
+source_seat: velocity-driver@openrig-velocity
+source_session_id: 01HABCDEF000000000000000
+source_resume_token: 01HABCDEF000000000000000
+created_at: '2026-05-31T00:00:00Z'
+files: []
+`;
+        fs.writeFileSync(path.join(imageDir, "manifest.yaml"), validManifest);
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "with-agent-images", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimgs-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          // PRD-coherent: declared path is the image DIR, not the manifest
+          const tampered = `${original}\nagent_images:\n  - packages/test-pkg/agent-images/seat-a\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-aimgs",
+          rigId: "01H000000000000000AIMG01",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.agentImagesRouting).toBeDefined();
+        expect(body.agentImagesRouting.routedCount).toBe(1);
+        expect(body.agentImagesRouting.records[0].status).toBe("routed");
+        // Router copies WHOLE image dir: declared "packages/test-pkg/agent-
+        // images/seat-a" → basename "seat-a" → target/seat-a/
+        const expectedImageDir = path.join(auditHome, "agent-images", "seat-a");
+        expect(fs.existsSync(expectedImageDir)).toBe(true);
+        expect(fs.existsSync(path.join(expectedImageDir, "manifest.yaml"))).toBe(true);
+
+        // CONSUMER-SCAN REACHABILITY PROOF: instantiate the real
+        // AgentImageLibraryService against the routed root + assert the
+        // image is visible by name+version.
+        const { AgentImageLibraryService } = await import("../src/domain/agent-images/agent-image-library-service.js");
+        const consumer = new AgentImageLibraryService({
+          roots: [{ path: path.join(auditHome, "agent-images"), sourceType: "user_file" }],
+        });
+        const scanResult = consumer.scan();
+        expect(scanResult.count).toBeGreaterThanOrEqual(1);
+        expect(scanResult.errors).toEqual([]);
+        const entries = consumer.list();
+        const found = entries.find((e) => e.name === "bundle-routed-seat-a");
+        expect(found).toBeDefined();
+        expect(found!.version).toBe("1");
+        expect(found!.runtime).toBe("claude-code");
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  // B1-mirror: agent_images routing must fire even when operator uses
+  // BOTH --skip-version-check and --force pre-check overrides.
+  it("POST /api/bundles/install routes declared agent_images even when both --skip-version-check and --force are set (B1 mirror)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-aimgs-dual-override-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "dual-override-aimgs.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-aimgs-target-"));
+      try {
+        const imageDir = path.join(tmpDir, "test-pkg", "agent-images", "dualseat");
+        fs.mkdirSync(imageDir, { recursive: true });
+        fs.writeFileSync(path.join(imageDir, "manifest.yaml"), `name: dualseat-image
+version: '2'
+runtime: codex
+source_seat: velocity-driver@openrig-velocity
+source_session_id: 01HABCDEFDUAL00000000000
+source_resume_token: 01HABCDEFDUAL00000000000
+created_at: '2026-05-31T00:00:00Z'
+files: []
+`);
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "dual-override-aimgs", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-aimgs-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\nagent_images:\n  - packages/test-pkg/agent-images/dualseat\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-aimgs-dual",
+          rigId: "01H000000000000000AIMDUL",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bundlePath, targetRoot, autoApprove: true,
+            skipVersionCheck: true, force: true,
+          }),
+        });
+        const body = await installRes.json();
+        expect(body.agentImagesRouting).toBeDefined();
+        expect(body.agentImagesRouting.routedCount).toBe(1);
+        expect(body.agentImagesRouting.records[0].status).toBe("routed");
+        expect(fs.existsSync(path.join(auditHome, "agent-images", "dualseat", "manifest.yaml"))).toBe(true);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  // Degenerate-input: declared image dir absent. routedCount=0,
+  // status=missing, NO image at target.
+  it("POST /api/bundles/install agent_images degenerate-input: declared image absent → status=missing, no false routedCount", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-aimgs-degenerate-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "absent-aimgs.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "absent-aimgs-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "absent-aimgs", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "absent-aimgs-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\nagent_images:\n  - packages/test-pkg/agent-images/nonexistent\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-aimgs-absent",
+          rigId: "01H000000000000000AIMABS",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.agentImagesRouting).toBeDefined();
+        expect(body.agentImagesRouting.routedCount).toBe(0);
+        expect(body.agentImagesRouting.rejectedCount).toBe(1);
+        expect(body.agentImagesRouting.records[0].status).toBe("missing");
+        expect(fs.existsSync(path.join(auditHome, "agent-images", "nonexistent"))).toBe(false);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/bundles/install does NOT include agentImagesRouting when bundle has no agent_images[]", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-aimgs-test-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "no-aimgs.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "no-aimgs-target-"));
+      try {
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "no-aimgs-installer", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed", runId: "test-run-no-aimgs",
+          rigId: "01H000000000000000NOAIMG",
+          stages: [], errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bundlePath, targetRoot, autoApprove: true }),
+        });
+        const body = await installRes.json();
+        expect(body.agentImagesRouting).toBeUndefined();
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include contextPacksRouting when bundle has no context_packs[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-cpacks-test-"));

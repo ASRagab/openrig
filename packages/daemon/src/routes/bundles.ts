@@ -25,6 +25,7 @@ import { routeSkills, type SkillsRouterFsOps, type RouteSkillsResult } from "../
 import { routePlugins, type PluginsRouterFsOps, type RoutePluginsResult, type PluginRoutingInput } from "../domain/bundle-plugins-router.js";
 import { routeWorkflowSpecs, type WorkflowSpecsRouterFsOps, type RouteWorkflowSpecsResult } from "../domain/bundle-workflow-specs-router.js";
 import { routeContextPacks, type ContextPacksRouterFsOps, type RouteContextPacksResult } from "../domain/bundle-context-packs-router.js";
+import { routeAgentImages, type AgentImagesRouterFsOps, type RouteAgentImagesResult } from "../domain/bundle-agent-images-router.js";
 import { SettingsStore as ContextPackSettingsStore } from "../domain/user-settings/settings-store.js";
 
 /**
@@ -309,6 +310,61 @@ function contextPacksRouterFsOps(): ContextPacksRouterFsOps {
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
     copyDir: (s, d) => fs.cpSync(s, d, { recursive: true }),
   };
+}
+
+/** Item 6 / slice-05 Checkpoint 7.3g step 3: real AgentImagesRouterFsOps backed by node:fs. */
+function agentImagesRouterFsOps(): AgentImagesRouterFsOps {
+  return {
+    exists: (p) => fs.existsSync(p),
+    isDirectory: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+    mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+    copyDir: (s, d) => fs.cpSync(s, d, { recursive: true }),
+  };
+}
+
+/**
+ * Item 6 / slice-05 Checkpoint 7.3g step 3: extract the bundle safely
+ * (banked unpack trust boundary) and route any declared agent_images to
+ * the operator agent-images library. Returns null when bundle has no
+ * agent_images[] (no-op).
+ *
+ * Target resolution: <openrigHome>/agent-images — per startup.ts:523
+ * (the user-file root the live AgentImageLibraryService is constructed
+ * against). No SettingsStore complexity; canonical path is OPENRIG_HOME-
+ * rooted per agent-image-types.ts:9-10.
+ *
+ * Per the e7a0b253 PRD-coherent contract: agent_images entries are paths
+ * to image DIRECTORIES (not manifest paths — distinct shape from
+ * context_packs). The router enforces sourceAbs isDirectory + manifest.yaml
+ * inside the dir is a file before copying the whole image dir.
+ *
+ * Mirror of routeContextPacksAfterBootstrap pattern with the dir-path
+ * contract adaptation. bundlePath-only signature per 5f410eee B1 lesson.
+ */
+async function routeAgentImagesAfterBootstrap(bundlePath: string): Promise<RouteAgentImagesResult | null> {
+  const targetAgentImagesDir = getDefaultOpenRigPath("agent-images");
+  const tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "bundle-agent-images-route-"));
+  try {
+    await unpack(bundlePath, tmpDir);
+    const manifestPath = nodePath.join(tmpDir, "bundle.yaml");
+    if (!fs.existsSync(manifestPath)) return null;
+    const manifestYaml = fs.readFileSync(manifestPath, "utf-8");
+    const manifest = parsePodBundleManifest(manifestYaml) as Record<string, unknown>;
+    const rawAgentImages = manifest["agent_images"];
+    if (!Array.isArray(rawAgentImages) || rawAgentImages.length === 0) return null;
+    const declaredAgentImages = rawAgentImages.filter((s): s is string => typeof s === "string" && s.length > 0);
+    if (declaredAgentImages.length === 0) return null;
+    return routeAgentImages(
+      {
+        bundleRoot: tmpDir,
+        declaredAgentImages,
+        targetAgentImagesDir,
+      },
+      agentImagesRouterFsOps(),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -937,6 +993,7 @@ bundleRoutes.post("/install", async (c) => {
       let pluginsRouting: RoutePluginsResult | null = null;
       let workflowSpecsRouting: RouteWorkflowSpecsResult | null = null;
       let contextPacksRouting: RouteContextPacksResult | null = null;
+      let agentImagesRouting: RouteAgentImagesResult | null = null;
       try {
         skillsRouting = await routeSkillsAfterBootstrap(bundlePath);
       } catch {
@@ -957,11 +1014,17 @@ bundleRoutes.post("/install", async (c) => {
       } catch {
         // Side-channel failure; install already succeeded
       }
+      try {
+        agentImagesRouting = await routeAgentImagesAfterBootstrap(bundlePath);
+      } catch {
+        // Side-channel failure; install already succeeded
+      }
       const extras: Record<string, unknown> = {};
       if (skillsRouting) extras.skillsRouting = skillsRouting;
       if (pluginsRouting) extras.pluginsRouting = pluginsRouting;
       if (workflowSpecsRouting) extras.workflowSpecsRouting = workflowSpecsRouting;
       if (contextPacksRouting) extras.contextPacksRouting = contextPacksRouting;
+      if (agentImagesRouting) extras.agentImagesRouting = agentImagesRouting;
       return c.json(Object.keys(extras).length > 0 ? { ...result, ...extras } : result, 201);
     }
     if (result.status === "partial") {
