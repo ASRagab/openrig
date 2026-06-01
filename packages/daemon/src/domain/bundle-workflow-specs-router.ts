@@ -45,17 +45,20 @@ export interface RouteWorkflowSpecsInput {
   /**
    * Absolute path to the operator workflow-specs library that the
    * spec-library-workflow-scanner ACTUALLY reads from. **CALLER CONTRACT**:
-   * this MUST be `<workspace.specs_root>/workflows` — the folder discovered
-   * by `scanWorkflowSpecFolder` in
+   * this MUST be exactly
+   *   `nodePath.join(ContextPackSettingsStore.resolveConfig().workspaceSpecsRoot, "workflows")`
+   * — the folder discovered by `scanWorkflowSpecFolder` in
    * `packages/daemon/src/domain/spec-library-workflow-scanner.ts:320-342`
    * and exposed via `deps.workflowsFolderDir` in
-   * `packages/daemon/src/startup.ts:903-916` (resolved from
-   * ContextPackSettingsStore: env > config > workspace-default, default
-   * `<openrigHome>/specs/workflows`). Writing anywhere else (e.g.
-   * `~/.openrig/workflow-specs/`) will succeed silently but be invisible
-   * to the live workflow scanner — operator dead-end. The /install
-   * integration helper (Checkpoint 7.3e step 3) MUST resolve this path
-   * before calling routeWorkflowSpecs.
+   * `packages/daemon/src/startup.ts:903-916`. SettingsStore is the sole
+   * authority for the actual operator-host path; do NOT hardcode a default
+   * here — settings layering (env > config > workspace-default) can shift
+   * the resolved root, so any literal default repeated in this comment
+   * would be a drift hazard. Writing anywhere else will succeed silently
+   * but be invisible to the live workflow scanner — operator dead-end.
+   * The /install integration helper (Checkpoint 7.3e step 3) MUST resolve
+   * this path via the SettingsStore call shown above before invoking
+   * routeWorkflowSpecs.
    */
   targetWorkflowSpecsDir: string;
 }

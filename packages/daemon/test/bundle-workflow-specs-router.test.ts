@@ -24,16 +24,16 @@ function mockFs(initialFiles: Record<string, string> = {}): WorkflowSpecsRouterF
 }
 
 const BUNDLE_ROOT = "/bundle/root";
-// TARGET reflects the CALLER CONTRACT documented in
-// bundle-workflow-specs-router.ts RouteWorkflowSpecsInput.targetWorkflowSpecsDir:
-// the operator workflow-specs library is `<workspace.specs_root>/workflows`,
-// the path the live spec-library-workflow-scanner reads from
-// (see daemon startup.ts:903-916 + scanner.ts:320-342). Default
-// workspace.specs_root layout = <openrigHome>/specs, so the workflows folder
-// resolves to <openrigHome>/specs/workflows. The router itself is parametric
-// on targetWorkflowSpecsDir; this test fixture pins the contract so step 3
-// integration cannot drift to an unscanned location.
-const TARGET = "/operator/.openrig/specs/workflows";
+// TARGET is an arbitrary fixture path — the router is parametric on
+// targetWorkflowSpecsDir and the unit tests do not depend on any specific
+// operator-host layout. The CALLER CONTRACT documented in
+// bundle-workflow-specs-router.ts RouteWorkflowSpecsInput.targetWorkflowSpecsDir
+// requires step 3 integration to resolve this via
+// `nodePath.join(ContextPackSettingsStore.resolveConfig().workspaceSpecsRoot,
+// "workflows")` — SettingsStore is the sole authority. Hardcoding the
+// scanner-default path here would be a drift hazard if SettingsStore
+// changes its default; the integration-level dogfood proves the wiring.
+const TARGET = "/test/workflow-specs-target";
 
 function makeInput(overrides?: Partial<RouteWorkflowSpecsInput>): RouteWorkflowSpecsInput {
   return {
