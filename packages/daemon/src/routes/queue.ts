@@ -187,7 +187,29 @@ export function queueRoutes(): Hono {
     }
   });
 
-  // POST /:qitemId/update — general state mutator (incl. done)
+  // POST /:qitemId/update — general state mutator (incl. done).
+  //
+  // OPR.0.3.2.21.FR-4(d-docs) — closure ≠ acceptance.
+  //
+  // `state=done` with `closure_reason=handed_off_to` records that the
+  // source seat has DELIVERED the work to the next stage. It does NOT
+  // record that the next stage has ACCEPTED the work — that's the next
+  // stage's verdict on its own qitem (typically a separate close with
+  // its own closure_reason).
+  //
+  // Closure vocabulary:
+  //   - handed_off_to    delivered to next stage; acceptance pending
+  //                      that stage's verdict on its own qitem
+  //   - blocked_on       waiting on a named blocker (closureTarget)
+  //   - denied           the source seat refuses the work
+  //   - canceled         work no longer needed (no follow-on)
+  //   - no-follow-on     completed in place; no further routing
+  //   - escalation       routed to a higher-authority seat
+  //
+  // The "accepted" state IS NOT a queue state in v0.3.x — the qitem
+  // model captures delivery + the receiving stage owns acceptance as
+  // a separate transaction. (FR-4d-state schema change adding a
+  // distinct "accepted" state is deferred to release-0.3.3.)
   app.post("/:qitemId/update", async (c) => {
     const qitemId = c.req.param("qitemId");
     const body = await c.req.json<{
