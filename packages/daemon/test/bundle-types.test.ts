@@ -687,6 +687,83 @@ describe("Bundle types", () => {
     const normalized = normalizeBundleManifest(parsed);
     expect(normalized.contextPacks).toBeUndefined();
   });
+
+  // -- Item 6 agent_images block tests (slice-05 Checkpoint 7.3g) --
+
+  it("missing agent_images block passes validation (backward compat)", () => {
+    const raw = { ...VALID_RAW };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("agent_images as a string array of safe relative paths passes validation", () => {
+    const raw = { ...VALID_RAW, agent_images: ["agent-images/seat-a/manifest.yaml", "agent-images/seat-b/manifest.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(true);
+  });
+
+  it("agent_images as a non-array rejected", () => {
+    const raw = { ...VALID_RAW, agent_images: "agent-images/x/manifest.yaml" };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("agent_images must be an array"))).toBe(true);
+  });
+
+  it("non-string agent_images entry rejected", () => {
+    const raw = { ...VALID_RAW, agent_images: [99, "agent-images/ok/manifest.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("agent_images[0]") && e.includes("must be a string"))).toBe(true);
+  });
+
+  it("unsafe agent_images path (dot-dot traversal) rejected", () => {
+    const raw = { ...VALID_RAW, agent_images: ["../escape/manifest.yaml"] };
+    const result = validateBundleManifest(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("agent_images[0]"))).toBe(true);
+    expect(result.errors.some((e) => e.includes("not safe"))).toBe(true);
+  });
+
+  it("round-trip preserves agent_images through serialize → parse → normalize", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "rt-agent-images",
+      version: "1.0.0",
+      createdAt: "2026-05-18T12:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+      integrity: {
+        algorithm: "sha256",
+        files: { "rig.yaml": "e".repeat(64), "packages/pkg/package.yaml": "f".repeat(64) },
+      },
+      agentImages: ["agent-images/seat-a/manifest.yaml", "agent-images/seat-b/manifest.yaml"],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).toContain("agent_images:");
+    expect(yaml).toContain("agent-images/seat-a/manifest.yaml");
+    const parsed = parseBundleManifest(yaml);
+    const validation = validateBundleManifest(parsed);
+    expect(validation.valid).toBe(true);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.agentImages).toBeDefined();
+    expect(normalized.agentImages).toEqual(["agent-images/seat-a/manifest.yaml", "agent-images/seat-b/manifest.yaml"]);
+  });
+
+  it("missing agent_images round-trips cleanly (no field emitted in YAML)", () => {
+    const manifest: BundleManifest = {
+      schemaVersion: 1,
+      name: "no-agent-images",
+      version: "1.0.0",
+      createdAt: "2026-05-18T00:00:00Z",
+      rigSpec: "rig.yaml",
+      packages: [{ name: "pkg", version: "1.0", path: "packages/pkg", originalSource: "local:./pkg" }],
+    };
+    const yaml = serializeBundleManifest(manifest);
+    expect(yaml).not.toContain("agent_images:");
+    const parsed = parseBundleManifest(yaml);
+    const normalized = normalizeBundleManifest(parsed);
+    expect(normalized.agentImages).toBeUndefined();
+  });
 });
 
 describe("isRelativeSafePath", () => {

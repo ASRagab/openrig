@@ -237,6 +237,40 @@ function normalizeContextPacksBlock(raw: unknown): string[] | undefined {
   return result.length > 0 ? result : undefined;
 }
 
+/** Validate optional agent_images[] block. Item 6 / slice-05 Checkpoint 7.3g.
+ * Each entry is a relative-safe path to an agent-image's manifest.yaml inside
+ * the bundle (per PRD §Item 6 line 197 — agent_images: [path/to/agent-image-
+ * name/, ...] — interpreted as the manifest.yaml path per the consumer
+ * contract). The router copies the parent directory of each manifest path to
+ * the operator agent-images library on install. */
+function validateAgentImagesBlock(raw: unknown, errors: string[]): void {
+  if (raw === undefined) return;
+  if (!Array.isArray(raw)) {
+    errors.push("agent_images must be an array");
+    return;
+  }
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (typeof entry !== "string") {
+      errors.push(`agent_images[${i}] must be a string`);
+      continue;
+    }
+    if (!isRelativeSafePath(entry)) {
+      errors.push(`agent_images[${i}] path is not safe: '${entry}'`);
+    }
+  }
+}
+
+/** Normalize raw agent_images[] block (defensive copy + string filter). */
+function normalizeAgentImagesBlock(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const result: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string" && entry.length > 0) result.push(entry);
+  }
+  return result.length > 0 ? result : undefined;
+}
+
 /**
  * Compatibility block — operator-declared install-time requirements for a
  * bundle artifact. All fields optional; missing block keeps backward compat
@@ -357,6 +391,8 @@ export interface PodBundleManifest {
   workflowSpecs?: string[];
   /** Item 6 cross-primitive bundling: paths to context-pack manifest.yaml files; router copies the parent dir to the operator context-packs library on install (Checkpoint 7.3f). */
   contextPacks?: string[];
+  /** Item 6 cross-primitive bundling: paths to agent-image manifest.yaml files; router copies the parent dir to the operator agent-images library on install (Checkpoint 7.3g). */
+  agentImages?: string[];
 }
 
 export function validatePodBundleManifest(raw: unknown): { valid: boolean; errors: string[] } {
@@ -389,6 +425,7 @@ export function validatePodBundleManifest(raw: unknown): { valid: boolean; error
   validatePluginsBlock(m["plugins"], errors);
   validateWorkflowSpecsBlock(m["workflow_specs"], errors);
   validateContextPacksBlock(m["context_packs"], errors);
+  validateAgentImagesBlock(m["agent_images"], errors);
 
   return { valid: errors.length === 0, errors };
 }
@@ -423,6 +460,7 @@ export function serializePodBundleManifest(manifest: PodBundleManifest): string 
   if (manifest.plugins && manifest.plugins.length > 0) doc["plugins"] = manifest.plugins.map((p) => ({ id: p.id, source: { kind: p.source.kind, path: p.source.path } }));
   if (manifest.workflowSpecs && manifest.workflowSpecs.length > 0) doc["workflow_specs"] = manifest.workflowSpecs;
   if (manifest.contextPacks && manifest.contextPacks.length > 0) doc["context_packs"] = manifest.contextPacks;
+  if (manifest.agentImages && manifest.agentImages.length > 0) doc["agent_images"] = manifest.agentImages;
   return stringifyYaml(doc);
 }
 
@@ -468,6 +506,8 @@ export interface LegacyBundleManifest {
   workflowSpecs?: string[];
   /** Item 6 cross-primitive bundling: paths to context-pack manifest.yaml files; router copies the parent dir to the operator context-packs library on install (Checkpoint 7.3f). */
   contextPacks?: string[];
+  /** Item 6 cross-primitive bundling: paths to agent-image manifest.yaml files; router copies the parent dir to the operator agent-images library on install (Checkpoint 7.3g). */
+  agentImages?: string[];
 }
 
 /** Validation options */
@@ -564,6 +604,7 @@ export function validateLegacyBundleManifest(
   validatePluginsBlock(m["plugins"], errors);
   validateWorkflowSpecsBlock(m["workflow_specs"], errors);
   validateContextPacksBlock(m["context_packs"], errors);
+  validateAgentImagesBlock(m["agent_images"], errors);
 
   return { valid: errors.length === 0, errors };
 }
@@ -624,6 +665,9 @@ export function normalizeLegacyBundleManifest(raw: unknown): LegacyBundleManifes
   const contextPacks = normalizeContextPacksBlock(m["context_packs"]);
   if (contextPacks) result.contextPacks = contextPacks;
 
+  const agentImages = normalizeAgentImagesBlock(m["agent_images"]);
+  if (agentImages) result.agentImages = agentImages;
+
   return result;
 }
 
@@ -659,6 +703,7 @@ export function serializeLegacyBundleManifest(manifest: LegacyBundleManifest): s
   if (manifest.plugins && manifest.plugins.length > 0) doc["plugins"] = manifest.plugins.map((p) => ({ id: p.id, source: { kind: p.source.kind, path: p.source.path } }));
   if (manifest.workflowSpecs && manifest.workflowSpecs.length > 0) doc["workflow_specs"] = manifest.workflowSpecs;
   if (manifest.contextPacks && manifest.contextPacks.length > 0) doc["context_packs"] = manifest.contextPacks;
+  if (manifest.agentImages && manifest.agentImages.length > 0) doc["agent_images"] = manifest.agentImages;
 
   return stringifyYaml(doc);
 }
