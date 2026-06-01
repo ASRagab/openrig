@@ -185,11 +185,14 @@ pods:
     // Service boot stage should show failed
     const serviceStage = result.stages.find((s) => s.stage === "service_boot");
     expect(serviceStage).toBeDefined();
-    // No agent sessions should have been launched
-    const createdRig = rigRepo.findRigsByName("failing-services-rig")[0];
-    expect(createdRig).toBeDefined();
-    const sessions = createdRig ? setup.sessionRegistry.getSessionsForRig(createdRig.id) : [];
-    expect(sessions).toHaveLength(0);
+    // OPR.0.3.2.22 Bug 2: pre-fix, a service_boot_failed left an orphan rig
+    // record (no sessions, but the rig existed) that produced the
+    // "ambiguous library-spec vs restore-target" UX trap on the next retry.
+    // Post-fix, the prelaunch-hook failure rolls back the rig record, so
+    // the spec name stays free for a clean retry — and the "no agent
+    // sessions launched" guarantee follows transitively from "no rig".
+    const orphans = rigRepo.findRigsByName("failing-services-rig");
+    expect(orphans, `expected no orphan rig records after service_boot_failed, found ${JSON.stringify(orphans)}`).toHaveLength(0);
     expect(serviceStage!.status).toBe("failed");
   });
 
