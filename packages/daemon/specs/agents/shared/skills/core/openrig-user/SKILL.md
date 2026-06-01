@@ -12,6 +12,97 @@ This is not the config-layer or builder guide. Use the substrate control-plane g
 and experimental overlays. Use the OpenRig builder guidance when changing OpenRig behavior,
 doctrine, or release posture.
 
+## Coordination primitives — when to use which
+
+Three coordination surfaces, used together for forward-momentum work. Internalize this
+on first read — it shapes every turn you take in a rig.
+
+### `rig send <seat> "<text>"` — intra-pod direct messaging / nudges
+
+Use when you need to ask a quick question or give a teammate context that does not
+carry handoff semantics. **NOT for durable work.** NOT for state that must survive
+across turns. The message lands in the target's pane; there is no durable queue
+record. The CLI prints `Sent to ...` (and `Verified: yes/no` with `--verify`); read
+the receipt and move on.
+
+Example:
+
+```bash
+rig send velocity-guard@openrig-velocity "Heads up — filing per-commit handoff on slice-22 Bug 1 BONUS at tip 6b8673b6." --verify
+```
+
+### `rig queue create --source <X> --destination <Y> --tags <...> --body "<...>"` — durable work item
+
+Use for any substantive work that must not fall through chat — slice handoffs,
+guard verdicts, QA results, full-tip reviews, multi-item batches. Survives agent
+restarts. Tracked in the daemon SQLite schema. Surfaces in Project / queue views
++ in the destination seat's inbox. Tag with mission / slice / gate / checkpoint
+so future-you (and any peer) can find it.
+
+Body discipline: substantive bodies go through a temp-file pattern, not inline
+`--body` with raw backticks — `rig queue create` body parsing breaks on
+unescaped backticks and rejects flag-like tokens.
+
+Example:
+
+```bash
+rig queue create \
+  --source redo-driver-2@openrig-velocity \
+  --destination redo-guard-2@openrig-velocity \
+  --tags "mission:release-0.3.2,slice:22-rig-up-paper-cut-fix-round,gate:guard,handoff:per-commit,checkpoint:bug-1-bonus" \
+  --body "$(cat /tmp/per-commit-body.txt)"
+```
+
+### `rig queue handoff <qitem-id> --to <next> ...` — hot-potato handoff
+
+Use when you have completed your turn on a qitem and the work moves to the next
+owner. **This is forward momentum.** The ball passes to the destination seat;
+chain-of-record (the prior qitem id) is preserved so the verdict trail is intact;
+tags carry the phase boundary forward (e.g. `gate:guard` → `gate:qa`).
+
+Example:
+
+```bash
+rig queue handoff qitem-20260601012431-d78aa805 \
+  --to velocity-qa@openrig-velocity \
+  --tags "mission:release-0.3.2,slice:22-rig-up-paper-cut-fix-round,gate:qa,handoff:adversarial-dogfood"
+```
+
+### §1b doctrine — turn ends by passing the ball
+
+**A turn ends by passing the ball, never by going idle holding the slice waiting
+on a confirmation the process does not include.** If the work was authorized, the
+per-commit guard + adversarial QA + orch heavy-verify are the guardrails — not an
+operator pre-commit gate. Do the authorized work and pass the ball.
+
+Valid pauses are only:
+
+- A genuine blocker — file a blocked-state qitem against the blocking peer or
+  surface explicitly to orch.
+- A scope-or-architecture question that requires owner input and changes the
+  plan — surface to orch with the specific decision needed.
+
+Implementing already-authorized work is neither of these. Proceed without
+phantom-gating on an imagined "next prompt" or "operator confirmation" that the
+process does not require.
+
+### Anti-patterns
+
+- Using `rig send` for durable work → use `rig queue create` instead. Sends do
+  not survive restarts and do not show up in queue/project views.
+- Idle-holding a slice for an imagined "next prompt" or "operator confirmation"
+  that the process does not require → pass the ball via `rig queue handoff` and
+  proceed to the next slice or stand by for the inbound verdict. See the §1b
+  doctrine above.
+- Hand-coding `rigx queue` for new work → `rig queue` is the daemon-backed
+  canonical surface since the 2026-05-11 host-CLI fix. `rigx queue` is a
+  recovery-only fallback; qitems written via `rigx queue` are invisible to
+  daemon-backed reads and break fleet-wide routing discipline.
+- Inlining a multi-line / backtick-heavy body into `rig queue create --body`
+  → write the body to `/tmp/<descriptive-name>.txt` first, then
+  `--body "$(cat /tmp/<file>.txt)"`. The body parser does not tolerate raw
+  backticks or flag-like tokens inline.
+
 ## Runtime-Gated Coordination Primitives
 
 OpenRig v0.3.1 is published publicly as `@openrig/cli@0.3.1` and GitHub Release
@@ -29,9 +120,13 @@ Default posture:
 
 - Treat daemon `rig queue`, `rig stream`, `rig project`, `rig view`, `rig watchdog`, and
   `rig workflow` as the product coordination surfaces when the active daemon is v0.2.0 or newer.
-- **CANONICAL SURFACE NOTE (2026-05-11)**: `rig queue` (daemon-backed SQLite) is the
-  canonical surface for queue routing since the 2026-05-11 host-CLI fix landed. Use
-  `rig queue create / handoff / update / show / list` for all substantive work.
+- **CANONICAL SURFACE NOTE (2026-05-11)**: `rig queue` (daemon-backed SQLite) became
+  the canonical queue-routing surface when the 2026-05-11 host-CLI fix landed. The
+  coordination model is now load-bearing at the top of this skill — see
+  "Coordination primitives — when to use which" above for the send / queue /
+  queue-handoff usage model and the §1b doctrine. Auxiliary queue verbs:
+  `rig queue update / show / list` complement `rig queue create / handoff`
+  for in-flight inspection and state mutation.
 - Use temporary substrate overlays such as `rigx queue`, `rigx stream`, `rigx project`, and
   `rigx view-proto` only where the current OpenRig workstream explicitly says that legacy/control
   layer is still in use. For queue specifically, `rigx queue` is recovery-only fallback;
