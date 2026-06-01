@@ -1451,6 +1451,88 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.3d / guard B1 mirror of the 5f410eee skills lesson:
+  // plugins routing must fire even when operator uses BOTH --skip-version-check
+  // and --force pre-check overrides. routePluginsAfterBootstrap takes
+  // bundlePath only (decoupled from installMeta) so that the dual-override
+  // path — which leaves installMeta null at the pre-check site — still routes
+  // declared plugins. Discriminator: re-coupling routePluginsAfterBootstrap
+  // to installMeta would make this test fail (pluginsRouting undefined when
+  // both override flags are set on a bundle that declares plugins[]).
+  it("POST /api/bundles/install routes declared plugins even when both --skip-version-check and --force are set (B1 mirror)", async () => {
+    const origHome = process.env.OPENRIG_HOME;
+    const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-plugins-dual-override-"));
+    process.env.OPENRIG_HOME = auditHome;
+    const origBootstrap = setup.bootstrapOrchestrator.bootstrap.bind(setup.bootstrapOrchestrator);
+    try {
+      const { specPath } = seedPackage();
+      const bundlePath = path.join(tmpDir, "dual-override-plugins.rigbundle");
+      const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-plugins-target-"));
+      try {
+        const pluginSrc = path.join(tmpDir, "test-pkg", "plugins", "dualplugin");
+        fs.mkdirSync(pluginSrc, { recursive: true });
+        fs.writeFileSync(path.join(pluginSrc, "plugin.json"), '{"name":"dualplugin","version":"1.0"}');
+        fs.writeFileSync(path.join(pluginSrc, "README.md"), "# dualplugin body");
+
+        await app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath, bundleName: "dual-override-plugins", bundleVersion: "0.1.0", outputPath: bundlePath }),
+        });
+
+        const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dual-override-plugins-stage-"));
+        try {
+          const tar = await import("tar");
+          await tar.extract({ file: bundlePath, cwd: stagingDir });
+          const bundleYamlPath = path.join(stagingDir, "bundle.yaml");
+          const original = fs.readFileSync(bundleYamlPath, "utf-8");
+          const tampered = `${original}\nplugins:\n  - id: dualplugin\n    source:\n      kind: local\n      path: packages/test-pkg/plugins/dualplugin\n`;
+          fs.writeFileSync(bundleYamlPath, tampered);
+          const { pack } = await import("../src/domain/bundle-archive.js");
+          await pack(stagingDir, bundlePath);
+        } finally {
+          fs.rmSync(stagingDir, { recursive: true, force: true });
+        }
+
+        const stub = vi.fn().mockResolvedValue({
+          status: "completed",
+          runId: "test-run-plugins-dual",
+          rigId: "01H000000000000000DUAL0002",
+          stages: [{ stage: "resolve_spec", status: "ok" }],
+          errors: [],
+        });
+        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+
+        // Critical: both override flags set — installMeta is null at the pre-check
+        // site in this path; the plugins-routing wrapper must STILL fire
+        const installRes = await app.request("/api/bundles/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bundlePath, targetRoot, autoApprove: true,
+            skipVersionCheck: true, force: true,
+          }),
+        });
+        const body = await installRes.json();
+        expect(body.pluginsRouting).toBeDefined();
+        expect(body.pluginsRouting.routedCount).toBe(1);
+        expect(body.pluginsRouting.records[0].id).toBe("dualplugin");
+        expect(body.pluginsRouting.records[0].status).toBe("routed");
+        const expectedPluginDir = path.join(auditHome, "plugins", "dualplugin");
+        expect(fs.existsSync(expectedPluginDir)).toBe(true);
+        expect(fs.existsSync(path.join(expectedPluginDir, "plugin.json"))).toBe(true);
+        expect(fs.existsSync(path.join(expectedPluginDir, "README.md"))).toBe(true);
+      } finally {
+        fs.rmSync(targetRoot, { recursive: true, force: true });
+      }
+    } finally {
+      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      if (origHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = origHome;
+      fs.rmSync(auditHome, { recursive: true, force: true });
+    }
+  });
+
   it("POST /api/bundles/install does NOT include pluginsRouting when bundle has no plugins[]", async () => {
     const origHome = process.env.OPENRIG_HOME;
     const auditHome = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-no-plugins-test-"));
