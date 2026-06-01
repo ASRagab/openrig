@@ -53,7 +53,7 @@ rig queue create \
   --body "$(cat /tmp/per-commit-body.txt)"
 ```
 
-### `rig queue handoff <qitem-id> --destination <next> ...` — hot-potato handoff
+### `rig queue handoff <qitem-id> --to <next> ...` — hot-potato handoff
 
 Use when you have completed your turn on a qitem and the work moves to the next
 owner. **This is forward momentum.** The ball passes to the destination seat;
@@ -64,7 +64,7 @@ Example:
 
 ```bash
 rig queue handoff qitem-20260601012431-d78aa805 \
-  --destination velocity-qa@openrig-velocity \
+  --to velocity-qa@openrig-velocity \
   --tags "mission:release-0.3.2,slice:22-rig-up-paper-cut-fix-round,gate:qa,handoff:adversarial-dogfood"
 ```
 
@@ -79,8 +79,8 @@ Valid pauses are only:
 
 - A genuine blocker — file a blocked-state qitem against the blocking peer or
   surface explicitly to orch.
-- A founder-scope or architecture question that changes the plan — surface to
-  orch with the specific decision needed.
+- A scope-or-architecture question that requires owner input and changes the
+  plan — surface to orch with the specific decision needed.
 
 Implementing already-authorized work is neither of these. Proceed without
 phantom-gating on an imagined "next prompt" or "operator confirmation" that the

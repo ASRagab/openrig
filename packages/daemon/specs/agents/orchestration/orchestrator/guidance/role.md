@@ -50,7 +50,7 @@ the §1b doctrine, and the anti-patterns list. Brief mental model:
   — durable work item. Survives restarts. Tracked. Tag with
   mission / slice / gate / checkpoint. Use this for any substantive
   dispatch, verdict, or handoff.
-- `rig queue handoff <qitem-id> --destination <next> ...` — hot-potato
+- `rig queue handoff <qitem-id> --to <next> ...` — hot-potato
   forward momentum. Chain-of-record preserved. **This is how a turn
   ends — by passing the ball, never by going idle.**
 
