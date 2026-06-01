@@ -14,8 +14,8 @@ import { LegacyRigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
-import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest, validateLegacyBundleManifest, normalizeProvenanceBlock, normalizeCompatibilityBlock } from "../domain/bundle-types.js";
-import type { PodBundleManifest, BundleProvenance, BundleCompatibility } from "../domain/bundle-types.js";
+import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest, validateLegacyBundleManifest, normalizeProvenanceBlock, normalizeCompatibilityBlock, isRelativeSafePath } from "../domain/bundle-types.js";
+import type { PodBundleManifest, BundleProvenance, BundleCompatibility, BundlePluginReference } from "../domain/bundle-types.js";
 import { fileURLToPath } from "node:url";
 import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-conflict-detector.js";
 import type { RigRepository } from "../domain/rig-repository.js";
@@ -617,6 +617,149 @@ function writeInstallAudit(opts: {
   }
 }
 
+/**
+ * Item 6 / slice-05 Checkpoint 7.5 (QA-20260601 A2 repair): consume an
+ * author-supplied bundle.yaml at the source root and vendor the
+ * declared cross-primitive content into the staging tree. Runs AFTER
+ * the assembler has built staging (rig.yaml + agents/) and BEFORE
+ * computeIntegrity so the vendored content lands in the integrity
+ * manifest.
+ *
+ * Auto-detect contract (per orch ruling, no new CLI flag): if a
+ * bundle.yaml exists at the source root, parse it and consume the 5
+ * cross-primitive fields (skills, plugins, workflow_specs,
+ * context_packs, agent_images). Provenance + compatibility stay
+ * request-body-only (caller-controlled at create time). If no
+ * bundle.yaml at source root, no-op (existing behavior unchanged).
+ *
+ * Vendor semantics:
+ * - Each declared path is resolved relative to source root.
+ * - Both-sides containment: source path under sourceRoot, target path
+ *   under staging (banked
+ *   feedback_pre_existing_trust_boundary_reuse_canonical_helper
+ *   addendum applied through 7.3a-g).
+ * - Symlinks are FOLLOWED at create time and written as regular files
+ *   to the staging tree (tar safety; banked pre-existing-trust-
+ *   boundary lesson — never include a symlink entry in an archive).
+ * - Per-kind shape: skills + workflow_specs are file paths (single
+ *   file copy); plugins + context_packs (manifest.yaml path → parent
+ *   dir) + agent_images are dir paths (recursive copy with symlink
+ *   dereference).
+ * - Throws on missing source path or path-containment violation; the
+ *   /create route catches + returns a 400 with the message.
+ *
+ * Returns the cross-primitive blocks to populate on the manifest the
+ * assembler returned. The /create route writes the manifest AFTER
+ * populating these fields so the built bundle.yaml carries them
+ * for the install side to route from.
+ */
+interface AuthorBundleCrossPrimitives {
+  skills?: string[];
+  plugins?: BundlePluginReference[];
+  workflowSpecs?: string[];
+  contextPacks?: string[];
+  agentImages?: string[];
+}
+
+function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBundleCrossPrimitives {
+  const authorBundlePath = nodePath.join(sourceRoot, "bundle.yaml");
+  if (!fs.existsSync(authorBundlePath)) return {};
+  const sourceRootResolved = nodePath.resolve(sourceRoot);
+  const stagingResolved = nodePath.resolve(staging);
+
+  const authorYaml = fs.readFileSync(authorBundlePath, "utf-8");
+  const authorParsed = parsePodBundleManifest(authorYaml) as Record<string, unknown>;
+  const result: AuthorBundleCrossPrimitives = {};
+
+  const vendorFile = (declared: string, kindLabel: string): void => {
+    if (!isRelativeSafePath(declared)) throw new Error(`author bundle ${kindLabel} path '${declared}' is not safe`);
+    const sourceAbs = nodePath.resolve(sourceRoot, declared);
+    if (sourceAbs !== sourceRootResolved && !sourceAbs.startsWith(sourceRootResolved + nodePath.sep)) {
+      throw new Error(`author bundle ${kindLabel} path '${declared}' escapes bundle source root`);
+    }
+    const targetAbs = nodePath.resolve(staging, declared);
+    if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
+      throw new Error(`author bundle ${kindLabel} target '${declared}' escapes staging`);
+    }
+    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
+    fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
+    // Dereference symlinks (tar safety per banked pre-existing-trust-boundary)
+    const content = fs.readFileSync(sourceAbs);
+    fs.writeFileSync(targetAbs, content);
+  };
+  const vendorDir = (declared: string, kindLabel: string): void => {
+    if (!isRelativeSafePath(declared)) throw new Error(`author bundle ${kindLabel} path '${declared}' is not safe`);
+    const sourceAbs = nodePath.resolve(sourceRoot, declared);
+    if (sourceAbs !== sourceRootResolved && !sourceAbs.startsWith(sourceRootResolved + nodePath.sep)) {
+      throw new Error(`author bundle ${kindLabel} path '${declared}' escapes bundle source root`);
+    }
+    const targetAbs = nodePath.resolve(staging, declared);
+    if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
+      throw new Error(`author bundle ${kindLabel} target '${declared}' escapes staging`);
+    }
+    if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
+    fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
+    // dereference: true → symlinks are followed and written as regular files
+    fs.cpSync(sourceAbs, targetAbs, { recursive: true, dereference: true });
+  };
+
+  // skills[] — file paths
+  const rawSkills = authorParsed["skills"];
+  if (Array.isArray(rawSkills) && rawSkills.length > 0) {
+    const skills = rawSkills.filter((s): s is string => typeof s === "string" && s.length > 0);
+    for (const declared of skills) vendorFile(declared, "skill");
+    if (skills.length > 0) result.skills = skills;
+  }
+
+  // plugins[] — dir paths via source.path
+  const rawPlugins = authorParsed["plugins"];
+  if (Array.isArray(rawPlugins) && rawPlugins.length > 0) {
+    const plugins: BundlePluginReference[] = [];
+    for (const entry of rawPlugins) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const p = entry as Record<string, unknown>;
+      const s = p["source"];
+      if (typeof p["id"] !== "string" || !p["id"]) continue;
+      if (!s || typeof s !== "object" || Array.isArray(s)) continue;
+      const src = s as Record<string, unknown>;
+      if (src["kind"] !== "local" || typeof src["path"] !== "string" || !src["path"]) continue;
+      vendorDir(src["path"], `plugin '${p["id"]}'`);
+      plugins.push({ id: p["id"], source: { kind: "local", path: src["path"] } });
+    }
+    if (plugins.length > 0) result.plugins = plugins;
+  }
+
+  // workflow_specs[] — file paths
+  const rawWorkflowSpecs = authorParsed["workflow_specs"];
+  if (Array.isArray(rawWorkflowSpecs) && rawWorkflowSpecs.length > 0) {
+    const workflowSpecs = rawWorkflowSpecs.filter((s): s is string => typeof s === "string" && s.length > 0);
+    for (const declared of workflowSpecs) vendorFile(declared, "workflow_spec");
+    if (workflowSpecs.length > 0) result.workflowSpecs = workflowSpecs;
+  }
+
+  // context_packs[] — manifest.yaml paths; vendor the parent dir
+  const rawContextPacks = authorParsed["context_packs"];
+  if (Array.isArray(rawContextPacks) && rawContextPacks.length > 0) {
+    const contextPacks = rawContextPacks.filter((s): s is string => typeof s === "string" && s.length > 0);
+    for (const declared of contextPacks) {
+      const parentRel = nodePath.dirname(declared);
+      if (parentRel === ".") continue; // declared at root; nothing meaningful to vendor
+      vendorDir(parentRel, `context_pack parent of '${declared}'`);
+    }
+    if (contextPacks.length > 0) result.contextPacks = contextPacks;
+  }
+
+  // agent_images[] — dir paths
+  const rawAgentImages = authorParsed["agent_images"];
+  if (Array.isArray(rawAgentImages) && rawAgentImages.length > 0) {
+    const agentImages = rawAgentImages.filter((s): s is string => typeof s === "string" && s.length > 0);
+    for (const declared of agentImages) vendorDir(declared, "agent_image");
+    if (agentImages.length > 0) result.agentImages = agentImages;
+  }
+
+  return result;
+}
+
 // POST /api/bundles/create
 bundleRoutes.post("/create", async (c) => {
   const { eventBus } = getDeps(c);
@@ -657,6 +800,17 @@ bundleRoutes.post("/create", async (c) => {
       try {
         const assembler = new PodBundleAssembler({ fsOps: podAssemblerFsOps() });
         const result = assembler.assemble({ rigRoot: effectiveRigRoot, rigSpecPath: nodePath.resolve(specPath), outputDir: tmpStaging, bundleName, bundleVersion, provenance, compatibility });
+
+        // Item 6 / Checkpoint 7.5 (QA-20260601 A2 repair): auto-detect
+        // author bundle.yaml at the rig source root; vendor declared
+        // cross-primitive content into staging + carry the fields onto
+        // the manifest. computeIntegrity below covers the vendored content.
+        const authorPrimitives = consumeAuthorBundleYaml(effectiveRigRoot, tmpStaging);
+        if (authorPrimitives.skills) result.manifest.skills = authorPrimitives.skills;
+        if (authorPrimitives.plugins) result.manifest.plugins = authorPrimitives.plugins;
+        if (authorPrimitives.workflowSpecs) result.manifest.workflowSpecs = authorPrimitives.workflowSpecs;
+        if (authorPrimitives.contextPacks) result.manifest.contextPacks = authorPrimitives.contextPacks;
+        if (authorPrimitives.agentImages) result.manifest.agentImages = authorPrimitives.agentImages;
 
         const integrity = computeIntegrity(tmpStaging, integrityFsOps());
         result.manifest.integrity = integrity;
@@ -715,6 +869,23 @@ bundleRoutes.post("/create", async (c) => {
       const manifest = assembler.assemble({
         specPath: nodePath.resolve(specPath), packages, outputDir: tmpStaging, bundleName, bundleVersion, provenance, compatibility,
       });
+
+      // Item 6 / Checkpoint 7.5 (QA-20260601 A2 repair, legacy path mirror):
+      // auto-detect author bundle.yaml in source dir; vendor + carry
+      // cross-primitive fields before integrity. Re-serialize bundle.yaml
+      // since the assembler already wrote one without these fields.
+      const legacyAuthorPrimitives = consumeAuthorBundleYaml(specDir, tmpStaging);
+      const hasLegacyPrimitives = legacyAuthorPrimitives.skills || legacyAuthorPrimitives.plugins ||
+        legacyAuthorPrimitives.workflowSpecs || legacyAuthorPrimitives.contextPacks || legacyAuthorPrimitives.agentImages;
+      if (hasLegacyPrimitives) {
+        if (legacyAuthorPrimitives.skills) manifest.skills = legacyAuthorPrimitives.skills;
+        if (legacyAuthorPrimitives.plugins) manifest.plugins = legacyAuthorPrimitives.plugins;
+        if (legacyAuthorPrimitives.workflowSpecs) manifest.workflowSpecs = legacyAuthorPrimitives.workflowSpecs;
+        if (legacyAuthorPrimitives.contextPacks) manifest.contextPacks = legacyAuthorPrimitives.contextPacks;
+        if (legacyAuthorPrimitives.agentImages) manifest.agentImages = legacyAuthorPrimitives.agentImages;
+        const { serializeLegacyBundleManifest } = await import("../domain/bundle-types.js");
+        fs.writeFileSync(nodePath.join(tmpStaging, "bundle.yaml"), serializeLegacyBundleManifest(manifest), "utf-8");
+      }
 
       const integrity = computeIntegrity(tmpStaging, integrityFsOps());
       writeIntegrity(tmpStaging, integrity, integrityFsOps());

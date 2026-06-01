@@ -1533,6 +1533,121 @@ describe("Bundle API routes", () => {
     }
   });
 
+  // Item 6 / Checkpoint 7.5 (QA-20260601 A2 repair): /create auto-detects
+  // author bundle.yaml + vendors declared cross-primitive content into
+  // the archive + carries the cross-primitive fields onto the built
+  // bundle.yaml. End-to-end proof that an author can declare all 5 kinds
+  // and the create CLI produces a bundle that the install side will route.
+  it("POST /api/bundles/create auto-detects author bundle.yaml + vendors all 5 cross-primitive kinds (pod-aware)", async () => {
+    // 1. Build a pod-aware rig.yaml + agents/impl/agent.yaml at sourceRoot
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "create-author-bundle-src-"));
+    const outputPath = path.join(tmpDir, "create-author-test.rigbundle");
+    try {
+      fs.mkdirSync(path.join(sourceRoot, "agents/impl"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agents/impl/agent.yaml"), [
+        'name: impl-agent',
+        'version: "1.0.0"',
+        'resources:',
+        '  skills: []',
+        'profiles:',
+        '  default:',
+        '    uses:',
+        '      skills: []',
+      ].join("\n"));
+      const specPath = path.join(sourceRoot, "rig.yaml");
+      fs.writeFileSync(specPath, [
+        'version: "0.2"', 'name: author-bundle-test-rig', 'pods:',
+        '  - id: dev', '    label: Dev', '    members:',
+        '      - id: impl', '        agent_ref: "local:agents/impl"',
+        '        profile: default', '        runtime: claude-code', '        cwd: .',
+        '    edges: []', 'edges: []',
+      ].join("\n"));
+
+      // 2. Author content for all 5 cross-primitive kinds
+      // skills: file
+      fs.mkdirSync(path.join(sourceRoot, "skills/author-skill"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "skills/author-skill/SKILL.md"), "# Author skill body");
+      // plugins: dir
+      fs.mkdirSync(path.join(sourceRoot, "plugins/author-plugin"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "plugins/author-plugin/plugin.json"), '{"name":"author-plugin","version":"1.0"}');
+      fs.writeFileSync(path.join(sourceRoot, "plugins/author-plugin/README.md"), "plugin readme");
+      // workflow_specs: file (YAML)
+      fs.mkdirSync(path.join(sourceRoot, "workflows"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "workflows/author-flow.yaml"), "workflow:\n  id: author-flow\n  version: '1'\n  roles: { producer: {} }\n  steps:\n    - id: produce\n      actor_role: producer\n");
+      // context_packs: manifest.yaml inside a dir (vendor copies parent dir)
+      fs.mkdirSync(path.join(sourceRoot, "context-packs/author-pack"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "context-packs/author-pack/manifest.yaml"), "name: author-pack\nversion: '1'\nfiles:\n  - path: brief.md\n    role: brief\n");
+      fs.writeFileSync(path.join(sourceRoot, "context-packs/author-pack/brief.md"), "# brief");
+      // agent_images: dir
+      fs.mkdirSync(path.join(sourceRoot, "agent-images/author-image"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, "agent-images/author-image/manifest.yaml"), "name: author-image\nversion: '1'\nruntime: claude-code\nsource_seat: x@y\nsource_session_id: aaa\nsource_resume_token: aaa\ncreated_at: '2026-05-31T00:00:00Z'\nfiles: []\n");
+
+      // 3. Author bundle.yaml at sourceRoot declares all 5 kinds
+      fs.writeFileSync(path.join(sourceRoot, "bundle.yaml"), [
+        'skills:',
+        '  - skills/author-skill/SKILL.md',
+        'plugins:',
+        '  - id: author-plugin',
+        '    source:',
+        '      kind: local',
+        '      path: plugins/author-plugin',
+        'workflow_specs:',
+        '  - workflows/author-flow.yaml',
+        'context_packs:',
+        '  - context-packs/author-pack/manifest.yaml',
+        'agent_images:',
+        '  - agent-images/author-image',
+      ].join("\n"));
+
+      // 4. /api/bundles/create — pod-aware path
+      const createRes = await app.request("/api/bundles/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          specPath, rigRoot: sourceRoot,
+          bundleName: "author-bundle-test", bundleVersion: "0.1.0", outputPath,
+        }),
+      });
+      expect(createRes.status).toBe(201);
+      const createBody = await createRes.json();
+      expect(createBody.archiveHash).toMatch(/^[a-f0-9]{64}$/);
+
+      // 5. Unpack the archive + verify ALL 5 kinds' content + manifest fields
+      const unpackDir = fs.mkdtempSync(path.join(os.tmpdir(), "create-author-bundle-unpack-"));
+      try {
+        const tar = await import("tar");
+        await tar.extract({ file: outputPath, cwd: unpackDir });
+
+        // Built bundle.yaml has all 5 cross-primitive fields
+        const builtYaml = fs.readFileSync(path.join(unpackDir, "bundle.yaml"), "utf-8");
+        expect(builtYaml).toContain("skills:");
+        expect(builtYaml).toContain("skills/author-skill/SKILL.md");
+        expect(builtYaml).toContain("plugins:");
+        expect(builtYaml).toContain("id: author-plugin");
+        expect(builtYaml).toContain("workflow_specs:");
+        expect(builtYaml).toContain("workflows/author-flow.yaml");
+        expect(builtYaml).toContain("context_packs:");
+        expect(builtYaml).toContain("context-packs/author-pack/manifest.yaml");
+        expect(builtYaml).toContain("agent_images:");
+        expect(builtYaml).toContain("agent-images/author-image");
+
+        // Vendored content actually landed in staging tree (now archive)
+        expect(fs.existsSync(path.join(unpackDir, "skills/author-skill/SKILL.md"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "plugins/author-plugin/plugin.json"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "plugins/author-plugin/README.md"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "workflows/author-flow.yaml"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "context-packs/author-pack/manifest.yaml"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "context-packs/author-pack/brief.md"))).toBe(true);
+        expect(fs.existsSync(path.join(unpackDir, "agent-images/author-image/manifest.yaml"))).toBe(true);
+      } finally {
+        fs.rmSync(unpackDir, { recursive: true, force: true });
+      }
+    } finally {
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      if (fs.existsSync(outputPath)) fs.rmSync(outputPath);
+    }
+  });
+
   // Item 6 / Checkpoint 7.3e step 3: /install routes declared workflow_specs
   // after successful bootstrap. Target = SettingsStore-resolved
   // <workspaceSpecsRoot>/workflows. Bundle has workflow_specs[] with a path
