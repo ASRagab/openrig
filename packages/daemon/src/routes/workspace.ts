@@ -9,7 +9,8 @@
 //     response: FrontmatterValidationReport
 //
 //   POST /api/workspace/doctor  (slice-21 FR-5)
-//     body (all optional): { workspaceRoot?: string }
+//     body (all optional): { workspaceRoot?: string;
+//                            filesAllowlistOverride?: string }
 //     response: DoctorReport (7-check workspace-readiness report)
 //
 // No filesystem mutation. Operator picks the root + kind per invocation.
@@ -85,8 +86,11 @@ export function workspaceRoutes(): Hono {
     const store = c.get("settingsStore" as never) as SettingsStore | undefined;
     if (!store) return c.json({ error: "settings_unavailable" }, 503);
 
-    const body = await c.req.json<{ workspaceRoot?: string }>().catch(
-      () => ({} as { workspaceRoot?: string }),
+    const body = await c.req.json<{
+      workspaceRoot?: string;
+      filesAllowlistOverride?: string;
+    }>().catch(
+      () => ({} as { workspaceRoot?: string; filesAllowlistOverride?: string }),
     );
 
     try {
@@ -113,7 +117,23 @@ export function workspaceRoutes(): Hono {
           ? path.join(body.workspaceRoot, "missions")
           : (store.resolveOne("workspace.slices_root").value as string);
 
+      // FR-5e A2 — files.allowlist CLI-side env overlay. When the
+      // CLI sets OPENRIG_FILES_ALLOWLIST in its own shell, the
+      // daemon's SettingsStore can't observe that env (different
+      // process); the CLI forwards the raw value as
+      // body.filesAllowlistOverride and we honor it here with
+      // source="env" so check #3's fix-hint targets the right
+      // remediation channel.
       const allowlistResolved = store.resolveOne("files.allowlist");
+      const usingAllowlistOverride =
+        typeof body.filesAllowlistOverride === "string"
+        && body.filesAllowlistOverride.length > 0;
+      const allowlistValue = usingAllowlistOverride
+        ? body.filesAllowlistOverride!
+        : (allowlistResolved.value as string);
+      const allowlistSource: WorkspaceRootSource = usingAllowlistOverride
+        ? "env"
+        : (allowlistResolved.source as WorkspaceRootSource);
 
       // Daemon start time captured from process.uptime() at request
       // time. Per banked discipline (cited in workspace-doctor.ts:
@@ -126,8 +146,8 @@ export function workspaceRoutes(): Hono {
         workspaceRoot: workspaceUnderCheck,
         workspaceRootSource,
         slicesRoot,
-        allowlistValue: allowlistResolved.value as string,
-        allowlistSource: allowlistResolved.source as WorkspaceRootSource,
+        allowlistValue,
+        allowlistSource,
         daemonResolvedWorkspaceRoot: daemonResolved.value as string,
         configFilePath: store.configPath,
         daemonStartTime,

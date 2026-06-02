@@ -212,6 +212,56 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
     expect(body.workspaceRoot).toBe(doctorDir);
   });
 
+  // GUARD/QA BLOCKING-A2 discriminator: when the CLI forwards an
+  // OPENRIG_FILES_ALLOWLIST overlay via body.filesAllowlistOverride,
+  // the daemon route MUST use that value for check #3 instead of the
+  // daemon's own SettingsStore-resolved files.allowlist. Without the
+  // override branch the operator's env-var would silently no-op.
+  it("POST /doctor honors body.filesAllowlistOverride for check #3", async () => {
+    // workspace:. is a relative path; per FR-5b BLOCKER-1 the
+    // canonical decoder drops it and check #3 fails with zero usable
+    // entries. The daemon SettingsStore stub returns a HEALTHY
+    // allowlist (workspace:${doctorDir}); without the override
+    // branch the doctor would happily report ok. With the override
+    // it correctly fails.
+    const res = await doctorApp.request("/api/workspace/doctor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filesAllowlistOverride: "workspace:." }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      checks: Array<{ check: string; status: string; evidence?: { allowlistSource?: string } }>;
+      summary: { ok: number; warn: number; fail: number };
+    };
+    const allowlistCheck = body.checks.find((c) => c.check === "file_allowlist_sane");
+    expect(allowlistCheck?.status).toBe("fail");
+    // Evidence must report source="env" so the operator knows the
+    // override was applied (not the daemon's own resolution).
+    expect(allowlistCheck?.evidence?.allowlistSource).toBe("env");
+    expect(body.summary.fail).toBeGreaterThanOrEqual(1);
+  });
+
+  // Discriminator-flip: empty-string filesAllowlistOverride must NOT
+  // suppress the daemon's own SettingsStore allowlist. Without the
+  // length > 0 guard, an empty override would falsify the check.
+  it("ignores empty-string filesAllowlistOverride (uses daemon's SettingsStore)", async () => {
+    const res = await doctorApp.request("/api/workspace/doctor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filesAllowlistOverride: "" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      checks: Array<{ check: string; status: string; evidence?: { allowlistSource?: string } }>;
+    };
+    const allowlistCheck = body.checks.find((c) => c.check === "file_allowlist_sane");
+    expect(allowlistCheck?.status).toBe("ok");
+    // The stub returns source="default" for files.allowlist; verify
+    // we routed through SettingsStore, not the empty override.
+    expect(allowlistCheck?.evidence?.allowlistSource).toBe("default");
+  });
+
   // GUARD BLOCKER-1 (qitem-20260602042720-e27ec982) determinism
   // discriminator: even under a long process.uptime() (simulating a
   // long-running Vitest worker), the healthy fixture must still

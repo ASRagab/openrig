@@ -146,6 +146,69 @@ describe("rig workspace doctor — request shape", () => {
     expect(sent.workspaceRoot.startsWith("/")).toBe(true);
     expect(sent.workspaceRoot.endsWith("/local-ws")).toBe(true);
   });
+
+  // GUARD/QA BLOCKING-A2 discriminator: CLI-side
+  // OPENRIG_FILES_ALLOWLIST must propagate to the daemon as
+  // body.filesAllowlistOverride. Without this, an operator setting
+  // the env in their CLI shell sees no doctor behavior change because
+  // the daemon's env-resolution is decoupled from the CLI process.
+  it("forwards OPENRIG_FILES_ALLOWLIST from process.env as body.filesAllowlistOverride", async () => {
+    const original = process.env.OPENRIG_FILES_ALLOWLIST;
+    process.env.OPENRIG_FILES_ALLOWLIST = "workspace:.";
+    const { deps, post } = makeDeps({ status: 200, data: healthyReport() });
+    const out = captureStdout();
+    try {
+      await workspaceCommand(deps).parseAsync(["node", "rig", "doctor"]);
+    } finally {
+      out.restore();
+      if (original === undefined) delete process.env.OPENRIG_FILES_ALLOWLIST;
+      else process.env.OPENRIG_FILES_ALLOWLIST = original;
+    }
+    const [, body] = post.mock.calls[0]!;
+    const sent = body as { workspaceRoot?: string; filesAllowlistOverride?: string };
+    expect(sent.filesAllowlistOverride).toBe("workspace:.");
+  });
+
+  // Discriminator-flip: an unset OPENRIG_FILES_ALLOWLIST must NOT
+  // attach an override (the daemon should use SettingsStore as the
+  // source of truth, not silently apply an empty-string).
+  it("omits filesAllowlistOverride from body when OPENRIG_FILES_ALLOWLIST is unset", async () => {
+    const original = process.env.OPENRIG_FILES_ALLOWLIST;
+    delete process.env.OPENRIG_FILES_ALLOWLIST;
+    const { deps, post } = makeDeps({ status: 200, data: healthyReport() });
+    const out = captureStdout();
+    try {
+      await workspaceCommand(deps).parseAsync(["node", "rig", "doctor"]);
+    } finally {
+      out.restore();
+      if (original === undefined) delete process.env.OPENRIG_FILES_ALLOWLIST;
+      else process.env.OPENRIG_FILES_ALLOWLIST = original;
+    }
+    const [, body] = post.mock.calls[0]!;
+    const sent = body as { filesAllowlistOverride?: string };
+    expect(sent.filesAllowlistOverride).toBeUndefined();
+  });
+
+  // Discriminator-flip: empty-string env value is treated as unset
+  // (no override sent). Without the length > 0 check, an empty value
+  // would land as filesAllowlistOverride="" and the daemon route
+  // would treat that as an explicit override.
+  it("treats empty-string OPENRIG_FILES_ALLOWLIST as unset (no override sent)", async () => {
+    const original = process.env.OPENRIG_FILES_ALLOWLIST;
+    process.env.OPENRIG_FILES_ALLOWLIST = "";
+    const { deps, post } = makeDeps({ status: 200, data: healthyReport() });
+    const out = captureStdout();
+    try {
+      await workspaceCommand(deps).parseAsync(["node", "rig", "doctor"]);
+    } finally {
+      out.restore();
+      if (original === undefined) delete process.env.OPENRIG_FILES_ALLOWLIST;
+      else process.env.OPENRIG_FILES_ALLOWLIST = original;
+    }
+    const [, body] = post.mock.calls[0]!;
+    const sent = body as { filesAllowlistOverride?: string };
+    expect(sent.filesAllowlistOverride).toBeUndefined();
+  });
 });
 
 describe("rig workspace doctor — output formatters", () => {

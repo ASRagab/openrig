@@ -163,8 +163,20 @@ export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
     .action(async (opts: { workspace?: string; json?: boolean; strict?: boolean }) => {
       const deps = getDeps();
       await withClient(deps, async (client) => {
-        const requestBody: { workspaceRoot?: string } = {};
+        const requestBody: { workspaceRoot?: string; filesAllowlistOverride?: string } = {};
         if (opts.workspace) requestBody.workspaceRoot = path.resolve(opts.workspace);
+        // FR-5e A2 — CLI-side env overlay for files.allowlist. The
+        // daemon runs in its own process with its own env; an
+        // operator who sets OPENRIG_FILES_ALLOWLIST in their CLI
+        // shell expects the doctor result to reflect that override
+        // even though the daemon's env is unchanged. We mirror the
+        // --workspace override pattern: read the env at request
+        // time and forward as a per-request overlay; the daemon
+        // route applies it to check #3 with source="env".
+        const cliAllowlistEnv = process.env.OPENRIG_FILES_ALLOWLIST;
+        if (typeof cliAllowlistEnv === "string" && cliAllowlistEnv.length > 0) {
+          requestBody.filesAllowlistOverride = cliAllowlistEnv;
+        }
         const res = await client.post<DoctorReport>("/api/workspace/doctor", requestBody);
         if (res.status >= 400) {
           console.error(JSON.stringify(res.data, null, 2));
