@@ -19,6 +19,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { decodeAllowlist } from "../files/path-safety.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 
@@ -152,8 +153,17 @@ export function checkMissionsFolder(opts: CheckMissionsFolderInput): DoctorCheck
   };
 }
 
+/**
+ * Canonical-decoded allowlist entry as the shipped file API sees it
+ * (post `decodeAllowlist`): absolute path, realpath-canonicalized
+ * when reachable. Relative paths are silently dropped by the canonical
+ * decoder before they reach this shape — see check #3 for the
+ * usable-vs-raw entry-count semantics.
+ */
 export interface AllowlistEntry {
   name: string;
+  /** Canonical absolute path (post-decodeAllowlist + realpathSync
+   *  fallback). Equivalent to the file API's `AllowlistRoot.canonicalPath`. */
   path: string;
 }
 
@@ -163,9 +173,13 @@ export interface CheckFileAllowlistInput {
    *  (comma-separated `name:/abs/path` pairs, or empty string). */
   allowlistValue: string;
   allowlistSource: WorkspaceRootSource;
-  /** Pre-decoded entries; if omitted the check decodes
-   *  allowlistValue locally with the same comma + colon parser
-   *  ConfigStore.parseNamedPairs uses. */
+  /** Pre-decoded entries; if omitted the check decodes allowlistValue
+   *  via the canonical `decodeAllowlist` from
+   *  domain/files/path-safety.ts so the doctor reports exactly what
+   *  the shipped file API at /api/files/* accepts. Pre-decoded
+   *  entries MUST be in canonical form (absolute path); raw
+   *  named-pair strings from SettingsStore should go through
+   *  allowlistValue + the in-function decode, not parsedEntries. */
   parsedEntries?: AllowlistEntry[];
 }
 
@@ -177,20 +191,28 @@ export interface CheckFileAllowlistInput {
  * env OPENRIG_FILES_ALLOWLIST, default `workspace:${workspaceRoot}`)
  * is a CONFIGSTORE STRING KEY holding comma-separated `name:/abs/path`
  * pairs. There is no per-workspace file. Check #3 verifies the
- * resolved value parses to at least one valid entry, with a warning
- * when no allowlist entry covers the workspaceRoot (the operator's
- * file surface won't include workspace files).
+ * resolved value decodes to at least one USABLE entry (canonical,
+ * absolute) covering the workspaceRoot — the same usable-root
+ * semantics the shipped file API at /api/files/* enforces via
+ * `decodeAllowlist` in domain/files/path-safety.ts:60-80 (silently
+ * drops non-absolute paths at line 71).
+ *
+ * Decoding via the canonical decoder (not a local re-implementation)
+ * guarantees the doctor's verdict matches the actual file-API
+ * behavior — `workspace:.` or `workspace:relative-root` evaluates
+ * to zero usable entries here, mirroring the file API's silent skip.
  */
 export function checkFileAllowlist(opts: CheckFileAllowlistInput): DoctorCheck {
   const { workspaceRoot, allowlistValue, allowlistSource } = opts;
-  const entries = opts.parsedEntries ?? parseAllowlistPairs(allowlistValue);
+  const entries: AllowlistEntry[] = opts.parsedEntries
+    ?? decodeAllowlist(allowlistValue).map((r) => ({ name: r.name, path: r.canonicalPath }));
   if (entries.length === 0) {
     return {
       check: "file_allowlist_sane",
       status: "fail",
-      message: `files.allowlist resolved to no valid entries (raw='${allowlistValue}', source=${allowlistSource})`,
+      message: `files.allowlist resolved to no usable entries (raw='${allowlistValue}', source=${allowlistSource}); non-absolute or malformed pairs are silently dropped to match the shipped file API`,
       fixHint:
-        "set OPENRIG_FILES_ALLOWLIST or run `rig config set files.allowlist workspace:<workspaceRoot>` so the file surface has a readable root",
+        "set OPENRIG_FILES_ALLOWLIST or run `rig config set files.allowlist workspace:<absoluteWorkspaceRoot>` so the file surface has a readable root (absolute paths only)",
       evidence: { allowlistValue, allowlistSource, entryCount: 0 },
     };
   }
@@ -199,9 +221,9 @@ export function checkFileAllowlist(opts: CheckFileAllowlistInput): DoctorCheck {
     return {
       check: "file_allowlist_sane",
       status: "warn",
-      message: `files.allowlist has ${entries.length} entr${entries.length === 1 ? "y" : "ies"} but none cover workspace root '${workspaceRoot}'`,
+      message: `files.allowlist has ${entries.length} usable entr${entries.length === 1 ? "y" : "ies"} but none cover workspace root '${workspaceRoot}'`,
       fixHint:
-        "add a `workspace:<workspaceRoot>` entry to files.allowlist (or set OPENRIG_FILES_ALLOWLIST) so workspace files are read-allowed",
+        "add a `workspace:<absoluteWorkspaceRoot>` entry to files.allowlist (or set OPENRIG_FILES_ALLOWLIST) so workspace files are read-allowed",
       evidence: {
         allowlistValue,
         allowlistSource,
@@ -214,33 +236,24 @@ export function checkFileAllowlist(opts: CheckFileAllowlistInput): DoctorCheck {
   return {
     check: "file_allowlist_sane",
     status: "ok",
-    message: `files.allowlist has ${entries.length} entr${entries.length === 1 ? "y" : "ies"} covering workspace root`,
+    message: `files.allowlist has ${entries.length} usable entr${entries.length === 1 ? "y" : "ies"} covering workspace root`,
     evidence: { allowlistValue, allowlistSource, entryCount: entries.length, entries },
   };
 }
 
-/** Local-only decoder, byte-identical to ConfigStore.parseNamedPairs.
- *  Duplicated (rather than imported from cli) to keep this domain
- *  module daemon-package-only with no cli cross-package import. */
-function parseAllowlistPairs(raw: string): AllowlistEntry[] {
-  if (!raw || !raw.trim()) return [];
-  const out = new Map<string, string>();
-  for (const pair of raw.split(",")) {
-    const trimmed = pair.trim();
-    if (!trimmed) continue;
-    const colon = trimmed.indexOf(":");
-    if (colon === -1) continue;
-    const name = trimmed.slice(0, colon).trim();
-    const rawPath = trimmed.slice(colon + 1).trim();
-    if (!name || !rawPath) continue;
-    out.set(name, rawPath);
-  }
-  return Array.from(out.entries()).map(([name, p]) => ({ name, path: p }));
-}
-
 function allowlistPathCoversRoot(allowlistPath: string, workspaceRoot: string): boolean {
-  const normEntry = path.resolve(allowlistPath);
-  const normRoot = path.resolve(workspaceRoot);
+  // Canonical entry paths from decodeAllowlist are already absolute
+  // + realpath-resolved. workspaceRoot we resolve + try-to-realpath
+  // here so callers can pass an un-canonical workspace path and
+  // coverage still matches when the entry was realpath'd through a
+  // symlink (e.g. macOS `/var/folders/...` → `/private/var/...`).
+  const normEntry = allowlistPath;
+  let normRoot: string;
+  try {
+    normRoot = fs.realpathSync(workspaceRoot);
+  } catch {
+    normRoot = path.resolve(workspaceRoot);
+  }
   if (normEntry === normRoot) return true;
   const rel = path.relative(normEntry, normRoot);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
@@ -288,8 +301,11 @@ export function checkDaemonWorkspace(opts: CheckDaemonWorkspaceInput): DoctorChe
 export interface CheckDaemonReloadInput {
   /** Path to the ConfigStore config file on disk. */
   configFilePath: string;
-  /** Daemon process start time (epoch-ms or Date). Compared to config
-   *  file mtime; mtime > startTime → stale daemon. */
+  /** Daemon process start time as a Date. Callers typically capture
+   *  this once at daemon-startup (e.g.
+   *  `new Date(Date.now() - process.uptime() * 1000)` at the doctor
+   *  route handler) and pass it through. Compared to config-file
+   *  mtime; mtime > startTime → stale daemon. */
   daemonStartTime: Date;
 }
 

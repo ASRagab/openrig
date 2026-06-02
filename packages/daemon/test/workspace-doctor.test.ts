@@ -213,14 +213,55 @@ describe("FR-5 check #3 — file allowlist sane", () => {
   });
 
   // Pre-decoded entries path: pre-parsed entries should bypass the
-  // local parser and be honored verbatim. Discriminator: pass an
-  // entry shape that the parser couldn't have produced.
+  // canonical decoder and be honored verbatim. Discriminator: pass an
+  // entry shape that the decoder couldn't have produced.
   it("uses pre-decoded entries when provided", () => {
     const result = checkFileAllowlist({
       workspaceRoot: dir,
       allowlistValue: "raw-value-different-from-entries",
       allowlistSource: "default",
-      parsedEntries: [{ name: "ws", path: dir }],
+      parsedEntries: [{ name: "ws", path: fs.realpathSync(dir) }],
+    });
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.entryCount).toBe(1);
+  });
+
+  // GUARD BLOCKER-1 discriminator (qitem-20260602041334-55985aa9):
+  // a relative path like `workspace:.` must NOT silently resolve into
+  // process.cwd() and return ok. The shipped file API's decodeAllowlist
+  // silently drops non-absolute paths at path-safety.ts:71; the doctor
+  // must mirror that or it lies about the workspace being read-ready.
+  it("returns fail when allowlist contains only relative paths (mirrors shipped file API drop)", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: "workspace:.",
+      allowlistSource: "file",
+    });
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("no usable entries");
+    expect(result.fixHint).toContain("absolute paths only");
+    expect(result.evidence?.entryCount).toBe(0);
+  });
+
+  it("returns fail when allowlist mixes a relative-only entry without absolute fallback", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: "workspace:relative/path/here",
+      allowlistSource: "env",
+    });
+    expect(result.status).toBe("fail");
+    expect(result.evidence?.entryCount).toBe(0);
+  });
+
+  // Positive-guard discriminator: a malformed relative entry should
+  // be dropped but a valid absolute companion should still produce ok.
+  // This protects against an over-eager fix where relative-presence
+  // causes the whole check to fail.
+  it("returns ok when allowlist mixes relative (dropped) with absolute (kept) entries covering root", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: `bad:./relative,workspace:${dir}`,
+      allowlistSource: "env",
     });
     expect(result.status).toBe("ok");
     expect(result.evidence?.entryCount).toBe(1);
