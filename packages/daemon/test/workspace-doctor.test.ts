@@ -16,6 +16,7 @@ import {
   checkDaemonReload,
   checkOptionalSliceDocs,
   checkMissionNotesPresence,
+  runWorkspaceDoctor,
   type DoctorCheck,
 } from "../src/domain/workspace/workspace-doctor.js";
 
@@ -424,5 +425,120 @@ describe("FR-5 check #7 — MISSION_NOTES presence", () => {
     const result = checkMissionNotesPresence({ missionsRoot: path.join(dir, "no-missions") });
     expect(result.status).toBe("warn");
     expect(result.evidence?.errorCode).toBe("ENOENT");
+  });
+});
+
+describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
+  function scaffoldHealthyWorkspace(root: string): { missions: string; configPath: string } {
+    const missions = path.join(root, "missions");
+    fs.mkdirSync(missions);
+    fs.mkdirSync(path.join(missions, "getting-started"));
+    fs.writeFileSync(path.join(missions, "getting-started", "MISSION_NOTES.md"), "");
+    fs.mkdirSync(path.join(missions, "getting-started", "slices", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "getting-started", "slices", "s1", "README.md"), "");
+    const configPath = path.join(root, ".test-config.json");
+    fs.writeFileSync(configPath, "{}");
+    const oldMtime = new Date(Date.now() - 60_000);
+    fs.utimesSync(configPath, oldMtime, oldMtime);
+    return { missions, configPath };
+  }
+
+  it("returns a 7-check report with summary counts on a healthy workspace", () => {
+    const { missions, configPath } = scaffoldHealthyWorkspace(dir);
+    const report = runWorkspaceDoctor({
+      workspaceRoot: dir,
+      workspaceRootSource: "env",
+      slicesRoot: missions,
+      allowlistValue: `workspace:${fs.realpathSync(dir)}`,
+      allowlistSource: "default",
+      daemonResolvedWorkspaceRoot: dir,
+      configFilePath: configPath,
+      daemonStartTime: new Date(Date.now() - 5_000),
+    });
+    expect(report.workspaceRoot).toBe(dir);
+    expect(report.checks).toHaveLength(7);
+    expect(report.checks.map((c) => c.check)).toEqual([
+      "workspace_root_reachable",
+      "missions_folder_present",
+      "file_allowlist_sane",
+      "daemon_points_at_this_workspace",
+      "daemon_reload_needed",
+      "optional_slice_docs",
+      "mission_notes_presence",
+    ]);
+    expect(report.summary.ok).toBe(7);
+    expect(report.summary.warn).toBe(0);
+    expect(report.summary.fail).toBe(0);
+    expect(typeof report.daemonResolvedAt).toBe("string");
+    expect(report.daemonResolvedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // Discriminator-flip: the orchestrator must aggregate WARN status
+  // when at least one check warns. Without the for-loop summary
+  // tally, this would stay 0/0/0.
+  it("aggregates warn count when a single check warns (mission notes missing)", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1"), { recursive: true });
+    // intentionally no MISSION_NOTES.md
+    const configPath = path.join(dir, ".test-config.json");
+    fs.writeFileSync(configPath, "{}");
+    fs.utimesSync(configPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const report = runWorkspaceDoctor({
+      workspaceRoot: dir,
+      workspaceRootSource: "env",
+      slicesRoot: missions,
+      allowlistValue: `workspace:${fs.realpathSync(dir)}`,
+      allowlistSource: "default",
+      daemonResolvedWorkspaceRoot: dir,
+      configFilePath: configPath,
+      daemonStartTime: new Date(Date.now() - 5_000),
+    });
+    expect(report.summary.warn).toBeGreaterThanOrEqual(1);
+    const notes = report.checks.find((c) => c.check === "mission_notes_presence");
+    expect(notes?.status).toBe("warn");
+  });
+
+  // Discriminator-flip: orchestrator must aggregate FAIL status when
+  // at least one check fails. Routes check #1 fails when workspace
+  // root is bogus.
+  it("aggregates fail count when workspace root is unreachable", () => {
+    const bogus = path.join(dir, "does-not-exist");
+    const configPath = path.join(dir, ".test-config.json");
+    fs.writeFileSync(configPath, "{}");
+    fs.utimesSync(configPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const report = runWorkspaceDoctor({
+      workspaceRoot: bogus,
+      workspaceRootSource: "env",
+      slicesRoot: path.join(bogus, "missions"),
+      allowlistValue: `workspace:${fs.realpathSync(dir)}`,
+      allowlistSource: "default",
+      daemonResolvedWorkspaceRoot: bogus,
+      configFilePath: configPath,
+      daemonStartTime: new Date(Date.now() - 5_000),
+    });
+    expect(report.summary.fail).toBeGreaterThanOrEqual(1);
+    const reachable = report.checks.find((c) => c.check === "workspace_root_reachable");
+    expect(reachable?.status).toBe("fail");
+  });
+
+  // Discriminator-flip: check ordering is stable. The CLI human
+  // formatter (FR-5d) groups by category in this order; a reordered
+  // checks[] would break the formatter's category assumption.
+  it("emits checks in the documented fixed order regardless of input timing", () => {
+    const { missions, configPath } = scaffoldHealthyWorkspace(dir);
+    const reports = Array.from({ length: 3 }, () =>
+      runWorkspaceDoctor({
+        workspaceRoot: dir,
+        workspaceRootSource: "env",
+        slicesRoot: missions,
+        allowlistValue: `workspace:${fs.realpathSync(dir)}`,
+        allowlistSource: "default",
+        daemonResolvedWorkspaceRoot: dir,
+        configFilePath: configPath,
+        daemonStartTime: new Date(Date.now() - 5_000),
+      }),
+    );
+    const fingerprints = reports.map((r) => r.checks.map((c) => c.check).join(","));
+    expect(new Set(fingerprints).size).toBe(1);
   });
 });

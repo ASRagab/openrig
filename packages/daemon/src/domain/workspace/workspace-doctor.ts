@@ -514,3 +514,82 @@ export function checkMissionNotesPresence(opts: CheckMissionNotesInput): DoctorC
     evidence: { missionsRoot, missing },
   };
 }
+
+export interface RunDoctorInput {
+  /** Workspace root under check (caller's --workspace override or
+   *  daemon-resolved default). */
+  workspaceRoot: string;
+  workspaceRootSource: WorkspaceRootSource;
+  /** Resolved missions folder per ConfigStore workspace.slices_root,
+   *  or `<workspaceRoot>/missions` when caller overrode --workspace. */
+  slicesRoot: string;
+  /** Raw files.allowlist value from SettingsStore (will be decoded
+   *  via canonical decodeAllowlist). */
+  allowlistValue: string;
+  allowlistSource: WorkspaceRootSource;
+  /** Daemon-resolved workspace.root (for check #4 comparison against
+   *  the workspace under check). */
+  daemonResolvedWorkspaceRoot: string;
+  /** Daemon's ConfigStore configPath on disk (for check #5 staleness
+   *  comparison). */
+  configFilePath: string;
+  /** Daemon process start time (for check #5). */
+  daemonStartTime: Date;
+}
+
+export interface DoctorReport {
+  /** Workspace under check (echoes input.workspaceRoot for clarity). */
+  workspaceRoot: string;
+  checks: DoctorCheck[];
+  summary: { ok: number; warn: number; fail: number };
+  /** ISO timestamp of when the daemon ran the report. */
+  daemonResolvedAt: string;
+}
+
+/**
+ * Orchestrator — runs all 7 checks in fixed order and returns a
+ * structured DoctorReport with aggregate counts. Pure function;
+ * filesystem effects are bounded to the individual check helpers
+ * (statSync / readdirSync / existsSync). Used by the daemon route
+ * POST /api/workspace/doctor (FR-5c) and by the CLI's --json
+ * formatter (FR-5d).
+ */
+export function runWorkspaceDoctor(input: RunDoctorInput): DoctorReport {
+  const checks: DoctorCheck[] = [
+    checkWorkspaceRootReachable({
+      workspaceRoot: input.workspaceRoot,
+      source: input.workspaceRootSource,
+    }),
+    checkMissionsFolder({
+      workspaceRoot: input.workspaceRoot,
+      slicesRoot: input.slicesRoot,
+    }),
+    checkFileAllowlist({
+      workspaceRoot: input.workspaceRoot,
+      allowlistValue: input.allowlistValue,
+      allowlistSource: input.allowlistSource,
+    }),
+    checkDaemonWorkspace({
+      daemonResolvedRoot: input.daemonResolvedWorkspaceRoot,
+      expectedRoot: input.workspaceRoot,
+    }),
+    checkDaemonReload({
+      configFilePath: input.configFilePath,
+      daemonStartTime: input.daemonStartTime,
+    }),
+    checkOptionalSliceDocs({
+      missionsRoot: input.slicesRoot,
+    }),
+    checkMissionNotesPresence({
+      missionsRoot: input.slicesRoot,
+    }),
+  ];
+  const summary = { ok: 0, warn: 0, fail: 0 };
+  for (const c of checks) summary[c.status]++;
+  return {
+    workspaceRoot: input.workspaceRoot,
+    checks,
+    summary,
+    daemonResolvedAt: new Date().toISOString(),
+  };
+}
