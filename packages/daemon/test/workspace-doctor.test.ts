@@ -10,6 +10,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   checkWorkspaceRootReachable,
+  checkMissionsFolder,
+  checkFileAllowlist,
+  checkDaemonWorkspace,
+  checkDaemonReload,
+  checkOptionalSliceDocs,
+  checkMissionNotesPresence,
   type DoctorCheck,
 } from "../src/domain/workspace/workspace-doctor.js";
 
@@ -92,5 +98,290 @@ describe("FR-5 check #1 — workspace root reachable", () => {
     } finally {
       fs.chmodSync(lockedParent, 0o700);
     }
+  });
+});
+
+describe("FR-5 check #2 — missions folder present", () => {
+  it("returns ok when default missions folder exists", () => {
+    const missionsDir = path.join(dir, "missions");
+    fs.mkdirSync(missionsDir);
+    const result = checkMissionsFolder({ workspaceRoot: dir, slicesRoot: missionsDir });
+    expect(result.check).toBe("missions_folder_present");
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.slicesRoot).toBe(missionsDir);
+  });
+
+  // Discriminator-flip: missing folder must fail with default-fix-hint
+  // since slicesRoot equals workspaceRoot/missions.
+  it("returns fail with default fix-hint when missions folder is absent (default path)", () => {
+    const missing = path.join(dir, "missions");
+    const result = checkMissionsFolder({ workspaceRoot: dir, slicesRoot: missing });
+    expect(result.status).toBe("fail");
+    expect(result.fixHint).toContain("rig config init-workspace");
+    expect(result.evidence?.errorCode).toBe("ENOENT");
+  });
+
+  // Discriminator-flip: when operator overrode slicesRoot, fix-hint
+  // should NOT recommend running init-workspace (that creates the
+  // default missions/ in the workspace root, not the custom path).
+  it("returns fail with custom-path fix-hint when overridden slicesRoot is absent", () => {
+    const custom = path.join(dir, "custom-elsewhere");
+    const result = checkMissionsFolder({ workspaceRoot: dir, slicesRoot: custom });
+    expect(result.status).toBe("fail");
+    expect(result.fixHint).toContain("unset workspace.slices_root");
+    expect(result.fixHint).not.toContain("rig config init-workspace");
+  });
+
+  // Discriminator-flip: file-at-missions-path. Without isDirectory()
+  // gate the check would falsely return ok.
+  it("returns fail when missions path is a regular file", () => {
+    const filePath = path.join(dir, "missions");
+    fs.writeFileSync(filePath, "");
+    const result = checkMissionsFolder({ workspaceRoot: dir, slicesRoot: filePath });
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("not a directory");
+    expect(result.evidence?.kind).toBe("not_a_directory");
+  });
+});
+
+describe("FR-5 check #3 — file allowlist sane", () => {
+  it("returns ok when allowlist has at least one entry covering workspace root", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: `workspace:${dir}`,
+      allowlistSource: "default",
+    });
+    expect(result.check).toBe("file_allowlist_sane");
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.entryCount).toBe(1);
+  });
+
+  // Discriminator-flip: empty value must fail; without the entries.
+  // length === 0 check it would pass through to coverage logic.
+  it("returns fail with explicit fix-hint when allowlist is empty", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: "",
+      allowlistSource: "default",
+    });
+    expect(result.status).toBe("fail");
+    expect(result.fixHint).toContain("OPENRIG_FILES_ALLOWLIST");
+    expect(result.fixHint).toContain("rig config set");
+    expect(result.evidence?.entryCount).toBe(0);
+  });
+
+  // Discriminator-flip: unparseable value (no colon) must fail. Without
+  // the parseAllowlistPairs colon-required check, garbage would pass.
+  it("returns fail when allowlist is malformed (no colon)", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: "garbage-no-colon-here",
+      allowlistSource: "env",
+    });
+    expect(result.status).toBe("fail");
+    expect(result.evidence?.entryCount).toBe(0);
+  });
+
+  // Discriminator-flip: allowlist with valid entries but NONE covering
+  // workspace must warn (not ok, not fail). Without the covers check
+  // it would falsely return ok.
+  it("returns warn when allowlist entries are valid but none cover the workspace root", () => {
+    const elsewhere = path.join(dir, "elsewhere-1");
+    fs.mkdirSync(elsewhere);
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: `other:${elsewhere}`,
+      allowlistSource: "file",
+    });
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("none cover workspace root");
+    expect(result.fixHint).toContain("workspace:");
+    expect(result.evidence?.entryCount).toBe(1);
+  });
+
+  // Sub-directory coverage discriminator: an allowlist entry that is
+  // an ANCESTOR of the workspace root SHOULD cover it.
+  it("returns ok when an allowlist entry is an ancestor of the workspace root", () => {
+    const sub = path.join(dir, "deep-sub");
+    fs.mkdirSync(sub);
+    const result = checkFileAllowlist({
+      workspaceRoot: sub,
+      allowlistValue: `parent:${dir}`,
+      allowlistSource: "env",
+    });
+    expect(result.status).toBe("ok");
+  });
+
+  // Pre-decoded entries path: pre-parsed entries should bypass the
+  // local parser and be honored verbatim. Discriminator: pass an
+  // entry shape that the parser couldn't have produced.
+  it("uses pre-decoded entries when provided", () => {
+    const result = checkFileAllowlist({
+      workspaceRoot: dir,
+      allowlistValue: "raw-value-different-from-entries",
+      allowlistSource: "default",
+      parsedEntries: [{ name: "ws", path: dir }],
+    });
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.entryCount).toBe(1);
+  });
+});
+
+describe("FR-5 check #4 — daemon points at this workspace", () => {
+  it("returns ok when daemon and caller agree on workspace root", () => {
+    const result = checkDaemonWorkspace({ daemonResolvedRoot: dir, expectedRoot: dir });
+    expect(result.check).toBe("daemon_points_at_this_workspace");
+    expect(result.status).toBe("ok");
+  });
+
+  // Discriminator-flip: differing paths must fail. Without the
+  // string comparison the check would falsely return ok.
+  it("returns fail when daemon resolved a different workspace root", () => {
+    const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr5-other-"));
+    try {
+      const result = checkDaemonWorkspace({
+        daemonResolvedRoot: otherDir,
+        expectedRoot: dir,
+      });
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain(otherDir);
+      expect(result.message).toContain(dir);
+      expect(result.fixHint).toContain("rig daemon restart");
+      expect(result.fixHint).toContain("OPENRIG_WORKSPACE_ROOT");
+    } finally {
+      fs.rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  // Discriminator-flip: path.resolve normalization. A daemon path
+  // with redundant `./` segments equal to expected should still
+  // compare equal post-normalization.
+  it("normalizes paths before comparing", () => {
+    const result = checkDaemonWorkspace({
+      daemonResolvedRoot: path.join(dir, ".", "sub", ".."),
+      expectedRoot: dir,
+    });
+    expect(result.status).toBe("ok");
+  });
+});
+
+describe("FR-5 check #5 — daemon reload needed", () => {
+  it("returns ok when config file is older than daemon start", () => {
+    const cfg = path.join(dir, "config.json");
+    fs.writeFileSync(cfg, "{}");
+    const oldMtime = new Date(Date.now() - 60_000);
+    fs.utimesSync(cfg, oldMtime, oldMtime);
+    const start = new Date(Date.now() - 5_000);
+    const result = checkDaemonReload({ configFilePath: cfg, daemonStartTime: start });
+    expect(result.check).toBe("daemon_reload_needed");
+    expect(result.status).toBe("ok");
+  });
+
+  // Discriminator-flip: config newer than daemon start MUST warn.
+  // Without the mtimeMs > startMs comparison, freshness would never trip.
+  it("returns warn when config file mtime is newer than daemon start", () => {
+    const cfg = path.join(dir, "config.json");
+    fs.writeFileSync(cfg, "{}");
+    const newMtime = new Date(Date.now());
+    fs.utimesSync(cfg, newMtime, newMtime);
+    const start = new Date(Date.now() - 60_000);
+    const result = checkDaemonReload({ configFilePath: cfg, daemonStartTime: start });
+    expect(result.status).toBe("warn");
+    expect(result.fixHint).toContain("rig daemon restart");
+    expect(result.evidence?.staleMs).toBeGreaterThan(0);
+  });
+
+  // Discriminator-flip: ENOENT must NOT fail or warn. A daemon
+  // running on pure defaults (no config file) is healthy state.
+  it("returns ok when config file does not exist (defaults-only daemon)", () => {
+    const missing = path.join(dir, "no-such-config.json");
+    const result = checkDaemonReload({
+      configFilePath: missing,
+      daemonStartTime: new Date(),
+    });
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.configFileExists).toBe(false);
+  });
+});
+
+describe("FR-5 check #6 — optional slice docs", () => {
+  it("returns ok when every slice has README, IMPLEMENTATION-PRD, or IMPL-PRD", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "s1"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "m1", "slices", "s2"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "slices", "s1", "README.md"), "");
+    fs.writeFileSync(path.join(missions, "m1", "slices", "s2", "IMPL-PRD.md"), "");
+    const result = checkOptionalSliceDocs({ missionsRoot: missions });
+    expect(result.check).toBe("optional_slice_docs");
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.bareSlices).toEqual([]);
+  });
+
+  // Discriminator-flip: a slice with NEITHER doc shape must warn.
+  // Without the SLICE_DOC_FILES.some() check, bare slices would
+  // silently pass.
+  it("returns warn naming bare slices that have no doc shape", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "bare-slice"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "m1", "slices", "ok-slice"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "slices", "ok-slice", "README.md"), "");
+    const result = checkOptionalSliceDocs({ missionsRoot: missions });
+    expect(result.status).toBe("warn");
+    const bare = result.evidence?.bareSlices as Array<{ mission: string; slice: string }>;
+    expect(bare).toHaveLength(1);
+    expect(bare[0]?.slice).toBe("bare-slice");
+  });
+
+  // Discriminator-flip: any of the 3 doc-file names should pass.
+  it("treats IMPLEMENTATION-PRD.md as equivalent to README.md and IMPL-PRD.md", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "slices", "s1", "IMPLEMENTATION-PRD.md"), "");
+    const result = checkOptionalSliceDocs({ missionsRoot: missions });
+    expect(result.status).toBe("ok");
+  });
+
+  // Discriminator-flip: missing missions root must warn (not fail).
+  // The check is warn-only per IMPL-PRD §57-59.
+  it("returns warn (not fail) when missions root is absent", () => {
+    const result = checkOptionalSliceDocs({ missionsRoot: path.join(dir, "no-missions") });
+    expect(result.status).toBe("warn");
+    expect(result.evidence?.errorCode).toBe("ENOENT");
+  });
+});
+
+describe("FR-5 check #7 — MISSION_NOTES presence", () => {
+  it("returns ok when every mission directory has MISSION_NOTES.md", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "m2"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "MISSION_NOTES.md"), "");
+    fs.writeFileSync(path.join(missions, "m2", "MISSION_NOTES.md"), "");
+    const result = checkMissionNotesPresence({ missionsRoot: missions });
+    expect(result.check).toBe("mission_notes_presence");
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.missing).toEqual([]);
+  });
+
+  // Discriminator-flip: missing MISSION_NOTES must warn and name the
+  // specific missions; without naming, operator can't act.
+  it("returns warn naming missions without MISSION_NOTES.md", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "with-notes"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "no-notes-1"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "no-notes-2"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "with-notes", "MISSION_NOTES.md"), "");
+    const result = checkMissionNotesPresence({ missionsRoot: missions });
+    expect(result.status).toBe("warn");
+    const missing = result.evidence?.missing as Array<{ mission: string }>;
+    expect(missing.map((m) => m.mission).sort()).toEqual(["no-notes-1", "no-notes-2"]);
+    expect(result.fixHint).toContain("rig scope mission create");
+  });
+
+  // Discriminator-flip: missions root absent should warn-only.
+  it("returns warn (not fail) when missions root is absent", () => {
+    const result = checkMissionNotesPresence({ missionsRoot: path.join(dir, "no-missions") });
+    expect(result.status).toBe("warn");
+    expect(result.evidence?.errorCode).toBe("ENOENT");
   });
 });
