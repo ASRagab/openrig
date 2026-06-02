@@ -9,13 +9,13 @@ applies-when: |
   JSON output, cross-host, coordination primitives.
 siblings: [README.md, architecture/daemon-core.md]
 prerequisite-reads: [README.md]
-last-verified-against-source: 7eaf524c
-last-updated: 2026-05-16
+last-verified-against-source: 4f4db0fe
+last-updated: 2026-06-02
 ---
 
 # OpenRig CLI Reference
 
-Verified against the shipped CLI on 2026-05-15 (v0.3.1) using:
+Verified against the shipped CLI on 2026-06-02 (v0.3.2) using:
 - `packages/cli/src/index.ts`
 - `packages/cli/src/commands/*.ts`
 - `packages/cli/src/mcp-server.ts`
@@ -26,7 +26,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 ## Overview
 
 - Binary: `rig`
-- Top-level command groups: `58`
+- Top-level command groups: `59`
 - Output mode: human-readable by default; many commands also support `--json`
 - Daemon-backed commands fail when the daemon is stopped or unhealthy; `daemon`, `config`, `preflight`, and `doctor` also have local responsibilities
 - Managed apps are launched through the normal spec/library surfaces; the canonical shipped example is `rig up secrets-manager`
@@ -94,6 +94,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | `workspace` | Workspace primitive — typed-kind tooling (frontmatter validation) |
 | `plugin` | Inspect plugins (read-only) — list, show, used-by, validate |
 | `scope` | Scope tree primitive — missions, slices, sub-slices |
+| `policy` | Operator context-mode bindings (sleep/desk/mobile/away/focus/debug) |
 
 ## Core Daemon and System Commands
 
@@ -241,7 +242,7 @@ Notes:
 
 ### `rig up`
 
-Usage: `rig up <source> [--plan] [--yes] [--target <root>] [--json]`
+Usage: `rig up <source> [--plan] [--yes] [--cwd <path>] [--target <root>] [--existing] [--json]`
 
 Arguments:
 - `source`: path to `.yaml` or `.rigbundle`, or a bare name
@@ -255,10 +256,13 @@ Actual source resolution:
   - if both a library spec and existing rig share the same name, exits with an ambiguity error
 
 Current behavior notes:
+- `--cwd <path>` overrides launch working directory for all members for this run only. For path-form `rig up <install-internal-spec>` invocations the CLI defaults `cwd` to the caller's directory (slice-22 Bug 3) so library specs match path-form behavior.
 - `--target <root>` is only for bundle/package installation. It does not override agent working directories.
+- `--existing` skips the library-spec name resolution and treats `<source>` as an existing rig name directly (disambiguates when a library spec and a stopped rig share the same name).
 - `local:` `agent_ref` values resolve relative to the rig spec directory, not the caller shell cwd.
 - If you copy a built-in spec to a new directory, keep its `agents/` tree beside it or rewrite those refs to `path:/absolute/path`.
 - Managed apps are first-class `up` targets. `rig up secrets-manager` launches the shipped Vault example from the library.
+- v0.3.2 paper-cut fix-round (slice-22): pre-launch failures now return structured HTTP 4xx (`cycle_error` / `preflight_failed` / `validation_failed` / `service_boot_failed`) instead of bare 500; failed boots no longer leave orphan rig records on disk.
 
 Success modes:
 - fresh boot
@@ -380,12 +384,15 @@ Notes:
 Usage: `rig bundle <subcommand>`
 
 Subcommands:
-- `create <spec> -o <path> [--name <name>] [--bundle-version <ver>] [--include-packages <refs...>] [--rig-root <root>] [--json]`
-- `inspect <path> [--json]`
-- `install <path> [--plan] [--yes] [--target <root>] [--json]`
+- `create <spec> -o <path> [--name <name>] [--bundle-version <ver>] [--include-packages <refs...>] [--rig-root <root>] [--notes <text>] [--min-daemon-version <ver>] [--min-cli-version <ver>] [--json]` — pack a rig spec + its declared content into a `.rigbundle`. v0.3.2 slice-05 ships first-class cross-primitive bundling: skills + plugins (hybrid) + workflow_specs + context_packs + agent_images vendor end-to-end with both-sides path containment, symlink escape protection, and integrity hashing.
+- `inspect <path> [--json]` — inspect a `.rigbundle` manifest. v0.3.2 surfaces the cross-primitive content fields as first-class.
+- `install <path> [--plan] [--yes] [--target <root>] [--skip-version-check] [--force] [--json]` — install a `.rigbundle`. Routes each declared content kind to its canonical library under `$OPENRIG_HOME`. `--skip-version-check` is an operator-explicit override of the install-time daemon/CLI compatibility gate (NOT recommended). `--force` is an operator-explicit override of the install-time conflict check (NOT recommended; conflicts may produce partial install state).
+- `history [--rig <name>] [--since <iso>] [--json]` — list bundle install audit records from `~/.openrig/bundle-audit.jsonl`. Filters by target rig name and earliest `installedAt`.
 
 Important:
 - `bundle create` requires `-o, --output <path>` by source definition.
+- v0.3.2 install timeout bumped (was 5s — too short for tmux-session-bootstrapping installs).
+- Deferred to 0.3.3 (per release packet): agent/port/managed-app collision detection (Item 4.3), broader install-into-existing-rig pathway acceptance (Item 4.4), and the `--target-name` CLI flag (slice-05 Item-3 sub-scopes; design-contingent on CLI surface decision).
 
 ### `rig package` (legacy)
 
@@ -737,7 +744,7 @@ Notes:
 Usage: `rig queue <subcommand>` — L3 owned-work queue plus inbox/outbox.
 
 Subcommands:
-- `create --source <session> --destination <session> --body <text> [--priority <p>] [--tier <t>] [--tags <csv>] [--expires-at <iso>] [--id <qitemId>] [--json]`
+- `create --source <session> --destination <session> (--body <text> | --body-file <path>) [--mission <id>] [--slice <id>] [--priority <p>] [--tier <t>] [--tags <csv>] [--target-repo <name>] [--no-nudge] [--expires-at <iso>] [--id <qitemId>] [--json]` — v0.3.2 slice-21 FR-4 adds `--body-file <path>` (use `-` for stdin) which kills the backtick-shell-corruption class for multiline bodies, and first-class `--mission <id>` / `--slice <id>` flags that translate to `mission:<id>` / `slice:<id>` tags (compose with `--tags`). Exactly one of `--body` / `--body-file` must be provided.
 - `claim <qitemId> --destination <session> [--json]` — pending → in-progress; computes closure_required_at from tier
 - `unclaim <qitemId> --destination <session> [--reason <text>] [--json]` — in-progress → pending
 - `update <qitemId> --actor <session> --state <state> [--closure-reason <r>] [--closure-target <t>] [--note <text>] [--json]`
@@ -933,10 +940,11 @@ Notes:
 Usage: `rig workspace <subcommand>` — Workspace Primitive (PL-007), v0 typed-kind tooling.
 
 Subcommands:
-- `validate [root]` — walk a workspace root, parse each `.md` file's YAML frontmatter, and emit a structured gap report. Advisory only — never modifies files. Default root: `cwd`.
+- `validate [root] [--kind <kind>] [--no-recursive] [--require-frontmatter] [--max-files <n>] [--json]` — walk a workspace root, parse each `.md` file's YAML frontmatter, and emit a structured gap report. Advisory only — never modifies files. Default root: `cwd`. `--kind` validates against a specific workspace kind (`user | project | knowledge | lab | delivery`). `--max-files` (default `10000`) hard-caps the walk; v0.3.2 slice-01 GA enforces strict-int regex on this flag.
+- `doctor [--workspace <path>] [--strict] [--json]` — v0.3.2 slice-21 FR-5. Run a 7-check workspace-readiness diagnostic against the daemon's resolved workspace (workspace root, missions folder, file allowlist, daemon alignment, daemon reload, optional slice docs, MISSION_NOTES presence). Read-only. Default exit-code: non-zero only on `fail`; `--strict` makes warn-or-fail non-zero. The CLI overlays `OPENRIG_FILES_ALLOWLIST` from the operator's shell env so doctor reflects the operator's intended allowlist even when the daemon's env is unchanged.
 
 Notes:
-- v0 surface is intentionally narrow (`validate` only) — read-only frontmatter audit.
+- v0 surface was intentionally narrow (`validate` only); v0.3.2 added `doctor` as the operator-facing readiness diagnostic.
 - Future versions will add typed-kind authoring/refactor tooling on the same root walker.
 - See `rig config init-workspace` to scaffold a fresh default workspace.
 
@@ -962,14 +970,13 @@ Notes:
 - `openrig-core` ships bundled with the daemon (11 skills). Additional plugins (`gstack` — 45 skills; `obra-superpowers` — 14 skills) ship as substrate references for plugin authors to copy-install per the `OPENRIG-INSTALL.md` workflow inside each plugin's source tree.
 - A first-class `rig plugin install <substrate-path>` verb is deferred to 0.3.2.
 
-## Scope Tree Primitive (release-0.3.2)
+## Scope Tree Primitive (v0.3.2)
 
-One top-level command added post-0.3.1 (`scopeCommand`,
+One top-level command first shipped in v0.3.2 (`scopeCommand`,
 `packages/cli/src/index.ts:20,187`; defined in
-`packages/cli/src/commands/scope.ts`; added by `0b77cba4`, release-0.3.2
-slice 12). Operates the scope tree (missions, slices, sub-slices) per
-`conventions/scope-and-versioning`. This is the 58th command group at HEAD
-(`v0.3.1` shipped 57; see overview).
+`packages/cli/src/commands/scope.ts`; release-0.3.2 slice 12). Operates
+the scope tree (missions, slices, sub-slices) per
+`conventions/scope-and-versioning`.
 
 ### `rig scope`
 
@@ -994,7 +1001,35 @@ Two subcommand groups: `slice` and `mission`.
 - `create <name> [--template <kind>] [--id <dot-id>] [--title <text>] [--json]` — create a new mission (mints a stable dot-ID into frontmatter). `--template` auto-selects when name matches `release-X.Y.Z`; `--id` overrides name-pattern inference.
 
 Notes:
-- Surface source-verified against `packages/cli/src/commands/scope.ts` @HEAD `7eaf524c`; not in `v0.3.1`.
+- Surface source-verified against `packages/cli/src/commands/scope.ts` at `4f4db0fe` (v0.3.2).
+
+## Operator Context-Mode Bindings (v0.3.2)
+
+One top-level command first shipped in v0.3.2 (`rigPolicyCommand`,
+defined in `packages/cli/src/commands/rig-policy.ts`; release-0.3.2
+slice 09). Pairs with the daemon's typed-primitive store at
+`packages/daemon/src/db/migrations/041_rig_policy.ts`. Operates the
+operator context-mode binding surface (sleep / desk / mobile / away /
+focus / debug) used by mode-aware agent posture.
+
+### `rig policy`
+
+Usage: `rig policy <subcommand>`
+
+Subcommands:
+- `set <mode> [--scope <scope>] [--qualifier <id>] [--<field> ...] [--evidence <citation>] [--confirm] [--bearer <token>] [--json]` — propose a binding. Without `--confirm` the CLI echoes the proposed binding and exits with `exit 2` so scripts cannot accidentally apply; `--confirm` is the explicit operator action. `<scope>` is one of `global_host | rig | workstream | qitem` (defaults to the per-mode recommendation). `--qualifier <id>` is required for `rig | workstream | qitem` scopes and rejected for `global_host`. Per-field tuning flags: `--autonomy-scope`, `--heartbeat-cadence`, `--inspection-depth`, `--update-detail`, `--escalation-threshold`, `--concurrency-limit`, `--permission-prompt-posture` (one of `normal | batch_for_human | do_not_prompt_unless_blocked`; `auto_accept` is FORBIDDEN by convention), `--expiry-or-stale-rule`. `--evidence` carries a free-text operator citation (message id, file pointer, chatroom topic, etc.).
+- `show [--json]` — list all operator-context-mode bindings.
+- `effective [--rig <id>] [--workstream <id>] [--qitem <id>] [--json]` — resolve the effective mode for a (rig, workstream, qitem) read context. Surfaces `unknown_posture` when no binding matches.
+- `cite [--rig <id>] [--workstream <id>] [--qitem <id>]` — emit the short-prose citation line for the effective mode at the read context (per convention §Citation Rules).
+- `unset <scope> [qualifier] [--bearer <token>] [--json]` — delete one binding (operator-only).
+- `defaults [--json]` — print the recommended per-mode 6×7 field defaults + default-scope mapping + stale rule.
+
+Notes:
+- The 6 modes are `sleep | desk | mobile | away | focus | debug`. Bare-word invocation is accepted (`set desk`); `mode:<word>` is the disambiguated prefix form.
+- Restate-and-confirm posture (HG-4): `set` is restate-only until `--confirm` is passed. This prevents accidental script application.
+- `--qualifier` strict reject for `global_host` (HG-7 guard finding): operators who type `--scope global_host --qualifier <id>` get an error and the daemon is never contacted. The CLI does NOT silently drop the qualifier.
+- Operator-edit mutations (`set --confirm`, `unset`) require an operator bearer token (`--bearer` or `OPENRIG_AUTH_BEARER_TOKEN` env).
+- Surface source-verified against `packages/cli/src/commands/rig-policy.ts` at `4f4db0fe` (v0.3.2).
 
 ## Commands Not Present
 

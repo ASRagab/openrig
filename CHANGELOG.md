@@ -8,6 +8,189 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.3.2] - 2026-06-02
+
+**Status**: released. npm `@openrig/cli@0.3.2` (latest); GitHub Release
+`v0.3.2`; git tag `v0.3.2`.
+
+### Summary For Installing Agents
+
+- **Package version**: package metadata bumped at release-manager step; CLI
+  reports the new version after `npm publish`.
+- **Migrations**: one new migration in 0.3.2 — `041_rig_policy`
+  (`CREATE TABLE` for the operator-context-mode bindings store; no impact
+  on existing data; binding rows are operator-authored at runtime).
+  Existing databases upgrade by running `rig daemon start`.
+- **Node engines**: unchanged from 0.3.1 (CLI accepts Node `>=20`).
+- **Backward compatibility**: existing CLI argument shapes, daemon route
+  paths, RigSpec/AgentSpec schemas, and persisted settings remain backward
+  compatible. New routes are additive. New CLI commands (`rig policy`,
+  `rig scope`, `rig workspace doctor`) are additive. New `rig queue create`
+  flags (`--body-file`, `--mission`, `--slice`) are additive.
+
+### Rigbundles First-Class
+
+`rig bundle` ships cross-primitive bundling end-to-end:
+
+- **Five content kinds routed**: skills + plugins (hybrid) +
+  workflow_specs + context_packs + agent_images. Each kind lands in
+  its canonical library under `$OPENRIG_HOME`; consumer-scan
+  visibility preserved.
+- **`bundle.yaml` author manifests** auto-detected when present.
+  Vendoring uses both-sides path containment + symlink-escape
+  protection + integrity hashing in the manifest.
+- **`rig bundle create` new flags**: `--notes <text>`,
+  `--min-daemon-version <ver>`, `--min-cli-version <ver>` — operator
+  notes captured in bundle provenance metadata; min-version gates
+  power the install-time compatibility check.
+- **`rig bundle install` new flags**: `--skip-version-check` (operator-
+  explicit override of the install-time compatibility check),
+  `--force` (operator-explicit override of the install-time conflict
+  check). NOT recommended for routine use; provided for known-good
+  operator scenarios.
+- **`rig bundle history`** — new subcommand reading
+  `~/.openrig/bundle-audit.jsonl` with optional `--rig` /
+  `--since` filters.
+- **Install timeout bumped** — the prior 5-second cap was too short
+  for tmux-session-bootstrapping installs.
+
+### Workspace + Workflow GA
+
+Operator-facing surface hardened:
+
+- **`rig workspace validate --max-files`** — strict-int regex enforced;
+  out-of-range values produce a 3-part error before `client.post`.
+- **`rig workflow project --exit`** — enum guard against
+  `handoff | waiting | done | failed`.
+- **14 new discriminator tests** on validator paths.
+
+### `rig up <starter>` Paper-Cut Fix-Round
+
+Four bounded fixes unblocking the homepage quick-start on fresh
+0.3.1→0.3.2 installs:
+
+- **HTTP 4xx surface for pre-launch failures**: `cycle_error`,
+  `preflight_failed`, `validation_failed`, `service_boot_failed` —
+  replaces bare 500.
+- **No orphan rig record on pre-launch failure**: instantiator
+  re-ordered + rollback path + compose teardown order tightened.
+- **Path-form `rig up <install-internal-spec>` defaults cwd**: closes
+  the divergence between path-form and bare-form invocation; library
+  specs now match path-form behavior.
+- **`walkYamlFiles` skip standard noise dirs**: `.worktrees`,
+  `node_modules`, `.git`, `dist`, `.turbo`, `.next`. Plus stale
+  `workflow_specs` rows prune at startup with an install-root
+  preservation guard (shipped built-in specs survive the prune).
+
+### Coordination + First-User Setup Fix-Round (slice 21)
+
+Five bounded follow-rounds:
+
+- **FR-1 — Coordination-model boot instinct**: `rig send` vs
+  `rig queue` vs `rig queue handoff` + §1b doctrine surfaced in
+  `core/openrig-user/SKILL.md`.
+- **FR-2 — First-user workspace + workflow setup teaching**: skill
+  + docs content for the path from fresh install to first
+  workflow_spec authoring.
+- **FR-3 — MISSION_NOTES durable-pattern hardening**: convention
+  codemap + auto-scaffold via `rig scope mission create` (uses
+  `conventions/mission-notes/TEMPLATE.md`); `--no-mission-notes`
+  opts out.
+- **FR-4 — Queue ergonomics**:
+  - `rig queue create --body-file <path>` (use `-` for stdin) kills
+    the backtick-shell-corruption class for multiline bodies.
+    Mutually exclusive with `--body`.
+  - First-class `--mission <id>` / `--slice <id>` flags translate
+    to `mission:<id>` / `slice:<id>` tags (compose with `--tags`).
+  - `lastNudgeResult` wording fix; closure-vs-acceptance docs.
+- **FR-5 — `rig workspace doctor`**: 7-check workspace-readiness
+  diagnostic (workspace root, missions folder, file allowlist,
+  daemon alignment, daemon reload, optional slice docs,
+  MISSION_NOTES presence). Default exit-code: non-zero only on
+  `fail`; `--strict` makes warn-or-fail non-zero. CLI overlays
+  `OPENRIG_FILES_ALLOWLIST` from operator's shell env.
+
+### Daemon Test Substrate-Path Scrub (slice 14)
+
+Internal-team substrate path shape scrubbed from 4 daemon source
+sites + 10 test files. Hook-constants de-duplicated. Privacy class
+closed for tracked source + test surface.
+
+### ConceptCard Data Source (slice 17)
+
+`ConceptCard` wired to shaped backlog candidates; storytelling-adapter
+completion deferred from 0.3.1 is now complete.
+
+### For-You Priority Windowing (slice 20)
+
+Server-side attention query (Option 3): SQL predicate pushdown +
+exact-match attention regex + dismissal as string-keyed for
+queue-derived cards.
+
+### Operator Context-Mode Bindings (slice 09)
+
+New `rig policy` command surface paired with daemon-side typed-primitive
+store (migration `041_rig_policy`):
+
+- **Six modes**: `sleep | desk | mobile | away | focus | debug`.
+- **Four scopes**: `global_host | rig | workstream | qitem`.
+- **Restate-and-confirm posture (HG-4)**: `set` is restate-only
+  until `--confirm` is passed; scripts cannot silently apply a
+  binding.
+- **`--qualifier` strict reject for `global_host` (HG-7 guard
+  finding)**: operators who type `--scope global_host --qualifier
+  <id>` get an error and the daemon is never contacted.
+- **Operator-edit verbs require bearer token**: `set --confirm`
+  and `unset` require `--bearer <token>` (or
+  `OPENRIG_AUTH_BEARER_TOKEN` env).
+- **6 subcommands**: `set`, `show`, `effective`, `cite`, `unset`,
+  `defaults`.
+
+### Scope Tree Primitive (slice 12)
+
+New `rig scope` command for operating the substrate scope tree
+(missions, slices, sub-slices) per
+`conventions/scope-and-versioning`:
+
+- **Mission tier**: `ls`, `show`, `create` (auto-mints stable
+  dot-IDs into mission frontmatter; auto-scaffolds MISSION_NOTES
+  by default; `--template` auto-selects `release` when name matches
+  `release-X.Y.Z`).
+- **Slice tier**: `ls`, `show`, `create`, `ship`, `close`, `move`.
+- **Templates ship under `dist/lib/scope-templates/`**: `release-
+  feature`, `placeholder`, `mission-notes`, `bug-fix`,
+  `research`, `backlog-deprecation`, `backlog-tech-debt`,
+  `mission-placeholder`, `mission-release`.
+- **Top-level option `--workspace <path>`** overrides workspace
+  root (otherwise inferred from cwd or `$OPENRIG_WORK_ROOT`).
+
+### Known Limitations / 0.3.3 Deferrals
+
+- **Slice-05 Item-3 sub-scopes deferred to 0.3.3**: agent/port/managed-app
+  collision detection (Item 4.3); broader install-into-existing-rig
+  pathway acceptance (Item 4.4); the `--target-name` CLI flag.
+  Design-contingent on the CLI surface decision.
+- **Slice-21 FR-4(d) accepted-queue-state schema deferred to 0.3.3**:
+  the new `accepted` queue state is a schema model change; carried
+  forward per the release-triage philosophy.
+- **Onboarding journey + battle-hardening deferred to 0.3.3**: slices
+  04 (new-user-journey), 08 (hooks-elite), 10 (rig-self), 11
+  (personal-rig) physically moved to the `release-0.3.3` mission tree.
+- **Workspace symlink alignment**: daemon-side workspace-resolver
+  alignment with operator symlinked workspace roots is a follow-up
+  from slice-21 FR-5 QA; non-blocking for 0.3.2.
+- **Slice-13 permission-block-routing-architecture remains held**:
+  big-green-light gated by operator review; `rigx-experimental` only;
+  not split-deferred to 0.3.3 (stays held).
+- **`rig down <name>` still returns HTTP 404** at v0.3.2; use
+  `rig down <rigId> --delete` instead.
+- **`rig view list/show --json` flag inconsistency** — wrapper-layer
+  routing path remains; daemon's `view show <name>` route returns
+  JSON correctly when invoked directly. Workaround: human-readable
+  output for now.
+
+---
+
 ## [0.3.1] - 2026-05-15
 
 **Status**: released. npm `@openrig/cli@0.3.1` (latest); GitHub Release

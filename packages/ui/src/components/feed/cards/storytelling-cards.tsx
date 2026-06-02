@@ -3,7 +3,7 @@
 // Mobile-first cards for the For You feed: collapsed (~80px) → tap
 // for inline-expanded preview → tap "Open" for drill-in.
 //
-// Iter 2026-05-15 — vellum-coherent redesign per founder dispatch.
+// Iter 2026-05-15 — vellum-coherent redesign.
 // Cards now use the same vellum surface vocabulary as the dashboard
 // destination cards (translucent stone tint, backdrop-blur, ambient
 // shadow, L-shaped corner brackets) but with a LEGIBILITY-FIRST

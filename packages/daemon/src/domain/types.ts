@@ -826,7 +826,7 @@ export interface WorkspaceSpec {
   workspaceRoot: string;
   repos: WorkspaceRepoSpec[];
   defaultRepo?: string;
-  /** Optional knowledge-canon root (e.g., substrate/shared-docs/openrig-work).
+  /** Optional knowledge-canon root (e.g., a shared docs repo path).
    *  Treated as kind=knowledge when surfaced through whoami / UI. */
   knowledgeRoot?: string;
 }

@@ -443,7 +443,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // plugin-primitive Phase 3a slice 3.2 — vendor openrig-core plugin to
   // ~/.openrig/plugins/openrig-core/ on first launch. Auto-fetch from
   // github.com/mvschwarz/openrig-plugins is best-effort + 404-tolerant
-  // (repo currently empty per founder authorization 2026-05-10; vendored
+  // (repo currently empty as of 2026-05-10; vendored
   // copy is the source of truth at v0).
   try {
     const { PluginVendorService } = await import("./domain/plugin-vendor-service.js");

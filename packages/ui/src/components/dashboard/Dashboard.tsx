@@ -18,7 +18,7 @@ import { useRigSummary } from "../../hooks/useRigSummary.js";
 import { usePsEntries } from "../../hooks/usePsEntries.js";
 import { useSpecLibrary } from "../../hooks/useSpecLibrary.js";
 
-// Simplified per founder dispatch 2026-05-15: removed BackLayerContent
+// Simplified 2026-05-15: removed BackLayerContent
 // (the bold-black OPERATOR / OS·Ø tactical anchors) and BackVellumSheet
 // (the heavy translucent paper sheet). Dashboard now sits on the
 // page-level cream paper-grid background. Cards + top chrome + mid
