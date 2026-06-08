@@ -184,16 +184,59 @@ function normalizePayload(method: string, raw: unknown): unknown {
   if (method !== "surface.list") return raw;
   if (raw === null || typeof raw !== "object") return raw;
   const obj = raw as Record<string, unknown>;
-  if (Array.isArray(obj.surfaces)) return raw;
-  if (Array.isArray(obj.panels)) {
-    const { panels, ...rest } = obj;
-    return { ...rest, surfaces: panels };
+  // OPR.0.3.3.18: cmux 0.64.x renamed the surface identifier - `list-panels`
+  // rows carry `ref` with NO `id` (0.63.x rows carried `id`) - AND may key the
+  // array as `panels`/`pane_surfaces`. Resolve BOTH the array key AND each
+  // row's handle to one stable `{surfaces: [{id,title,type}]}` shape so
+  // downstream `CmuxAdapter.listSurfaces` (and the layout service's
+  // `result.data[0].id` read) sees a populated `id` regardless of cmux
+  // version. This is the SAME presence-based adaptation already applied to
+  // `workspace.list` rows (`normalizeWorkspaceRow`) and to the surface-create /
+  // split handles (`adapters/cmux.ts`) - one resolution order, both versions,
+  // NOT a version-negotiation shim. 0.63.x rows that carry `id` resolve
+  // unchanged.
+  const rows =
+    Array.isArray(obj.surfaces) ? obj.surfaces
+    : Array.isArray(obj.panels) ? obj.panels
+    : Array.isArray(obj.pane_surfaces) ? obj.pane_surfaces
+    : null;
+  if (rows === null) return raw;
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === "surfaces" || key === "panels" || key === "pane_surfaces") continue;
+    rest[key] = value;
   }
-  if (Array.isArray(obj.pane_surfaces)) {
-    const { pane_surfaces, ...rest } = obj;
-    return { ...rest, surfaces: pane_surfaces };
-  }
-  return raw;
+  return {
+    ...rest,
+    surfaces: rows
+      .map(normalizeSurfaceRow)
+      .filter((surface): surface is { id: string; title: string; type: string } => surface !== null),
+  };
+}
+
+function normalizeSurfaceRow(row: unknown): { id: string; title: string; type: string } | null {
+  if (row === null || typeof row !== "object") return null;
+  const obj = row as Record<string, unknown>;
+  // OPR.0.3.3.18: resolve the surface handle from whichever key the installed
+  // cmux provides. `ref` is preferred (cmux 0.64.x list-panels) then the
+  // snake_case variants, then `id` (cmux 0.63.x) - the same precedence the
+  // create/split handle resolution uses in `adapters/cmux.ts` and that
+  // `normalizeWorkspaceRow` uses for workspace rows.
+  const id =
+    typeof obj.ref === "string" && obj.ref.trim()
+      ? obj.ref.trim()
+      : typeof obj.surface_ref === "string" && obj.surface_ref.trim()
+        ? obj.surface_ref.trim()
+        : typeof obj.surface_id === "string" && obj.surface_id.trim()
+          ? obj.surface_id.trim()
+          : typeof obj.id === "string" && obj.id.trim()
+            ? obj.id.trim()
+            : "";
+  if (!id) return null;
+  const title = typeof obj.title === "string" ? obj.title : "";
+  const type =
+    typeof obj.type === "string" && obj.type.trim() ? obj.type : "terminal";
+  return { id, title, type };
 }
 
 function normalizeWorkspaceRow(row: unknown): { id: string; name: string } | null {

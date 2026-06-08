@@ -311,6 +311,64 @@ describe("cmux CLI transport — version-adaptive surface listing", () => {
     expect(result).toEqual({ surfaces: [{ id: "surface:1", title: "term", type: "terminal" }] });
   });
 
+  // OPR.0.3.3.18 - THE pinned break: cmux 0.64.x `list-panels --json` rows
+  // carry `ref` with NO `id`. Pre-fix, downstream `result.data[0].id` was
+  // undefined -> surfaceId undefined -> `surface.sendText` never mapped ->
+  // "Unknown cmux method" throw. The row handle must resolve from `ref`.
+  it("surface.list on cmux 0.64.x normalizes `panels[].ref` (no id) to `surfaces[].id`", async () => {
+    const exec = mockExec({
+      modern: true,
+      overrides: {
+        "cmux list-panels --json":
+          '{"panels":[{"ref":"surface:1","title":"term","type":"terminal"},{"ref":"surface:2","title":"t2","type":"terminal"}]}',
+      },
+    });
+    const transport = await createCmuxCliTransport(exec)();
+
+    const result = (await transport.request("surface.list")) as { surfaces: unknown };
+    expect(result).toEqual({
+      surfaces: [
+        { id: "surface:1", title: "term", type: "terminal" },
+        { id: "surface:2", title: "t2", type: "terminal" },
+      ],
+    });
+  });
+
+  // OPR.0.3.3.18 - regression guard for the early-return-raw path: when cmux
+  // already keys the array as `surfaces` but the rows carry `ref` (not `id`),
+  // the rows must STILL be normalized (pre-fix this branch returned raw, so
+  // `id` stayed undefined).
+  it("surface.list normalizes `ref`-only rows even when the array is already keyed `surfaces`", async () => {
+    const exec = mockExec({
+      modern: true,
+      overrides: {
+        "cmux list-panels --json":
+          '{"surfaces":[{"ref":"surface:9","title":"x","type":"terminal"}]}',
+      },
+    });
+    const transport = await createCmuxCliTransport(exec)();
+
+    const result = (await transport.request("surface.list")) as { surfaces: unknown };
+    expect(result).toEqual({ surfaces: [{ id: "surface:9", title: "x", type: "terminal" }] });
+  });
+
+  // OPR.0.3.3.18 - 0.63.2 NON-REGRESSION discriminator: rows carrying `id`
+  // (no `ref`) resolve unchanged. One normalization, BOTH cmux versions -
+  // proves the fix is adaptation, not a version-negotiation shim.
+  it("surface.list keeps `id`-shape rows (cmux 0.63.x) working unchanged - no regression", async () => {
+    const exec = mockExec({
+      modern: true,
+      overrides: {
+        "cmux list-panels --json":
+          '{"panels":[{"id":"surface:63","title":"legacy","type":"terminal"}]}',
+      },
+    });
+    const transport = await createCmuxCliTransport(exec)();
+
+    const result = (await transport.request("surface.list")) as { surfaces: unknown };
+    expect(result).toEqual({ surfaces: [{ id: "surface:63", title: "legacy", type: "terminal" }] });
+  });
+
   it("surface.list on modern cmux honors workspaceId via --workspace", async () => {
     const exec = mockExec({
       modern: true,
