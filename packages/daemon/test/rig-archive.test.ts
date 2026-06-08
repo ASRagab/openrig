@@ -163,4 +163,46 @@ describe("rig archive affordance (OPR.0.3.3.19)", () => {
       expect(only[0]!.archivedAt).not.toBeNull();
     });
   });
+
+  describe("AC-4 host-scoped (no cross-host leak)", () => {
+    it("archive is local to the host that owns the rigs row; a 2nd host node is unaffected and needs no rework", () => {
+      // Two independent daemon DBs == two host nodes. V0.4 multi-host nests each
+      // rig set under its own host node; today there is one localhost, but the
+      // archive flag lives on the LOCAL rigs row, so it is keyed by host by
+      // construction and can never cross the host boundary. We do NOT build any
+      // multi-host table/registry here (out of scope) - two repositories suffice
+      // to simulate two hosts and prove no cross-host leak.
+      const dbHostA = db; // host A (from beforeEach)
+      const repoA = rigRepo;
+      const dbHostB = createFullTestDb(); // host B
+      const repoB = new RigRepository(dbHostB);
+      try {
+        const a1 = repoA.createRig("shared-name").id;
+        repoA.createRig("a-active");
+        const b1 = repoB.createRig("shared-name").id;
+        repoB.createRig("b-active");
+
+        // Archive a rig under host A only.
+        expect(repoA.archiveRig(a1)).toBe(true);
+
+        // Host A: default hides it; archivedOnly shows only it.
+        expect(repoA.getRigSummaries().some((s) => s.id === a1)).toBe(false);
+        expect(repoA.getRigSummaries({ archivedOnly: true }).map((s) => s.id)).toEqual([a1]);
+
+        // Host B is UNAFFECTED: the same-named rig stays active + visible, and
+        // host B has NO archived rigs at all - the flag never crossed hosts.
+        expect(repoB.getRigSummaries().some((s) => s.id === b1)).toBe(true);
+        expect(repoB.getRigSummaries({ archivedOnly: true })).toEqual([]);
+
+        // Same guarantee at the ps-projection seam (the CLI/UI default read).
+        const psA = new PsProjectionService({ db: dbHostA });
+        const psB = new PsProjectionService({ db: dbHostB });
+        expect(psA.getEntries().some((e) => e.rigId === a1)).toBe(false);
+        expect(psA.getEntries({ archivedOnly: true }).map((e) => e.rigId)).toEqual([a1]);
+        expect(psB.getEntries({ archivedOnly: true })).toEqual([]);
+      } finally {
+        dbHostB.close();
+      }
+    });
+  });
 });
