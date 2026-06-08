@@ -763,4 +763,100 @@ describe("TmuxAdapter", () => {
       expect(await b.readPaneLastActivity("dev@rig")).toBe(null);
     });
   });
+
+  // OPR.0.3.3.16 - large-payload transport. A >100KB startup pack embedded in
+  // one tmux/shell argv exceeds the OS per-arg limit and the launch silently
+  // fails, so sendText routes large text through a temp file + tmux buffer.
+  // The correctness pivot is `paste-buffer -d -r`: `-r` preserves raw LF (tmux's
+  // default paste replaces LF->CR = Enter = catastrophic per-line submit in the
+  // Claude/Codex TUIs); `-d` drops the buffer after a successful paste.
+  describe("sendText large-payload buffer path", () => {
+    // Just over the 100KB byte threshold (ASCII => 1 byte/char).
+    const BIG = "x".repeat(100 * 1024 + 1);
+
+    function fixedFileOps() {
+      const writeFile = vi.fn(async () => {});
+      const unlink = vi.fn(async () => {});
+      return {
+        ops: {
+          writeFile,
+          unlink,
+          tmpName: () => "/tmp/openrig-tmux-send-FIXED.txt",
+          bufferName: () => "openrig_FIXED",
+        },
+        writeFile,
+        unlink,
+      };
+    }
+
+    it("writes a temp file via fs and delivers via load-buffer + paste-buffer -d -r; payload never in any exec command", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const { ops, writeFile, unlink } = fixedFileOps();
+      const adapter = new TmuxAdapter(exec, ops);
+
+      const result: TmuxResult = await adapter.sendText("dev@rig", BIG);
+
+      expect(result).toEqual({ ok: true });
+      // The raw payload is written to disk via fs, NOT embedded in a shell command.
+      expect(writeFile).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt", BIG);
+      const cmds = exec.mock.calls.map((c) => c[0] as string);
+      expect(cmds).toEqual([
+        "tmux load-buffer -b 'openrig_FIXED' '/tmp/openrig-tmux-send-FIXED.txt'",
+        "tmux paste-buffer -t 'dev@rig' -b 'openrig_FIXED' -d -r",
+      ]);
+      // The argv-size regression: the payload must never reach an exec command.
+      for (const cmd of cmds) expect(cmd).not.toContain(BIG);
+      // Temp file cleaned up in finally.
+      expect(unlink).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt");
+    });
+
+    it("keeps the exact inline send-keys -l command for a small payload (no buffer path, no temp file)", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const { ops, writeFile } = fixedFileOps();
+      const adapter = new TmuxAdapter(exec, ops);
+
+      await adapter.sendText("dev@rig", "hello world");
+
+      expect(exec).toHaveBeenCalledOnce();
+      expect(exec.mock.calls[0]![0]).toBe("tmux send-keys -t 'dev@rig' -l 'hello world'");
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("missing target on the large path returns session_not_found and leaks no temp file or buffer", async () => {
+      // load-buffer succeeds (buffer is global); paste-buffer fails on missing target.
+      const exec = vi.fn<ExecFn>(async (cmd: string) => {
+        if (cmd.includes("paste-buffer")) throw new Error("can't find session: dev@rig");
+        return "";
+      });
+      const { ops, unlink } = fixedFileOps();
+      const adapter = new TmuxAdapter(exec, ops);
+
+      const result = await adapter.sendText("dev@rig", BIG);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("session_not_found");
+      const cmds = exec.mock.calls.map((c) => c[0] as string);
+      // Buffer was loaded then explicitly deleted on the error path (no leak).
+      expect(cmds).toContain("tmux delete-buffer -b 'openrig_FIXED'");
+      // Temp file unlinked regardless of failure (no leak).
+      expect(unlink).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt");
+    });
+
+    it("generates a unique temp file and buffer name per call (concurrency-safe for parallel rig up)", async () => {
+      // Default (production) fileOps - proves the real generators are unique.
+      // exec is mocked so no real tmux runs; the temp file is written to the OS
+      // tmpdir and removed in finally.
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const adapter = new TmuxAdapter(exec);
+
+      await adapter.sendText("dev@rig", BIG);
+      await adapter.sendText("dev@rig", BIG);
+
+      const loadCmds = exec.mock.calls
+        .map((c) => c[0] as string)
+        .filter((cmd) => cmd.startsWith("tmux load-buffer"));
+      expect(loadCmds).toHaveLength(2);
+      expect(loadCmds[0]).not.toBe(loadCmds[1]);
+    });
+  });
 });
