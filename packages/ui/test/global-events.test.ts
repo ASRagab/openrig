@@ -104,4 +104,52 @@ describe("useGlobalEvents", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-2", "nodes"] });
   });
+
+  // OPR.0.3.3.19 (AC-7): archive/unarchive events must refetch BOTH the default
+  // summary AND the archived-only summary (separate key) + ps, so a CLI /
+  // other-browser archive updates a mounted UI reactively.
+  it("invalidates rigs summary, archived summary, ps, and rig nodes on rig.archived", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useGlobalEvents(), { wrapper });
+
+    act(() => {
+      for (const handler of messageHandlers) {
+        handler({ data: JSON.stringify({ type: "rig.archived", rigId: "rig-3" }) });
+      }
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-3", "nodes"] });
+  });
+
+  it("invalidates rigs summary, archived summary, and ps on rig.unarchived", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useGlobalEvents(), { wrapper });
+
+    act(() => {
+      for (const handler of messageHandlers) {
+        handler({ data: JSON.stringify({ type: "rig.unarchived", rigId: "rig-3" }) });
+      }
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
+  });
 });
