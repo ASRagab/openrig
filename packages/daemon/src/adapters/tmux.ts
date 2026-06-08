@@ -1,4 +1,42 @@
+import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join as pathJoin } from "node:path";
+import { randomUUID } from "node:crypto";
+
 export type ExecFn = (cmd: string) => Promise<string>;
+
+/**
+ * Injectable file/buffer operations for the large-payload `sendText` path.
+ * Split out so tests can observe temp-file writes and unique-name generation
+ * without touching the real filesystem; production wires node fs + os.tmpdir.
+ */
+export interface TmuxFileOps {
+  writeFile(path: string, content: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+  /** Unique temp-file path per call - parallel `rig up` stands up many seats. */
+  tmpName(): string;
+  /** Unique tmux buffer name per call - a fixed name would collide under concurrency. */
+  bufferName(): string;
+}
+
+function defaultTmuxFileOps(): TmuxFileOps {
+  return {
+    writeFile: (p, content) => fsWriteFile(p, content, "utf8"),
+    unlink: (p) => fsUnlink(p),
+    tmpName: () => pathJoin(tmpdir(), `openrig-tmux-send-${process.pid}-${randomUUID()}.txt`),
+    bufferName: () => `openrig_${process.pid}_${randomUUID().replace(/-/g, "")}`,
+  };
+}
+
+/**
+ * Payloads at or below this byte size go through the inline `send-keys -l`
+ * path. Larger payloads are written to a temp file and delivered via a tmux
+ * paste-buffer: a multi-hundred-KB startup pack embedded in one argv exceeds
+ * the OS per-arg limit (Linux MAX_ARG_STRLEN is about 128KB) and the launch
+ * silently fails. 100KB stays clear of that ceiling while leaving normal
+ * command/control text on the unchanged inline path.
+ */
+const LARGE_PAYLOAD_THRESHOLD_BYTES = 100 * 1024;
 
 export type TmuxResult =
   | { ok: true }
@@ -139,7 +177,7 @@ function parseLines<T>(output: string, parser: (line: string) => T | null): T[] 
 }
 
 export class TmuxAdapter {
-  constructor(private exec: ExecFn) {}
+  constructor(private exec: ExecFn, private fileOps: TmuxFileOps = defaultTmuxFileOps()) {}
 
   async listSessions(): Promise<TmuxSession[]> {
     try {
@@ -206,12 +244,57 @@ export class TmuxAdapter {
   }
 
   async sendText(target: string, text: string): Promise<TmuxResult> {
+    if (Buffer.byteLength(text, "utf8") > LARGE_PAYLOAD_THRESHOLD_BYTES) {
+      return this.sendTextViaBuffer(target, text);
+    }
     const cmd = `tmux send-keys -t ${shellQuote(target)} -l ${shellQuote(text)}`;
     try {
       await this.exec(cmd);
       return { ok: true };
     } catch (err) {
       return classifyWriteError(err);
+    }
+  }
+
+  /**
+   * Large-payload delivery path (the point of this transport change): a
+   * >100KB startup pack must NOT be embedded in a tmux/shell argv. The text is
+   * written to a unique temp file via Node fs (never shell-embedded), loaded
+   * into a unique tmux buffer, and pasted with `-d -r`:
+   *   `-r`  preserve raw LF. tmux's default paste-buffer replaces every LF with
+   *         CR, and CR (= `C-m` = Enter) is SUBMIT in the Claude/Codex TUIs - a
+   *         default paste of a multi-line pack would submit on every newline.
+   *   `-d`  drop the buffer after a successful paste.
+   * The single trailing submit stays the caller's separate `sendKeys(["C-m"])`,
+   * exactly as the inline `send-keys -l` path relies on (behavior-preserving).
+   * Cleanup unlinks the temp file in `finally`; if the buffer was loaded but the
+   * paste failed (e.g. missing target), an explicit `delete-buffer` runs so no
+   * buffer leaks. Unique temp + buffer names per call keep parallel `rig up`
+   * seats from colliding.
+   */
+  private async sendTextViaBuffer(target: string, text: string): Promise<TmuxResult> {
+    const path = this.fileOps.tmpName();
+    const buffer = this.fileOps.bufferName();
+    let bufferLoaded = false;
+    try {
+      await this.fileOps.writeFile(path, text);
+      await this.exec(`tmux load-buffer -b ${shellQuote(buffer)} ${shellQuote(path)}`);
+      bufferLoaded = true;
+      await this.exec(`tmux paste-buffer -t ${shellQuote(target)} -b ${shellQuote(buffer)} -d -r`);
+      return { ok: true };
+    } catch (err) {
+      if (bufferLoaded) {
+        // paste failed after load - `-d` never ran, so the buffer is still
+        // resident. Best-effort delete to avoid leaking it.
+        try {
+          await this.exec(`tmux delete-buffer -b ${shellQuote(buffer)}`);
+        } catch { /* best-effort cleanup */ }
+      }
+      return classifyWriteError(err);
+    } finally {
+      try {
+        await this.fileOps.unlink(path);
+      } catch { /* best-effort cleanup */ }
     }
   }
 
