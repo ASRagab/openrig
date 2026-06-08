@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { NodeLifecycleState, RigLifecycleState } from "./types.js";
 import { getNodeInventory } from "./node-inventory.js";
+import { archiveWhereClause, type RigArchiveFilter } from "./rig-repository.js";
 import type { SeatActivityService } from "./seat-activity-service.js";
 
 export interface PsEntry {
@@ -38,6 +39,10 @@ export interface PsEntry {
   lifecycleState: RigLifecycleState;
   uptime: string | null;
   latestSnapshot: string | null;
+  /** OPR.0.3.3.19 - ISO timestamp when the rig was archived, or null if active. */
+  archivedAt: string | null;
+  /** OPR.0.3.3.19 - convenience flag; true iff `archivedAt !== null`. */
+  isArchived: boolean;
 }
 
 /**
@@ -84,11 +89,16 @@ export class PsProjectionService {
     this.seatActivity = deps.seatActivity ?? null;
   }
 
-  getEntries(): PsEntry[] {
+  getEntries(filter?: RigArchiveFilter): PsEntry[] {
+    // OPR.0.3.3.19 - default excludes archived rigs at the projection layer
+    // (NOT client-side). Explicit includeArchived/archivedOnly opt in.
+    const cond = archiveWhereClause("r.archived_at", filter);
+    const where = cond ? `WHERE ${cond}` : "";
     const rows = this.db.prepare(`
       SELECT
         r.id as rig_id,
         r.name,
+        r.archived_at as archived_at,
         (SELECT COUNT(*) FROM nodes n WHERE n.rig_id = r.id) as node_count,
         (SELECT COUNT(*) FROM nodes n WHERE n.rig_id = r.id AND
           (SELECT status FROM sessions s WHERE s.node_id = n.id ORDER BY s.created_at DESC, s.id DESC LIMIT 1) = 'running'
@@ -100,10 +110,12 @@ export class PsProjectionService {
         ) as earliest_running_at,
         (SELECT snap.created_at FROM snapshots snap WHERE snap.rig_id = r.id ORDER BY snap.created_at DESC, snap.id DESC LIMIT 1) as latest_snapshot_at
       FROM rigs r
+      ${where}
       ORDER BY r.name
     `).all() as Array<{
       rig_id: string;
       name: string;
+      archived_at: string | null;
       node_count: number;
       running_count: number;
       earliest_running_at: string | null;
@@ -156,6 +168,8 @@ export class PsProjectionService {
         lifecycleState,
         uptime: r.earliest_running_at ? formatDuration(now - new Date(r.earliest_running_at + "Z").getTime()) : null,
         latestSnapshot: r.latest_snapshot_at ? formatAge(now - new Date(r.latest_snapshot_at + "Z").getTime()) : null,
+        archivedAt: r.archived_at,
+        isArchived: r.archived_at !== null,
       };
     });
   }

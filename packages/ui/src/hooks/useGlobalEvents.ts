@@ -33,6 +33,17 @@ export function useGlobalEvents(): void {
         pendingInvalidations.add("ps");
         pendingInvalidations.add(`rig:${rigId}:nodes`);
       }
+      // OPR.0.3.3.19 (AC-7): archive/unarchive move a rig between the default
+      // view and the per-host Archive section. Refetch BOTH the default summary
+      // AND the archived-only summary (a separate query key) plus ps, so a CLI
+      // or other-browser archive/unarchive updates a mounted UI reactively
+      // instead of going stale until manual reload.
+      if (type === "rig.archived" || type === "rig.unarchived") {
+        pendingInvalidations.add("rigs:summary");
+        pendingInvalidations.add("rigs:summary:archived");
+        pendingInvalidations.add("ps");
+        if (rigId) pendingInvalidations.add(`rig:${rigId}:nodes`);
+      }
 
       // Schedule flush
       if (debounceRef.current) return; // Already scheduled
@@ -43,6 +54,12 @@ export function useGlobalEvents(): void {
         for (const key of pendingInvalidations) {
           if (key === "rigs:summary") {
             queryClient.invalidateQueries({ queryKey: ["rigs", "summary"] });
+          } else if (key === "rigs:summary:archived") {
+            // OPR.0.3.3.19: the Archive section's archived-only query (see
+            // useArchivedRigs, queryKey ["rigs","summary","archived"]).
+            // Invalidated explicitly so it refetches even though the broader
+            // ["rigs","summary"] prefix invalidation would also cover it.
+            queryClient.invalidateQueries({ queryKey: ["rigs", "summary", "archived"] });
           } else if (key === "ps") {
             queryClient.invalidateQueries({ queryKey: ["ps"] });
           } else if (key.startsWith("rig:")) {

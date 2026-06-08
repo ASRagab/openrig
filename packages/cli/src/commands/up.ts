@@ -140,6 +140,54 @@ Examples:
         }
         return rigSummariesCache;
       };
+      // OPR.0.3.3.19 (AC-7): archived rigs are excluded from default `rig up`
+      // name resolution. If <source> matches ONLY an archived rig (no active
+      // rig of that name), refuse with an honest error pointing at
+      // `rig unarchive` - never silently restore an archived rig, never
+      // silently fall through. Applies to both default and --existing paths.
+      if (isRigName) {
+        const activeSummaries = await fetchRigSummaries();
+        const activeMatch = activeSummaries.some((r) => r.name === source);
+        if (!activeMatch) {
+          try {
+            const archRes = await client.get<Array<{ id: string; name: string }>>(
+              "/api/rigs/summary?archived=only",
+            );
+            const archivedMatches = (archRes.data ?? []).filter((r) => r.name === source);
+            if (archivedMatches.length > 0) {
+              // `rig unarchive` resolves by rig ID, not name (it posts to
+              // /api/rigs/<rigId>/unarchive), so the remediation MUST name the
+              // id - telling the operator `rig unarchive <name>` would 404. If
+              // the name is ambiguous across multiple archived rigs, surface the
+              // id list rather than guessing a single target.
+              const ids = archivedMatches.map((r) => r.id);
+              if (opts.json) {
+                console.log(JSON.stringify({
+                  error: "rig_archived",
+                  rig: source,
+                  archivedRigIds: ids,
+                  action: ids.length === 1
+                    ? `rig unarchive ${ids[0]}`
+                    : `rig unarchive <rigId> (archived rigs named '${source}': ${ids.join(", ")})`,
+                }));
+              } else if (ids.length === 1) {
+                console.error(`Rig "${source}" is archived, so it is hidden from 'rig up' name resolution.`);
+                console.error(`  Bring it back first: rig unarchive ${ids[0]}`);
+                console.error(`  Then power it on:    rig up ${source}`);
+              } else {
+                console.error(`${ids.length} archived rigs are named "${source}"; they are hidden from 'rig up' name resolution.`);
+                console.error(`  Unarchive the one you want by id (then 'rig up'):`);
+                for (const id of ids) console.error(`    rig unarchive ${id}`);
+              }
+              process.exitCode = 1;
+              return;
+            }
+          } catch {
+            // Archived-summary probe failed (e.g. older daemon) - fall through
+            // to normal resolution; there are no archive semantics to enforce.
+          }
+        }
+      }
       if (isRigName && !opts.existing) {
         try {
           const { resolveLibrarySpec } = await import("./specs.js");

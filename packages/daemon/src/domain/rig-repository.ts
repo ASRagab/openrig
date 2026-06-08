@@ -51,6 +51,29 @@ export function findLatestUsableSnapshot(db: Database.Database, rigId: string): 
   };
 }
 
+/**
+ * OPR.0.3.3.19 - rig archive read filter. Default daemon reads EXCLUDE archived
+ * rigs; explicit modes opt in. Mirrors the stream-items `--include-archived`
+ * precedent (stream-store.list).
+ */
+export interface RigArchiveFilter {
+  /** include both active and archived rigs */
+  includeArchived?: boolean;
+  /** return ONLY archived rigs */
+  archivedOnly?: boolean;
+}
+
+/**
+ * SQL condition fragment for the archive filter on a column (e.g. "archived_at"
+ * or the aliased "r.archived_at"). Returns null when no filter applies
+ * (includeArchived = include everything). Default (no filter) excludes archived.
+ */
+export function archiveWhereClause(col: string, filter?: RigArchiveFilter): string | null {
+  if (filter?.archivedOnly) return `${col} IS NOT NULL`;
+  if (filter?.includeArchived) return null;
+  return `${col} IS NULL`;
+}
+
 interface NodeOptions {
   role?: string;
   runtime?: string;
@@ -243,9 +266,11 @@ export class RigRepository {
     };
   }
 
-  listRigs(): Rig[] {
+  listRigs(filter?: RigArchiveFilter): Rig[] {
+    const cond = archiveWhereClause("archived_at", filter);
+    const where = cond ? `WHERE ${cond}` : "";
     const rows = this.db
-      .prepare("SELECT * FROM rigs ORDER BY created_at")
+      .prepare(`SELECT * FROM rigs ${where} ORDER BY created_at`)
       .all() as RigRow[];
     return rows.map((r) => this.rowToRig(r));
   }
@@ -266,11 +291,14 @@ export class RigRepository {
     return rows.map((r) => this.rowToRig(r));
   }
 
-  getRigSummaries(): Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null; hasServices: boolean }> {
+  getRigSummaries(filter?: RigArchiveFilter): Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null; hasServices: boolean; archivedAt: string | null }> {
+    const cond = archiveWhereClause("r.archived_at", filter);
+    const where = cond ? `WHERE ${cond}` : "";
     const rows = this.db.prepare(`
       SELECT
         r.id,
         r.name,
+        r.archived_at AS archived_at,
         (SELECT COUNT(*) FROM nodes n WHERE n.rig_id = r.id) AS node_count,
         EXISTS(SELECT 1 FROM rig_services rs WHERE rs.rig_id = r.id) AS has_services,
         ls.id AS latest_snapshot_id,
@@ -282,8 +310,9 @@ export class RigRepository {
         ORDER BY s2.created_at DESC, s2.id DESC
         LIMIT 1
       )
+      ${where}
       ORDER BY r.created_at
-    `).all() as Array<{ id: string; name: string; node_count: number; has_services: number; latest_snapshot_id: string | null; latest_snapshot_at: string | null }>;
+    `).all() as Array<{ id: string; name: string; archived_at: string | null; node_count: number; has_services: number; latest_snapshot_id: string | null; latest_snapshot_at: string | null }>;
 
     return rows.map((r) => ({
       id: r.id,
@@ -292,7 +321,28 @@ export class RigRepository {
       hasServices: r.has_services === 1,
       latestSnapshotAt: r.latest_snapshot_at,
       latestSnapshotId: r.latest_snapshot_id,
+      archivedAt: r.archived_at,
     }));
+  }
+
+  /**
+   * OPR.0.3.3.19 - soft-archive a rig: sets `archived_at`. The rigs row,
+   * topology rows, and snapshots are all RETAINED (this is NOT the delete
+   * path - contrast deleteRig). Returns false if the rig was already archived.
+   */
+  archiveRig(rigId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE rigs SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL")
+      .run(rigId);
+    return result.changes > 0;
+  }
+
+  /** OPR.0.3.3.19 - reverse archive: clears `archived_at`. Returns false if not archived. */
+  unarchiveRig(rigId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE rigs SET archived_at = NULL, updated_at = datetime('now') WHERE id = ? AND archived_at IS NOT NULL")
+      .run(rigId);
+    return result.changes > 0;
   }
 
   deleteRig(rigId: string): void {
