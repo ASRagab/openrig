@@ -131,6 +131,9 @@ export type RigEvent =
   | { type: "bundle.created"; bundleName: string; bundleVersion: string; archiveHash: string }
   // Teardown events
   | { type: "rig.stopped"; rigId: string }
+  // OPR.0.3.3.19 - rig archive affordance (soft, reversible; NOT a delete)
+  | { type: "rig.archived"; rigId: string }
+  | { type: "rig.unarchived"; rigId: string }
   // AgentSpec reboot events — pods + startup + continuity
   | { type: "pod.created"; rigId: string; podId: string; namespace: string; label: string }
   | { type: "pod.deleted"; rigId: string; podId: string }

@@ -159,7 +159,10 @@ function getSelfAttachService(c: { get: (key: string) => unknown }): SelfAttachS
 // GET /api/rigs/summary — MUST be registered before /:id to avoid Hono resolving "summary" as a rig ID
 rigsRoutes.get("/summary", (c) => {
   const repo = getRepo(c);
-  const summaries = repo.getRigSummaries();
+  // OPR.0.3.3.19 - default excludes archived; ?includeArchived=true / ?archived=only opt in.
+  const includeArchived = c.req.query("includeArchived") === "true";
+  const archivedOnly = c.req.query("archived") === "only";
+  const summaries = repo.getRigSummaries({ includeArchived, archivedOnly });
   // Enrich with rig-level lifecycleState so CLI surfaces (rig up wording, recover vs
   // turn-on) can choose the right operator action without a second round trip.
   const enriched = summaries.map((s) => {
@@ -181,7 +184,10 @@ rigsRoutes.post("/", async (c) => {
 });
 
 rigsRoutes.get("/", (c) => {
-  const rigs = getRepo(c).listRigs();
+  // OPR.0.3.3.19 - default excludes archived; ?includeArchived=true / ?archived=only opt in.
+  const includeArchived = c.req.query("includeArchived") === "true";
+  const archivedOnly = c.req.query("archived") === "only";
+  const rigs = getRepo(c).listRigs({ includeArchived, archivedOnly });
   return c.json(rigs);
 });
 
@@ -293,6 +299,69 @@ rigsRoutes.delete("/:id", (c) => {
   } catch (err) {
     return c.json({ error: "delete failed" }, 500);
   }
+});
+
+// OPR.0.3.3.19 - POST /api/rigs/:id/archive - soft, reversible archive (NOT delete).
+// The rigs row + topology rows + snapshots are RETAINED; only `archived_at` is set.
+rigsRoutes.post("/:id/archive", async (c) => {
+  const rigId = c.req.param("id");
+  const repo = getRepo(c);
+  const eventBus = c.get("eventBus" as never) as EventBus;
+  const rig = repo.getRig(rigId);
+  if (!rig) {
+    return c.json({ error: "rig not found" }, 404);
+  }
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const force = body["force"] === true;
+
+  // AC-6 running-rig guard (daemon-layer, so every client inherits it): a
+  // running/degraded rig requires --force, with a 3-part honest error.
+  const inventory = getNodeInventory(repo.db, rigId);
+  const lifecycleState = deriveRigLifecycleState(inventory.map((e) => e.lifecycleState));
+  if ((lifecycleState === "running" || lifecycleState === "degraded") && !force) {
+    return c.json({
+      error: {
+        fact: `Rig '${rig.rig.name}' is ${lifecycleState} (it has live sessions).`,
+        consequence: "Archiving it would hide a rig with running seats from the default view.",
+        action: `Stop it first ('rig down ${rigId}'), or re-run with --force to archive anyway.`,
+      },
+    }, 409);
+  }
+
+  const result = eventBus.db.transaction(() => {
+    const changed = repo.archiveRig(rigId);
+    const persisted = changed
+      ? eventBus.persistWithinTransaction({ type: "rig.archived", rigId })
+      : null;
+    return { changed, persisted };
+  })();
+
+  try {
+    if (result.persisted) eventBus.notifySubscribers(result.persisted);
+    return c.json({ ok: true, rigId, archived: result.changed });
+  } catch {
+    return c.json({ error: "archive failed" }, 500);
+  }
+});
+
+// OPR.0.3.3.19 - POST /api/rigs/:id/unarchive - reverse the archive flag.
+rigsRoutes.post("/:id/unarchive", (c) => {
+  const rigId = c.req.param("id");
+  const repo = getRepo(c);
+  const eventBus = c.get("eventBus" as never) as EventBus;
+  const rig = repo.getRig(rigId);
+  if (!rig) {
+    return c.json({ error: "rig not found" }, 404);
+  }
+  const result = eventBus.db.transaction(() => {
+    const changed = repo.unarchiveRig(rigId);
+    const persisted = changed
+      ? eventBus.persistWithinTransaction({ type: "rig.unarchived", rigId })
+      : null;
+    return { changed, persisted };
+  })();
+  if (result.persisted) eventBus.notifySubscribers(result.persisted);
+  return c.json({ ok: true, rigId, unarchived: result.changed });
 });
 
 // POST /api/rigs/:id/release — non-destructive release of claimed sessions
