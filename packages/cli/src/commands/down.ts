@@ -16,8 +16,75 @@ interface TeardownResult {
 
 const LONG_RUNNING_TIMEOUT_MS = 45_000;
 
+interface RigSummaryEntry {
+  id: string;
+  name: string;
+  lifecycleState?: string;
+}
+
 /**
- * `rig down <rigId>` — tear down a rig.
+ * Outcome of resolving a `rig down <rig>` handle (name OR id) to a concrete id.
+ * The destructive teardown only ever runs on a `resolved`/`passthrough` id;
+ * `ambiguous`/`not_found` halt BEFORE any `/api/down` POST.
+ */
+type HandleResolution =
+  | { kind: "resolved"; id: string }
+  | { kind: "ambiguous"; name: string; ids: string[] }
+  | { kind: "not_found"; handle: string }
+  // Summary unavailable (non-200 / fetch error): fall back to today's id-only
+  // behavior - POST the raw handle as the id and let the daemon resolve it by
+  // exact id (404 if absent). Safe: the daemon matches a single exact id, so a
+  // name posted this way cannot tear down the wrong rig.
+  | { kind: "passthrough"; handle: string };
+
+/**
+ * Resolve a `rig down` handle (rig name OR id) to a concrete rig id, mirroring
+ * the `/api/rigs/summary` path `rig up` uses. Resolution is a PRE-STEP: the
+ * existing teardown + guards downstream are unchanged; this only maps the
+ * handle to an id.
+ *
+ * Safety order (destructive-op):
+ *  1. id-exact-match FIRST - an id is unique, so it is never ambiguous.
+ *  2. else name-filter over the summary candidate set:
+ *     - exactly 1 match  -> resolve to that id;
+ *     - >1 matches       -> AMBIGUOUS: halt, never guess (load-bearing AC-3);
+ *     - 0 matches        -> NOT_FOUND: halt, honest error (AC-4).
+ *
+ * Note: `/api/rigs/summary` includes archived rigs and exposes no archived flag
+ * (rig-repository.ts getRigSummaries has no archived_at filter), so the >1-match
+ * halt is strictly fail-safe and also halts a rare active+archived same-name
+ * pair (forcing id use) rather than risk guessing.
+ */
+async function resolveRigHandle(client: DaemonClient, handle: string): Promise<HandleResolution> {
+  let summaries: RigSummaryEntry[];
+  try {
+    const res = await client.get<RigSummaryEntry[]>("/api/rigs/summary");
+    if (res.status !== 200 || !Array.isArray(res.data)) {
+      return { kind: "passthrough", handle };
+    }
+    summaries = res.data;
+  } catch {
+    return { kind: "passthrough", handle };
+  }
+
+  // 1. id-exact-match first (AC-2: down by id, unchanged; ids are never ambiguous).
+  if (summaries.some((r) => r.id === handle)) {
+    return { kind: "resolved", id: handle };
+  }
+
+  // 2. name-filter (AC-1 / AC-3 / AC-4).
+  const nameMatches = summaries.filter((r) => r.name === handle);
+  if (nameMatches.length === 1) {
+    return { kind: "resolved", id: nameMatches[0]!.id };
+  }
+  if (nameMatches.length > 1) {
+    return { kind: "ambiguous", name: handle, ids: nameMatches.map((r) => r.id) };
+  }
+  return { kind: "not_found", handle };
+}
+
+/**
+ * `rig down <rig>` - tear down a rig by name or id.
  * @param depsOverride - injectable deps for testing
  * @returns Commander command
  */
@@ -26,12 +93,12 @@ export function downCommand(depsOverride?: StatusDeps): Command {
   const getDepsF = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   cmd
-    .argument("<rigId>", "Rig identifier to tear down")
+    .argument("<rig>", "Rig name or id to tear down")
     .option("--delete", "Delete rig record after stopping")
     .option("--force", "Kill sessions immediately")
     .option("--snapshot", "Take snapshot before teardown")
     .option("--json", "JSON output for agents")
-    .action(async (rigId: string, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean }) => {
+    .action(async (rigHandle: string, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean }) => {
       const deps = getDepsF();
 
       const status = await getDaemonStatus(deps.lifecycleDeps);
@@ -42,6 +109,46 @@ export function downCommand(depsOverride?: StatusDeps): Command {
       }
 
       const client = deps.clientFactory(getDaemonUrl(status));
+
+      // Resolve the handle (name OR id) to a concrete id BEFORE the teardown POST.
+      // Ambiguous/not-found halt here and never reach `/api/down` - for a
+      // destructive op, ambiguity must stop, never guess (AC-3 load-bearing).
+      const resolution = await resolveRigHandle(client, rigHandle);
+
+      if (resolution.kind === "ambiguous") {
+        const fact = `'${resolution.name}' matches ${resolution.ids.length} rigs.`;
+        const consequence = "Refusing to tear down: an ambiguous name could destroy the wrong rig.";
+        const action = `Re-run with the specific id, e.g. ${resolution.ids.map((id) => `rig down ${id}`).join("  |  ")}`;
+        if (opts.json) {
+          console.log(JSON.stringify({ error: { fact, consequence, action, candidates: resolution.ids } }));
+        } else {
+          console.error(`Error: ${fact}`);
+          console.error(`  ${consequence}`);
+          console.error(`  ${action}`);
+        }
+        process.exitCode = 2;
+        return;
+      }
+
+      if (resolution.kind === "not_found") {
+        const fact = `No rig found matching '${resolution.handle}'.`;
+        const consequence = "Nothing was torn down.";
+        const action = "List rigs with: rig ps";
+        if (opts.json) {
+          console.log(JSON.stringify({ error: { fact, consequence, action } }));
+        } else {
+          console.error(`Error: ${fact}`);
+          console.error(`  ${consequence}`);
+          console.error(`  ${action}`);
+        }
+        process.exitCode = 2;
+        return;
+      }
+
+      // resolved -> the looked-up id; passthrough -> the raw handle (summary
+      // unavailable; daemon resolves by exact id, 404s if absent). Either way
+      // the SAME existing teardown path + guards run below - no forked path.
+      const rigId = resolution.kind === "resolved" ? resolution.id : resolution.handle;
 
       const res = await client.post<TeardownResult | { error: string }>("/api/down", {
         rigId,
