@@ -317,7 +317,6 @@ skills:
   velocity-team-shared:
     - send
   vm-e2e:
-    - --version
     - capture
     - daemon
     - daemon start
