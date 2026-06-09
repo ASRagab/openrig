@@ -25,7 +25,7 @@ is no magic one-command onboarding; each step is a real, inspectable verb.
    `~/.openrig/workspace/` unless you override `workspace.root` (env or config).
 5. **`rig workflow instantiate <name>`** - start a workflow runtime instance by
    its **discovered name** (e.g. `conveyor`, `basic-loop`) - no hidden file path
-   needed. `rig workflow list` shows the seeded built-ins. Instantiating creates a
+   needed. `rig workflow specs` shows the seeded built-ins. Instantiating creates a
    workflow instance and its first **entry qitem**.
 6. **`rig scope ...`** - browse and manage the durable mission/slice artifacts the
    workflow coordinates (see the scope <-> workflow bridge below).

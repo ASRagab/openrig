@@ -611,7 +611,7 @@ export function goldenPathNextSteps(): string[] {
     "  1. rig up <rig-spec>                Launch a rig (auto-starts the daemon; the kernel boots on daemon-start)",
     "  2. rig status                       See daemon port, kernel readiness, and your effective workspace root",
     "  3. rig workspace doctor             Check your workspace is ready",
-    "  4. rig workflow instantiate <name>  Start a workflow by its discovered name (e.g. conveyor); 'rig workflow list' shows built-ins",
+    "  4. rig workflow instantiate <name>  Start a workflow by its discovered name (e.g. conveyor); 'rig workflow specs' shows built-ins",
     "  5. rig scope ...                    Browse the durable mission/slice artifacts the workflow coordinates",
   ];
 }

@@ -224,6 +224,11 @@ describe("rig setup", () => {
     expect(out).toContain("docs/reference/getting-started.md");
     // no magic mega-command - the path is existing verbs only
     expect(out).not.toMatch(/rig (journey|onboarding)\b/);
+    // built-in discovery surface is `rig workflow specs` (lists registered specs,
+    // built-ins tagged "(built-in)"), NOT `rig workflow list` (lists instances) -
+    // the path must point a fresh operator at the right discovery command.
+    expect(out).toContain("rig workflow specs");
+    expect(out).not.toContain("rig workflow list");
   });
 
   it("fails setup honestly when tmux is installed but the default control socket is unhealthy", async () => {
