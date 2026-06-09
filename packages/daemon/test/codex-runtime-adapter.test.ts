@@ -891,6 +891,100 @@ describe("Codex runtime adapter", () => {
     if (!result.ok) expect(result.recovery).toBe("attention_required");
   });
 
+  // OPR.0.3.3.21 FR-2 — honest restore gate. verifyResumeLaunch must NOT return
+  // launch success when the probe only proves process-alive on an UNRESOLVED
+  // gate. Before this slice these all returned { ok: true } (the 04.3
+  // bootstrap_failed advisory). Each test below FAILS against that old behavior.
+
+  // THE LOAD-BEARING DISCRIMINATOR (the 04.3 Codex update-flow scenario): an
+  // update gate that cannot be auto-dismissed must classify as attention_required,
+  // not launch success on process-alive alone.
+  it("FR-2 DISCRIMINATOR: resume on an unresolved Codex update gate returns attention_required, not ok:true", async () => {
+    const updateGate = [
+      "✨ Update available! 0.120.0 -> 0.121.0",
+      "Updating Codex...",
+    ].join("\n"); // no 'Skip until next version' option -> not auto-dismissable
+    const tmux = mockTmux({
+      getPaneCommand: vi.fn(async () => "node"),
+      capturePaneContent: vi.fn(async () => updateGate), // stays gated every poll
+    });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig", resumeToken: "sess-456" });
+
+    expect(result.ok).toBe(false); // fails against the pre-fix ok:true-on-gate behavior
+    if (!result.ok) {
+      expect(result.recovery).toBe("attention_required");
+      expect(result.error).toContain("process-alive alone is not proof");
+      expect(result.evidence).toContain("Update available");
+    }
+  });
+
+  it("FR-2: resume on an unresolved Codex trust gate returns attention_required, not ok:true", async () => {
+    const trustGate = [
+      "Do you trust the contents of this directory?",
+      "› 1. Yes, continue",
+      "  2. No, exit",
+    ].join("\n");
+    const tmux = mockTmux({
+      getPaneCommand: vi.fn(async () => "codex"),
+      capturePaneContent: vi.fn(async () => trustGate),
+    });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig", resumeToken: "sess-456" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.recovery).toBe("attention_required");
+      expect(result.error.toLowerCase()).toContain("trust");
+    }
+  });
+
+  it("FR-2: resume on an unresolved Codex model-selection gate returns attention_required, not ok:true", async () => {
+    const modelGate = [
+      "Select a model to continue:",
+      "› 1. gpt-5.1-codex",
+      "  2. gpt-5.1-codex-mini",
+    ].join("\n");
+    const tmux = mockTmux({
+      getPaneCommand: vi.fn(async () => "codex"),
+      capturePaneContent: vi.fn(async () => modelGate),
+    });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig", resumeToken: "sess-456" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.recovery).toBe("attention_required");
+      expect(result.error.toLowerCase()).toContain("model selection");
+    }
+  });
+
+  it("FR-2: resume that never proves `resumed` within the bounded poll returns attention_required, not ok:true", async () => {
+    // Process alive but not yet the foreground runtime, no explicit gate -> the
+    // probe stays `inconclusive`; the old fallthrough laundered this to ok:true.
+    const tmux = mockTmux({
+      getPaneCommand: vi.fn(async () => "node"),
+      capturePaneContent: vi.fn(async () => "spawning codex worker..."),
+    });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig", resumeToken: "sess-456" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.recovery).toBe("attention_required");
+      expect(result.evidence).toBeDefined();
+    }
+  });
+
+  // Guard against breaking the working auto-dismiss: a skippable update gate
+  // still auto-dismisses and continues to success (covered end-to-end by
+  // "launchHarness skips the non-mutating Codex update prompt during resume
+  // verification" above) — only UNRESOLVED gates fail loudly.
+
   it("deliverStartup pre-seeds Codex trust for the managed project", async () => {
     const fs = mockFs({});
     const fsWithHome = { ...fs, homedir: "/home/tester" };

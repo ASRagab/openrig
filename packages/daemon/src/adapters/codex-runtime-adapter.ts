@@ -17,7 +17,7 @@ import {
   readCodexThreadIdFromCandidateHomes,
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
-import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { assessNativeResumeProbe, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { shellQuote } from "./shell-quote.js";
 
@@ -503,9 +503,21 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private async verifyResumeLaunch(tmuxSession: string): Promise<HarnessLaunchResult> {
     const attempts = 6;
 
+    // OPR.0.3.3.21 (FR-2): process-alive is NOT proof of a restored
+    // conversation. verifyResumeLaunch must NOT return ok:true unless the probe
+    // proves `resumed`. Unresolved operator-action gates (update/trust/model)
+    // and a bounded poll that never reaches `resumed` are `attention_required`,
+    // not launch success. The readiness loop (checkReady) remains the SECOND
+    // check that upgrades the seat to ready once it genuinely reaches the TUI.
+    // We remember the most recent unresolved gate so the poll-exhaustion path
+    // surfaces an honest reason instead of laundering inconclusive into ok:true.
+    let lastUnresolved: NativeResumeProbeResult | null = null;
+    let lastPaneContent = "";
+
     for (let attempt = 0; attempt < attempts; attempt++) {
       const paneCommand = await this.tmux.getPaneCommand(tmuxSession);
       const paneContent = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
+      lastPaneContent = paneContent;
       const probe = assessNativeResumeProbe({
         runtime: "codex",
         paneCommand,
@@ -547,18 +559,24 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
 
       if (probe.code === "update_gate") {
+        // Preserve the working auto-dismiss: a skippable update we CAN dismiss
+        // clears the gate and we keep polling toward `resumed`. An update gate
+        // we cannot dismiss stays unresolved and fails loudly after the poll.
         const dismissed = await this.dismissSkippableCodexUpdatePrompt(tmuxSession, 1);
         if (dismissed) {
+          lastUnresolved = null;
           if (attempt < attempts - 1) {
             await this.sleep(200);
           }
           continue;
         }
-        return { ok: true };
-      }
-
-      if (probe.code === "trust_gate") {
-        return { ok: true };
+        lastUnresolved = probe;
+      } else if (probe.status === "inconclusive") {
+        // trust_gate / model_selection_gate (operator-action — won't self-resolve)
+        // and awaiting_runtime (transient — may still reach `resumed`). Keep
+        // polling within bounded boot, but remember it so we fail honestly if
+        // the poll exhausts without ever proving a restored conversation.
+        lastUnresolved = probe;
       }
 
       if (attempt < attempts - 1) {
@@ -566,7 +584,16 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { ok: true };
+    // Bounded poll exhausted without ever observing `resumed`. Honor the probe's
+    // inconclusive result as attention_required (operator action required) —
+    // never launch success on process-alive alone.
+    return {
+      ok: false,
+      error: lastUnresolved?.detail
+        ?? "Codex resume could not be confirmed: the process is alive but a restored conversation was never proven.",
+      recovery: "attention_required",
+      evidence: lastPaneContent.split("\n").slice(-12).join("\n"),
+    };
   }
 
   private findCodexDescendantPids(parentPid: number): number[] {
