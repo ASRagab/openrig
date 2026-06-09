@@ -43,7 +43,11 @@ function captureLogs(fn: () => Promise<void>): Promise<string[]> {
 }
 
 // Echo server for daemon API
-function createDaemonServer(summaryData: unknown[], cmuxStatus: unknown) {
+function createDaemonServer(
+  summaryData: unknown[],
+  cmuxStatus: unknown,
+  kernelStatus?: { code: number; body: unknown },
+) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url!, "http://localhost");
 
@@ -55,6 +59,12 @@ function createDaemonServer(summaryData: unknown[], cmuxStatus: unknown) {
     if (url.pathname === "/api/adapters/cmux/status") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(cmuxStatus));
+      return;
+    }
+    if (url.pathname === "/api/kernel/status") {
+      const k = kernelStatus ?? { code: 200, body: { kernel_state: "ready" } };
+      res.writeHead(k.code, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(k.body));
       return;
     }
     if (url.pathname === "/healthz") {
@@ -127,6 +137,64 @@ describe("rig status", () => {
       expect(output).toContain("1");
       // Must include snapshot age info
       expect(output).toMatch(/snapshot:/i);
+    });
+  });
+
+  // OPR.0.3.3.04.2 (AC-2): state clarity - daemon port, kernel readiness
+  // (distinct from daemon health), effective workspace root (default vs override).
+  describe("AC-2 state clarity (OPR.0.3.3.04.2)", () => {
+    let srv: ReturnType<typeof createDaemonServer>;
+    let port: number;
+    beforeAll(async () => {
+      srv = createDaemonServer([], { available: false }, { code: 200, body: { kernel_state: "ready" } });
+      port = await srv.listen();
+    });
+    afterAll(async () => { await srv.close(); });
+
+    function statusDeps(): StatusDeps {
+      return {
+        lifecycleDeps: mockLifecycleDeps({
+          exists: vi.fn((p: string) => p === STATE_FILE),
+          readFile: vi.fn((p: string) => (p === STATE_FILE ? JSON.stringify(runningState(port)) : null)),
+          fetch: vi.fn(async () => ({ ok: true })),
+        }),
+        clientFactory: (baseUrl) => new DaemonClient(baseUrl),
+      };
+    }
+
+    it("surfaces daemon port + kernel readiness (distinct from daemon health) + effective workspace root with its source", async () => {
+      const prev = process.env.OPENRIG_WORKSPACE_ROOT;
+      delete process.env.OPENRIG_WORKSPACE_ROOT; // not env-overridden in this case
+      try {
+        const program = new Command();
+        program.addCommand(statusCommand(statusDeps()));
+        const logs = await captureLogs(() => program.parseAsync(["node", "rig", "status"]));
+        const output = logs.join("\n");
+        expect(output).toMatch(/Daemon running on port \d+/);
+        expect(output).toContain("Kernel: ready");
+        expect(output).toContain("distinct from daemon health");
+        // the effective root is surfaced WITH whether it's default vs an override
+        // (host-independent: a host may legitimately carry a file-level override).
+        expect(output).toMatch(/Workspace root: .+ \((default|override via (env|file))\)/);
+      } finally {
+        if (prev === undefined) delete process.env.OPENRIG_WORKSPACE_ROOT;
+        else process.env.OPENRIG_WORKSPACE_ROOT = prev;
+      }
+    });
+
+    it("marks the workspace root as an override when OPENRIG_WORKSPACE_ROOT is set", async () => {
+      const prev = process.env.OPENRIG_WORKSPACE_ROOT;
+      process.env.OPENRIG_WORKSPACE_ROOT = process.cwd(); // a real existing dir
+      try {
+        const program = new Command();
+        program.addCommand(statusCommand(statusDeps()));
+        const logs = await captureLogs(() => program.parseAsync(["node", "rig", "status"]));
+        const output = logs.join("\n");
+        expect(output).toContain(`Workspace root: ${process.cwd()} (override via env)`);
+      } finally {
+        if (prev === undefined) delete process.env.OPENRIG_WORKSPACE_ROOT;
+        else process.env.OPENRIG_WORKSPACE_ROOT = prev;
+      }
     });
   });
 

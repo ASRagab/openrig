@@ -8,6 +8,7 @@ import {
   type LifecycleDeps,
 } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
+import { ConfigStore } from "../config-store.js";
 
 export interface StatusDeps {
   lifecycleDeps: LifecycleDeps;
@@ -52,13 +53,38 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
 
     const client = deps.clientFactory(getDaemonUrl(status));
 
-    // Fetch summary + cmux status
-    const [summaryRes, cmuxRes] = await Promise.all([
+    // Fetch summary + cmux + kernel readiness
+    const [summaryRes, cmuxRes, kernelRes] = await Promise.all([
       client.get<Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null }>>("/api/rigs/summary"),
       client.get<{ available: boolean }>("/api/adapters/cmux/status").catch(() => null),
+      client.get<{ kernel_state?: string; error?: string }>("/api/kernel/status").catch(() => null),
     ]);
 
     console.log(`Daemon running on port ${status.port}`);
+
+    // OPR.0.3.3.04.2 (AC-2): kernel readiness is a DISTINCT signal from daemon
+    // health - the kernel rig auto-boots on daemon-start, and a daemon can be up
+    // while the kernel is not yet ready (or a kernel agent is unhealthy). Surface
+    // it as "here's what's currently true," never as a guarantee that downstream
+    // agents are healthy.
+    if (kernelRes && kernelRes.status === 200 && kernelRes.data?.kernel_state) {
+      console.log(`Kernel: ${kernelRes.data.kernel_state} (boots on daemon-start; distinct from daemon health)`);
+    } else if (kernelRes && kernelRes.status === 503) {
+      console.log("Kernel: not tracked (no kernel-boot tracker wired)");
+    } else {
+      console.log("Kernel: unknown (status unavailable)");
+    }
+
+    // OPR.0.3.3.04.2 (AC-2 / gap #7): surface WHICH workspace root is effective
+    // and whether it is the default or an override - the operator never guesses.
+    // This reports what is currently live, NOT that any root is the right one.
+    try {
+      const resolved = new ConfigStore().resolveWithSource("workspace.root");
+      const origin = resolved.source === "default" ? "default" : `override via ${resolved.source}`;
+      console.log(`Workspace root: ${resolved.value} (${origin})`);
+    } catch {
+      // config resolution unavailable - omit rather than guess.
+    }
 
     if (summaryRes.status !== 200) {
       console.error(`Failed to fetch rig summary (HTTP ${summaryRes.status})`);
@@ -80,6 +106,13 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
     // cmux status
     const cmuxAvailable = cmuxRes?.data?.available ?? false;
     console.log(`cmux: ${cmuxAvailable ? "available" : "unavailable"}`);
+
+    // OPR.0.3.3.04.2 (AC-1): reinforcing HINT back to the one canonical ordered
+    // path - status does not re-author the sequence (that lives in `rig setup`
+    // next-steps + docs/reference/getting-started.md).
+    if (rigs.length === 0) {
+      console.log("\nNext: launch a rig with `rig up <rig-spec>`. Guided path: `rig setup` output or docs/reference/getting-started.md");
+    }
   });
 
   return cmd;
