@@ -345,6 +345,35 @@ export type LaunchMaterializedOutcome =
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "target_rig_not_found"; message: string };
 
+export interface AddMemberResult {
+  podId: string;
+  podNamespace: string;
+  node: {
+    logicalId: string;
+    nodeId: string;
+    status: "launched" | "failed" | "attention_required";
+    error?: string;
+    sessionName?: string;
+  };
+  warnings?: string[];
+}
+
+/**
+ * Outcome of the `add_member` converge op (OPR.0.3.3.24). Mirrors the
+ * MaterializeOutcome error vocabulary where it overlaps (validation_failed /
+ * preflight_failed) and adds the add-member-specific honest codes
+ * (rig_not_found / pod_not_found / member_conflict). Every failure carries a
+ * human-actionable message or error list (the 3-part honest-error contract that
+ * the converge interface surfaces to CLI + MCP).
+ */
+export type AddMemberOutcome =
+  | { ok: true; result: AddMemberResult }
+  | { ok: false; code: "rig_not_found"; message: string }
+  | { ok: false; code: "pod_not_found"; message: string }
+  | { ok: false; code: "member_conflict"; message: string }
+  | { ok: false; code: "validation_failed"; errors: string[] }
+  | { ok: false; code: "preflight_failed"; errors: string[]; warnings: string[] };
+
 /**
  * Pod-aware rig instantiator. Creates pods, nodes, edges, and runs
  * startup orchestration per node with resolved agent specs.
@@ -682,6 +711,154 @@ export class PodRigInstantiator {
       result: {
         nodes: nodeResults,
         warnings: podWarnings.length > 0 ? podWarnings : undefined,
+      },
+    };
+  }
+
+  /**
+   * add_member converge op (OPR.0.3.3.24): add a single MEMBER to an EXISTING
+   * pod in a live rig, composing the two extracted primitives — createMemberNode
+   * (create-node) + launchBinding (launch-binding) — WITHOUT createPod and
+   * WITHOUT fabricating a synthetic rig spec.
+   *
+   * Identity-migration-FREE: the new node mints a fresh node id + fresh logical
+   * id + fresh `@rigged_*` at launch; no existing seat's logical id,
+   * continuity_state, queue routing, or session is re-keyed. This is the
+   * source-visible fault line that lets add_member ship while move/fork wait for
+   * the 0.4.0 identity stack.
+   *
+   * Versus materialize: this does NOT call materializeValidatedSpec (which always
+   * createPods and carries the pod-exists conflict guard). It resolves the
+   * EXISTING pod's DB id via `podRepo.getPodByNamespace` and creates the one node
+   * directly under it. The pod-exists guard is lifted (adding to a live pod is
+   * not a conflict); the per-member duplicate-logical-id guard is KEPT (AC-3).
+   */
+  async addMemberToPod(
+    rigId: string,
+    podNamespace: string,
+    memberFragment: Record<string, unknown>,
+    rigRoot: string,
+    opts?: { cwdOverride?: string },
+  ): Promise<AddMemberOutcome> {
+    // 1. Resolve the rig.
+    const rig = this.deps.rigRepo.getRig(rigId);
+    if (!rig) {
+      return { ok: false, code: "rig_not_found", message: `Rig "${rigId}" not found.` };
+    }
+
+    // 2. Resolve the EXISTING pod's DB id via getPodByNamespace (the corrected
+    // pod-id source — NOT a pre-computed namespace->podId map). Honest not-found
+    // with the available namespaces so the caller can correct the handle.
+    const pod = this.deps.podRepo.getPodByNamespace(rigId, podNamespace);
+    if (!pod) {
+      const available = this.deps.podRepo.getPodsForRig(rigId).map((p) => p.namespace);
+      const hint = available.length > 0 ? available.join(", ") : "(none)";
+      return {
+        ok: false,
+        code: "pod_not_found",
+        message: `Pod "${podNamespace}" not found in rig "${rig.rig.name}". Existing pods: ${hint}. Check the namespace, or add a new pod with \`rig expand\`.`,
+      };
+    }
+
+    // 3. Build a minimal one-pod-one-member raw spec around the EXISTING pod so
+    // the new member runs the SAME validate + preflight the materialize front
+    // does — without a whole-rig spec or a YAML round-trip. The member fragment
+    // is embedded raw (spec snake_case shape, as expand's structured path emits);
+    // validate/normalize is the type gate.
+    const rawSpec: Record<string, unknown> = {
+      version: "0.2",
+      name: rig.rig.name,
+      pods: [{ id: podNamespace, label: pod.label, members: [memberFragment], edges: [] }],
+      edges: [],
+    };
+
+    // 4. Validate + normalize. externalQualifiedIds is the existing rig's node
+    // set (matches the materialize front; used for cross-pod edge resolution).
+    const validation = PodRigSpecSchema.validate(rawSpec, {
+      externalQualifiedIds: rig.nodes.map((node) => node.logicalId),
+    });
+    if (!validation.valid) {
+      return { ok: false, code: "validation_failed", errors: validation.errors };
+    }
+    const rigSpec = PodRigSpecSchema.normalize(rawSpec);
+    const member = rigSpec.pods[0]!.members[0]!;
+    const qualifiedId = `${podNamespace}.${member.id}`;
+
+    // 5. KEEP the per-member duplicate-logical-id guard (AC-3). The pod-exists
+    // guard is lifted (we are adding to a live pod on purpose), but minting a
+    // colliding logical id would be a real seat collision — reject it honestly.
+    // (validate's externalQualifiedIds only resolves edge targets; it does NOT
+    // reject a member colliding with an existing node, so this guard is load-bearing.)
+    if (rig.nodes.some((node) => node.logicalId === qualifiedId)) {
+      return {
+        ok: false,
+        code: "member_conflict",
+        message: `Member "${qualifiedId}" already exists in rig "${rig.rig.name}". Pick a different member id, or remove the existing seat first.`,
+      };
+    }
+
+    // 6. Preflight the new member on the normalized spec (same checks the
+    // materialize front runs, via the core, using this adapter's fsOps).
+    // rigNameOverride suppresses the rig-name-collision check (we are appending
+    // to an existing rig, exactly like expand's structured path).
+    const preflight = preflightValidatedSpec(rigSpec, {
+      rigRoot,
+      cwdOverride: opts?.cwdOverride,
+      fsOps: this.deps.fsOps,
+      rigNameOverride: rig.rig.name,
+    });
+    if (!preflight.ready) {
+      return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
+    }
+
+    // 7. create-node into the EXISTING pod (pod_id = resolved pod.id). One tx so
+    // the node row + node.added event commit atomically, mirroring the
+    // materialize core; subscribers notified after commit.
+    let createdNodeId = "";
+    let createdEvent: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
+    const tx = this.db.transaction(() => {
+      const { node, event } = this.createMemberNode({
+        rigId,
+        qualifiedId,
+        member,
+        podId: pod.id,
+        rigRoot,
+        cwdOverride: opts?.cwdOverride,
+      });
+      createdNodeId = node.id;
+      createdEvent = event;
+    });
+    tx();
+    if (createdEvent) this.deps.eventBus.notifySubscribers(createdEvent);
+
+    // 8. launch-binding for the one new node (startup projection + delivery +
+    // readiness + `@rigged_*`). The minimal spec supplies the member/pod/rig
+    // context launchBinding needs; the derived session name is
+    // `${podNamespace}-${member.id}@${rig.name}` — queue-addressable immediately.
+    const launched = await this.launchBinding({
+      rigId,
+      rigSpec,
+      rigRoot,
+      pod: rigSpec.pods[0]!,
+      member,
+      qualifiedId,
+      nodeId: createdNodeId,
+      cwdOverride: opts?.cwdOverride,
+    });
+
+    return {
+      ok: true,
+      result: {
+        podId: pod.id,
+        podNamespace,
+        node: {
+          logicalId: qualifiedId,
+          nodeId: createdNodeId,
+          status: launched.status,
+          error: launched.error,
+          sessionName: launched.sessionName,
+        },
+        warnings: launched.warnings,
       },
     };
   }
