@@ -583,25 +583,15 @@ export class PodRigInstantiator {
         continue;
       }
 
-      const launched = memberContext.member.agentRef === "builtin:terminal"
-        ? await this.launchExistingTerminalMember({
-            rigId: targetRigId,
-            rigSpec,
-            rigRoot,
-            pod: memberContext.pod,
-            member: memberContext.member,
-            qualifiedId: logicalId,
-            nodeId: node.id,
-          })
-        : await this.launchExistingAgentMember({
-            rigId: targetRigId,
-            rigSpec,
-            rigRoot,
-            pod: memberContext.pod,
-            member: memberContext.member,
-            qualifiedId: logicalId,
-            nodeId: node.id,
-          });
+      const launched = await this.launchBinding({
+        rigId: targetRigId,
+        rigSpec,
+        rigRoot,
+        pod: memberContext.pod,
+        member: memberContext.member,
+        qualifiedId: logicalId,
+        nodeId: node.id,
+      });
 
       if (launched.warnings?.length) {
         podWarnings.push(...launched.warnings);
@@ -1043,6 +1033,30 @@ export class PodRigInstantiator {
     const pod = rigSpec.pods.find((entry) => entry.id === podId);
     const member = pod?.members.find((entry) => entry.id === memberId);
     return pod && member ? { pod, member } : null;
+  }
+
+  /**
+   * launch-binding primitive (OPR.0.3.3.24): given an already-created node and
+   * its member context, bring it fully live — harness launch + startup
+   * projection + delivery + readiness + `@rigged_*` metadata. Dispatches the
+   * terminal vs agent launch path. Extracted as an independently-callable
+   * primitive so launchMaterialized's loop, `expand`, and the `add_member`
+   * converge op all launch a node WITHOUT fabricating a synthetic rig spec.
+   * Behaviour is identical to the prior inline dispatch.
+   */
+  async launchBinding(input: {
+    rigId: string;
+    rigSpec: PodRigSpec;
+    rigRoot: string;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    qualifiedId: string;
+    nodeId: string;
+    cwdOverride?: string;
+  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[] }> {
+    return input.member.agentRef === "builtin:terminal"
+      ? this.launchExistingTerminalMember(input)
+      : this.launchExistingAgentMember(input);
   }
 
   private async launchExistingAgentMember(input: {
