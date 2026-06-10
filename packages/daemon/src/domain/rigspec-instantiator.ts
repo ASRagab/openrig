@@ -399,6 +399,28 @@ export class PodRigInstantiator {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
     }
 
+    // OPR.0.3.3.24: parse/validate/preflight is the separable FRONT-END; the
+    // persistence CORE (createPod + create-node + edges + events, in one tx)
+    // takes the already-parsed+validated spec so `expand` and the `add_member`
+    // converge op compose it WITHOUT fabricating a synthetic rig spec.
+    return this.materializeValidatedSpec(rigSpec, rigRoot, opts);
+  }
+
+  /**
+   * materialize CORE (OPR.0.3.3.24): the persistence body of materialize, taking
+   * an already-parsed + validated + preflighted PodRigSpec. Creates pods +
+   * member nodes (via the create-node primitive) + edges + events in one
+   * transaction. Parse/validate/preflight is the caller's separable front-end
+   * (materialize() for YAML; expand/add_member build + validate a structured
+   * spec). This is the cut that lets `expand` drop its synthetic-spec hack and
+   * `add_member` reuse the exact create path — create+launch only, no identity
+   * migration.
+   */
+  async materializeValidatedSpec(
+    rigSpec: PodRigSpec,
+    rigRoot: string,
+    opts?: { targetRigId?: string; suppressSummaryEvent?: boolean; cwdOverride?: string },
+  ): Promise<MaterializeOutcome> {
     const persistedEvents: Array<ReturnType<EventBus["persistWithinTransaction"]>> = [];
     const nodeResults: Array<{ logicalId: string; status: "materialized" }> = [];
 
