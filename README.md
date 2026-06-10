@@ -1,42 +1,39 @@
 # OpenRig
 
-Open source multi-agent harness for coding teams.
-
-A harness wraps a model. A rig wraps your harnesses. Define your agent team in YAML, boot it with one command. Claude Code and Codex in the same rig, managed as one system.
-
-![OpenRig UI](https://openrig.dev/screenshots/remotion/hero-ui-workspace.png)
-
-## Quick Start
+OpenRig turns AI coding agents from a pile of terminal sessions into a persistent, organized team. A rig is the team that doesn't go away. If you've got tabs full of agents you're afraid to close, this is the layer you're missing: it's open source, it's local, and you're four commands away.
 
 ```bash
-# Install
 npm install -g @openrig/cli
-
-# Prepare the machine (attempts tmux, cmux, Claude Code, Codex, tmux defaults — reports what worked)
 rig setup
-
-# Boot the conveyor starter rig (4 seats, mixed runtimes)
-rig up conveyor
-
-# Open the UI
+rig up product-team
 rig ui open
 ```
 
-After the conveyor rig boots, open the UI and click **intake.lead** in the topology graph. Use **Open CMUX** to jump into a terminal for that node. If cmux is not available, use the tmux attach command shown in the node detail panel instead.
+![OpenRig UI](https://openrig.dev/screenshots/remotion/hero-ui-workspace.png)
 
-## Launch Walkthrough
+It runs locally: a daemon, a SQLite database, a CLI, and a dashboard. The agents are ordinary Claude Code and Codex sessions in tmux. `product-team` is the fuller starter, 7 seats, 4 Claude and 3 Codex, with an orchestration HA pair plus development and review pods.
 
-The launch path above has been walked end-to-end on fresh macOS VMs. The only thing your agent can't do would be the oauth logins for claude and openai and dealing with permission prompts.
+Because 4 Claude seats run at once, single-plan users should expect provider throttling. For the light-footprint path, use `conveyor`, a 4-seat starter with 2 Claude and 2 Codex.
 
-### 1. Open the conveyor rig
+```bash
+# Preview the smaller starter
+rig specs preview conveyor
 
-When the UI opens, the explorer is already visible on the left. Click the `conveyor` rig to load its live topology.
+# Boot the light-footprint path
+rig up conveyor
+```
 
-### 2. Click `CMUX` on `intake.lead`
+## First Run
 
-Once the topology loads, go to the `intake.lead` node and click its `CMUX` button. That opens the intake terminal directly.
+After `product-team` boots, `rig ps --nodes` shows the running pods and seats. When you're ready to shut the team down and bring it back, use the same rig name:
 
-> From here, give the intake agent a packet of work and watch it move through planning, build, review, and closeout.
+```bash
+rig ps
+rig down product-team
+rig up product-team
+```
+
+`rig ps` is a fleet glance. `rig down product-team` snapshots the team and stops it. `rig up product-team` brings it back by name from that snapshot.
 
 ## What It Does
 
@@ -54,36 +51,31 @@ Every agent runs in a tmux session you can attach to, inspect, and work with dir
 
 ## Starter Rigs
 
-OpenRig ships with a conveyor starter rig for learning workflow handoff:
-
-```bash
-rig specs preview conveyor --kind rig
-```
-
-```
-conveyor (rig, pod_aware)
-  Starter workflow rig: a station pipeline that can move multiple
-  work packets at once, with queue depth acting as natural backpressure.
-
-  Pod: intake (1 member)
-    lead — claude-code
-  Pod: plan (1 member)
-    planner — codex
-  Pod: build (1 member)
-    builder — claude-code
-  Pod: review (1 member)
-    reviewer — codex
-```
-
-For a larger human-operated product-development topology, inspect `product-team`:
+OpenRig's hero starter is `product-team`, the fuller product-development rig:
 
 ```bash
 rig specs preview product-team
+rig up product-team
 ```
+
+Use it when you want the week-one experience OpenRig is built around: an orchestrator HA pair, development work, review work, and enough moving pieces for the coordination layer to matter.
+
+For a smaller starter, use `conveyor`:
+
+```bash
+rig specs preview conveyor
+rig up conveyor
+```
+
+`conveyor` is the smallest shippable software factory, one command. It keeps the footprint lower for single-plan users while still showing a real handoff path through intake, planning, build, and review.
 
 Also ships: `implementation-pair`, `adversarial-review`, `research-team`, and `secrets-manager` (HashiCorp Vault managed by a specialist agent).
 
-Browse the library: `rig specs ls`
+Browse the library:
+
+```bash
+rig specs ls
+```
 
 ## How It Works
 
