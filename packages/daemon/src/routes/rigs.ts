@@ -597,11 +597,17 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
     return c.json({ error: "member is required (a member fragment with id, runtime, agent_ref)" }, 400);
   }
   const rigRoot = typeof body["rigRoot"] === "string" ? body["rigRoot"] : ".";
+  // Optional pod-local edges (from/to are member ids within the pod). Carried
+  // through to the converge op so declared topology intent is not dropped; the
+  // domain validates + persists them (no edge-runtime behavior yet).
+  const edges = Array.isArray(body["edges"])
+    ? (body["edges"] as Array<{ from: string; to: string; kind: string }>)
+    : undefined;
 
   const converged = await convergeOp(
     podInstantiator,
     rigId,
-    { kind: "add_member", pod: podNamespace, member: member as Record<string, unknown> },
+    { kind: "add_member", pod: podNamespace, member: member as Record<string, unknown>, edges },
     rigRoot,
   );
   // add_member is the one supported converge kind; the route is its sugar.
@@ -617,6 +623,7 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
         return c.json(outcome, 404);
       case "member_conflict":
         return c.json(outcome, 409);
+      case "edge_unresolved":
       case "validation_failed":
       case "preflight_failed":
         return c.json(outcome, 400);

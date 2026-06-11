@@ -128,4 +128,38 @@ describe("POST /api/rigs/:rigId/pods/:podNamespace/members", () => {
     expect(stored?.agent_ref).toBe("builtin:terminal");
     expect(stored?.restore_policy).toBe("checkpoint_only");
   });
+
+  // Governance FM2: pod-local edges in the request body are preserved end-to-end.
+  it("persists pod-local edges declared in the body (not silently dropped)", async () => {
+    const rig = await seedRigWithPod();
+    const res = await setup.app.request(`/api/rigs/${rig.id}/pods/infra/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        member: terminalMember("server2"),
+        edges: [{ from: "server2", to: "server", kind: "delegates_to" }],
+      }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.result.edges).toEqual([{ from: "infra.server2", to: "infra.server", kind: "delegates_to" }]);
+
+    const rows = db.prepare("SELECT kind FROM edges WHERE rig_id = ?").all(rig.id) as Array<{ kind: string }>;
+    expect(rows.some((r) => r.kind === "delegates_to")).toBe(true);
+  });
+
+  it("returns 400 for an unresolvable pod-local edge (edge_unresolved)", async () => {
+    const rig = await seedRigWithPod();
+    const res = await setup.app.request(`/api/rigs/${rig.id}/pods/infra/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        member: terminalMember("server2"),
+        edges: [{ from: "server2", to: "ghost", kind: "delegates_to" }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("edge_unresolved");
+  });
 });

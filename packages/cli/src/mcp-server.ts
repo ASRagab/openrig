@@ -432,11 +432,13 @@ export function createMcpServer(client: DaemonClient): McpServer {
       rigId: z.string().describe("Target rig identifier"),
       podNamespace: z.string().describe("Namespace of the existing pod to add the member to"),
       member: z.record(z.string(), z.unknown()).describe("Member fragment with spec snake_case fields: id, runtime, agent_ref, profile, cwd (and optional model, codex_config_profile, restore_policy, label)"),
+      edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.string() })).optional().describe("Optional pod-local edges (from/to are member ids within the pod; resolved against the new member + existing pod-mates)"),
       rigRoot: z.string().optional().describe("Root directory for agent resolution"),
     },
-    async ({ rigId, podNamespace, member, rigRoot }) => {
+    async ({ rigId, podNamespace, member, edges, rigRoot }) => {
       try {
         const body: Record<string, unknown> = { member };
+        if (edges) body["edges"] = edges;
         if (rigRoot) body["rigRoot"] = rigRoot;
         const res = await client.post(
           `/api/rigs/${encodeURIComponent(rigId)}/pods/${encodeURIComponent(podNamespace)}/members`,

@@ -100,6 +100,21 @@ describe("MCP Server", () => {
     await cleanup();
   });
 
+  it("rig_add forwards optional pod-local edges in the request body", async () => {
+    const postFn = vi.fn(async () => ({
+      status: 201,
+      data: { ok: true, result: { podId: "pod-1", podNamespace: "infra", node: { logicalId: "infra.server2", nodeId: "n2", status: "launched" }, edges: [{ from: "infra.server2", to: "infra.server", kind: "delegates_to" }] } },
+    }));
+    await setup({ post: postFn });
+
+    const member = { id: "server2", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp" };
+    const edges = [{ from: "server2", to: "server", kind: "delegates_to" }];
+    await mcpClient.callTool({ name: "rig_add", arguments: { rigId: "rig-1", podNamespace: "infra", member, edges } });
+
+    expect(postFn).toHaveBeenCalledWith("/api/rigs/rig-1/pods/infra/members", { member, edges });
+    await cleanup();
+  });
+
   it("rig_add surfaces a member_conflict (HTTP 409) as isError", async () => {
     const postFn = vi.fn(async () => ({
       status: 409,

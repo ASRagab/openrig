@@ -345,6 +345,14 @@ export type LaunchMaterializedOutcome =
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "target_rig_not_found"; message: string };
 
+/** A pod-local edge declared alongside an added member (from/to are member ids
+ *  within the pod; resolved against the new member + existing pod-mates). */
+export interface AddMemberEdge {
+  from: string;
+  to: string;
+  kind: string;
+}
+
 export interface AddMemberResult {
   podId: string;
   podNamespace: string;
@@ -355,6 +363,10 @@ export interface AddMemberResult {
     error?: string;
     sessionName?: string;
   };
+  /** Pod-local edges persisted with the add (empty when none declared). The
+   *  endpoints are qualified logical ids. Edges carry no runtime behavior yet
+   *  (OPR.0.3.3.24 fence) - they record declared topology intent. */
+  edges: Array<{ from: string; to: string; kind: string }>;
   warnings?: string[];
 }
 
@@ -362,15 +374,16 @@ export interface AddMemberResult {
  * Outcome of the `add_member` converge op (OPR.0.3.3.24). Mirrors the
  * MaterializeOutcome error vocabulary where it overlaps (validation_failed /
  * preflight_failed) and adds the add-member-specific honest codes
- * (rig_not_found / pod_not_found / member_conflict). Every failure carries a
- * human-actionable message or error list (the 3-part honest-error contract that
- * the converge interface surfaces to CLI + MCP).
+ * (rig_not_found / pod_not_found / member_conflict / edge_unresolved). Every
+ * failure carries a human-actionable message or error list (the 3-part
+ * honest-error contract that the converge interface surfaces to CLI + MCP).
  */
 export type AddMemberOutcome =
   | { ok: true; result: AddMemberResult }
   | { ok: false; code: "rig_not_found"; message: string }
   | { ok: false; code: "pod_not_found"; message: string }
   | { ok: false; code: "member_conflict"; message: string }
+  | { ok: false; code: "edge_unresolved"; message: string }
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "preflight_failed"; errors: string[]; warnings: string[] };
 
@@ -738,7 +751,7 @@ export class PodRigInstantiator {
     podNamespace: string,
     memberFragment: Record<string, unknown>,
     rigRoot: string,
-    opts?: { cwdOverride?: string },
+    opts?: { cwdOverride?: string; edges?: Array<{ from: string; to: string; kind: string }> },
   ): Promise<AddMemberOutcome> {
     // 1. Resolve the rig.
     const rig = this.deps.rigRepo.getRig(rigId);
@@ -811,9 +824,33 @@ export class PodRigInstantiator {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
     }
 
-    // 7. create-node into the EXISTING pod (pod_id = resolved pod.id). One tx so
-    // the node row + node.added event commit atomically, mirroring the
-    // materialize core; subscribers notified after commit.
+    // 7. Resolve + validate any declared pod-local edges BEFORE creating the
+    // node, so a bad edge fails fast with no orphan seat. Endpoints are member
+    // ids within the pod; they resolve against the new member + existing
+    // pod-mates (qualified logical ids). Edges carry NO runtime behavior yet
+    // (the OPR.0.3.3.24 edge-runtime fence) - we persist the declared graph so
+    // it is NOT silently dropped (governance FM2).
+    const declaredEdges = opts?.edges ?? [];
+    const knownLogicalIds = new Set<string>([...rig.nodes.map((node) => node.logicalId), qualifiedId]);
+    const resolvedEdges: Array<{ from: string; to: string; kind: string }> = [];
+    for (const edge of declaredEdges) {
+      if (typeof edge?.from !== "string" || typeof edge?.to !== "string" || typeof edge?.kind !== "string"
+        || edge.from.trim() === "" || edge.to.trim() === "" || edge.kind.trim() === "") {
+        return { ok: false, code: "edge_unresolved", message: `Pod-local edge must have non-empty from, to, and kind (got ${JSON.stringify(edge)}).` };
+      }
+      const from = `${podNamespace}.${edge.from}`;
+      const to = `${podNamespace}.${edge.to}`;
+      if (!knownLogicalIds.has(from) || !knownLogicalIds.has(to)) {
+        const missing = !knownLogicalIds.has(from) ? from : to;
+        return { ok: false, code: "edge_unresolved", message: `Pod-local edge references "${missing}", which is neither the new member "${qualifiedId}" nor an existing seat in rig "${rig.rig.name}". Use member ids within pod "${podNamespace}".` };
+      }
+      resolvedEdges.push({ from, to, kind: edge.kind });
+    }
+
+    // 8. create-node into the EXISTING pod (pod_id = resolved pod.id) + persist
+    // the resolved pod-local edges, all in one tx so the node row, the
+    // node.added event, and the edges commit atomically (mirroring the
+    // materialize core); subscribers notified after commit.
     let createdNodeId = "";
     let createdEvent: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
     const tx = this.db.transaction(() => {
@@ -827,11 +864,18 @@ export class PodRigInstantiator {
       });
       createdNodeId = node.id;
       createdEvent = event;
+      if (resolvedEdges.length > 0) {
+        const logicalIdToNodeId = new Map(rig.nodes.map((n) => [n.logicalId, n.id]));
+        logicalIdToNodeId.set(qualifiedId, node.id);
+        for (const edge of resolvedEdges) {
+          this.deps.rigRepo.addEdge(rigId, logicalIdToNodeId.get(edge.from)!, logicalIdToNodeId.get(edge.to)!, edge.kind);
+        }
+      }
     });
     tx();
     if (createdEvent) this.deps.eventBus.notifySubscribers(createdEvent);
 
-    // 8. launch-binding for the one new node (startup projection + delivery +
+    // 9. launch-binding for the one new node (startup projection + delivery +
     // readiness + `@rigged_*`). The minimal spec supplies the member/pod/rig
     // context launchBinding needs; the derived session name is
     // `${podNamespace}-${member.id}@${rig.name}` — queue-addressable immediately.
@@ -858,6 +902,7 @@ export class PodRigInstantiator {
           error: launched.error,
           sessionName: launched.sessionName,
         },
+        edges: resolvedEdges,
         warnings: launched.warnings,
       },
     };

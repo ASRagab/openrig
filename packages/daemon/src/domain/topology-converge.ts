@@ -19,7 +19,7 @@ import type { PodRigInstantiator, AddMemberOutcome } from "./rigspec-instantiato
 
 /** The complete topology-mutation op-kind set. */
 export type TopologyOp =
-  | { kind: "add_member"; pod: string; member: Record<string, unknown> }
+  | { kind: "add_member"; pod: string; member: Record<string, unknown>; edges?: Array<{ from: string; to: string; kind: string }> }
   | { kind: "remove_member"; logicalId: string }
   | { kind: "move_member"; logicalId: string; toPod: string }
   | { kind: "fork_member"; logicalId: string; toMember: string }
@@ -109,7 +109,10 @@ export async function convergeOp(
 ): Promise<ConvergeResult> {
   switch (op.kind) {
     case "add_member": {
-      const outcome = await instantiator.addMemberToPod(rigId, op.pod, op.member, rigRoot, opts);
+      const outcome = await instantiator.addMemberToPod(rigId, op.pod, op.member, rigRoot, {
+        cwdOverride: opts?.cwdOverride,
+        edges: op.edges,
+      });
       return { kind: "add_member", supported: true, outcome };
     }
     case "remove_member":

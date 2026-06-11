@@ -80,6 +80,7 @@ describe("rig add", () => {
   let port: number;
   let tmpDir: string;
   let fragmentPath: string;
+  let capturedBody: Record<string, unknown> | null = null;
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
@@ -88,6 +89,7 @@ describe("rig add", () => {
         req.on("data", (chunk) => { body += chunk; });
         req.on("end", () => {
           const parsed = JSON.parse(body);
+          capturedBody = parsed;
           const memberId = parsed.member?.id;
           if (req.url?.includes("/nope/")) {
             res.writeHead(404, { "Content-Type": "application/json" });
@@ -221,5 +223,31 @@ describe("rig add", () => {
     const program = createProgram();
     const cmd = program.commands.find((c) => c.name() === "add");
     expect(cmd).toBeDefined();
+  });
+
+  // Governance FM2: rig add must NOT silently strip pod-local edges from the
+  // fragment file - they must reach the daemon, in both wrapper and bare forms.
+  it("forwards wrapper-form edges to the daemon (not stripped)", async () => {
+    capturedBody = null;
+    writeFileSync(fragmentPath, `member:\n  id: server2\n  runtime: terminal\n  agent_ref: "builtin:terminal"\n  profile: none\n  cwd: /tmp\nedges:\n  - from: server2\n    to: server\n    kind: delegates_to\n`);
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
+    });
+    expect(capturedBody).not.toBeNull();
+    expect((capturedBody as { member: { id: string } }).member.id).toBe("server2");
+    expect((capturedBody as { edges: unknown[] }).edges).toEqual([{ from: "server2", to: "server", kind: "delegates_to" }]);
+  });
+
+  it("lifts bare-form top-level edges out to pod-local edges (not dropped into the member)", async () => {
+    capturedBody = null;
+    writeFileSync(fragmentPath, `id: server2\nruntime: terminal\nagent_ref: "builtin:terminal"\nprofile: none\ncwd: /tmp\nedges:\n  - from: server2\n    to: server\n    kind: delegates_to\n`);
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
+    });
+    const sent = capturedBody as { member: Record<string, unknown>; edges: unknown[] };
+    expect(sent.edges).toEqual([{ from: "server2", to: "server", kind: "delegates_to" }]);
+    // edges lifted OUT of the member, not silently carried as an ignored field.
+    expect(sent.member["edges"]).toBeUndefined();
+    expect(sent.member["id"]).toBe("server2");
   });
 });

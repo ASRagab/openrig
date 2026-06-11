@@ -11,6 +11,7 @@ interface AddMemberResponse {
     podId: string;
     podNamespace: string;
     node: { logicalId: string; nodeId: string; status: string; error?: string; sessionName?: string };
+    edges?: Array<{ from: string; to: string; kind: string }>;
     warnings?: string[];
   };
   code?: string;
@@ -48,12 +49,23 @@ export function addMemberCommand(depsOverride?: StatusDeps): Command {
       }
 
       let member: Record<string, unknown>;
+      let edges: unknown;
       try {
         // Dynamic import to avoid bundling yaml at module load (matches expand).
         const { parse } = await import("yaml");
-        const parsed = parse(fileContent) as Record<string, unknown>;
-        // Tolerate either a bare member object or a { member: {...} } wrapper.
-        member = (parsed?.["member"] ?? parsed) as Record<string, unknown>;
+        const parsed = (parse(fileContent) ?? {}) as Record<string, unknown>;
+        if (parsed["member"] && typeof parsed["member"] === "object" && !Array.isArray(parsed["member"])) {
+          // Wrapper form: { member: {...}, edges?: [...] }.
+          member = parsed["member"] as Record<string, unknown>;
+          edges = parsed["edges"];
+        } else {
+          // Bare member form. Lift any top-level `edges:` out as pod-local edges
+          // so they are NOT silently dropped (the schema ignores unknown member
+          // fields). The rest is the member.
+          const { edges: bareEdges, ...rest } = parsed;
+          member = rest;
+          edges = bareEdges;
+        }
       } catch {
         console.error("Invalid YAML/JSON in member fragment file");
         process.exitCode = 1;
@@ -61,6 +73,7 @@ export function addMemberCommand(depsOverride?: StatusDeps): Command {
       }
 
       const body: Record<string, unknown> = { member };
+      if (Array.isArray(edges)) body["edges"] = edges;
       if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;
 
       const client = deps.clientFactory(getDaemonUrl(status));
@@ -98,6 +111,12 @@ export function addMemberCommand(depsOverride?: StatusDeps): Command {
       console.log(`Added member to rig ${rigId}`);
       console.log(`  Pod: ${data.result!.podNamespace}`);
       console.log(`  Member: [${icon}] ${node.logicalId}${session}${error}`);
+
+      const persistedEdges = data.result!.edges ?? [];
+      if (persistedEdges.length > 0) {
+        console.log("  Edges:");
+        for (const e of persistedEdges) console.log(`    ${e.from} ${e.kind} ${e.to}`);
+      }
 
       if (data.result!.warnings && data.result!.warnings.length > 0) {
         console.log("");

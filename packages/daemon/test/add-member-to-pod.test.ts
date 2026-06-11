@@ -177,4 +177,61 @@ describe("PodRigInstantiator.addMemberToPod", () => {
     if (!result.ok) return;
     expect(result.result.node.sessionName).toBe("infra-server2@test-rig");
   });
+
+  // Governance FM2: optional pod-local edges are PRESERVED, never silently dropped.
+  function edgeRows(rigId: string) {
+    return db.prepare("SELECT source_id, target_id, kind FROM edges WHERE rig_id = ?").all(rigId) as Array<{ source_id: string; target_id: string; kind: string }>;
+  }
+
+  it("defaults to no edges when none are declared", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result.edges).toEqual([]);
+  });
+
+  it("persists a declared pod-local edge from the new member to an existing pod-mate", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
+      edges: [{ from: "server2", to: "server", kind: "delegates_to" }],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Reported with qualified endpoints.
+    expect(result.result.edges).toEqual([{ from: "infra.server2", to: "infra.server", kind: "delegates_to" }]);
+
+    // Persisted as a real graph edge between the two node ids.
+    const nodes = setup.rigRepo.getRig(rig.id)!.nodes;
+    const newId = nodes.find((n) => n.logicalId === "infra.server2")!.id;
+    const mateId = nodes.find((n) => n.logicalId === "infra.server")!.id;
+    const rows = edgeRows(rig.id);
+    expect(rows).toContainEqual({ source_id: newId, target_id: mateId, kind: "delegates_to" });
+  });
+
+  it("rejects a pod-local edge to an unresolvable endpoint (edge_unresolved) and creates no node", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
+      edges: [{ from: "server2", to: "ghost", kind: "delegates_to" }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("edge_unresolved");
+    expect(result.message).toContain("infra.ghost");
+
+    // Fail-fast: no orphan node, no edge.
+    expect(setup.rigRepo.getRig(rig.id)!.nodes.some((n) => n.logicalId === "infra.server2")).toBe(false);
+    expect(edgeRows(rig.id)).toHaveLength(0);
+  });
+
+  it("rejects a malformed edge (missing kind) with edge_unresolved", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
+      edges: [{ from: "server2", to: "server", kind: "" }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("edge_unresolved");
+  });
 });
