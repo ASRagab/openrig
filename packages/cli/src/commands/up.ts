@@ -7,6 +7,19 @@ import type { StatusDeps } from "./status.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 
+/** OPR.0.3.4.2 — default interactive [y/N] prompt for the awaiting-decision
+ *  ASK (TTY only; tests inject promptYesNo instead). Default answer: No. */
+async function defaultPromptYesNo(question: string): Promise<boolean> {
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
+
 // OPR.0.3.2.22 Bug 3 helper — mirrors cwd-resolution.isPathInsideRoot in
 // the daemon so the CLI can decide whether a path-form sourceRef lives
 // inside the daemon install root without importing the daemon package.
@@ -19,6 +32,9 @@ export function upCommand(
   depsOverride?: StatusDeps & {
     lifecycleDeps?: LifecycleDeps;
     preflightExec?: (cmd: string) => Promise<string>;
+    /** OPR.0.3.4.2 — injectable [y/N] prompt for the awaiting-decision ASK
+     *  (tests drive it; default = readline on stdin, offered on TTY only). */
+    promptYesNo?: (question: string) => Promise<boolean>;
   },
 ): Command {
   const cmd = new Command("up")
@@ -38,8 +54,9 @@ Examples:
     .option("--cwd <path>", "Override launch working directory for all members for this run only")
     .option("--target <root>", "Target root directory for package installation (.rigbundle only; does not change agent cwd)")
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
+    .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
     .option("--json", "JSON output for agents")
-    .action(async (source: string, opts: { plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; json?: boolean }) => {
+    .action(async (source: string, opts: { plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean }) => {
       const deps = getDepsF();
 
       // Run preflight before auto-start
@@ -291,6 +308,8 @@ Examples:
         autoApprove: opts.yes ?? false,
         cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
         targetRoot,
+        // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
+        freshLogicalIds: opts.fresh,
       }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
 
       if (opts.json) {
@@ -347,9 +366,15 @@ Examples:
         }
         console.log(`Rig "${rigName ?? rigId}" restored (ID: ${rigId})`);
         if (rigResult) console.log(`Result: ${rigResult}`);
-        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string }>) ?? [];
+        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string }>) ?? [];
         for (const n of nodes) {
-          console.log(`  ${n.logicalId}: ${n.status}`);
+          // OPR.0.3.4.2 — the five-term vocabulary renders distinctly; the
+          // awaiting-decision reason is part of the line (not a dead end).
+          if (n.status === "awaiting-decision" && n.error) {
+            console.log(`  ${n.logicalId}: awaiting-decision — ${n.error}`);
+          } else {
+            console.log(`  ${n.logicalId}: ${n.status}`);
+          }
         }
         const warnings = (res.data["warnings"] as string[]) ?? [];
         for (const w of warnings) {
@@ -360,7 +385,47 @@ Examples:
         if (attachCommand) {
           console.log(`Attach: ${attachCommand}`);
         }
-        if (rigResult === "partially_restored" || rigResult === "failed" || rigResult === "not_attempted" || nodes.some((n) => n.status === "failed")) {
+
+        // OPR.0.3.4.2 — the actionable ASK/offer for awaiting-decision seats.
+        // TTY: interactive [y/N] per seat; accepted seats re-run as a
+        // deliberate fresh-prime (operation B). Headless: the machine status
+        // stays awaiting-decision with the explicit --fresh hint. NEVER an
+        // auto-substitution.
+        const awaiting = nodes.filter((n) => n.status === "awaiting-decision");
+        if (awaiting.length > 0) {
+          const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) || Boolean(deps.promptYesNo);
+          if (interactive) {
+            const ask = deps.promptYesNo ?? defaultPromptYesNo;
+            const accepted: string[] = [];
+            for (const n of awaiting) {
+              const reason = n.error ?? "original session unresumable";
+              const yes = await ask(`Couldn't resume original session for ${n.logicalId} (reason: ${reason}). Start a fresh primed session instead? [y/N] `);
+              if (yes) accepted.push(n.logicalId);
+            }
+            if (accepted.length > 0) {
+              const freshRes = await client.post<Record<string, unknown>>("/api/up", {
+                sourceRef,
+                plan: false,
+                autoApprove: opts.yes ?? false,
+                cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
+                targetRoot,
+                freshLogicalIds: accepted,
+              }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+              const freshNodes = (freshRes.data["nodes"] as Array<{ logicalId: string; status: string }>) ?? [];
+              for (const n of freshNodes.filter((fn) => accepted.includes(fn.logicalId))) {
+                console.log(`  ${n.logicalId}: ${n.status}`);
+              }
+            } else {
+              console.log(`  No fresh sessions started. Re-run with --fresh <seat...> when you decide.`);
+            }
+          } else {
+            for (const n of awaiting) {
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately fresh-prime: rig up --existing ${source} --fresh ${n.logicalId}`);
+            }
+          }
+        }
+
+        if (rigResult === "partially_restored" || rigResult === "failed" || rigResult === "not_attempted" || nodes.some((n) => n.status === "failed" || n.status === "awaiting-decision")) {
           process.exitCode = 1;
         }
       } else {

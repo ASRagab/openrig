@@ -321,7 +321,18 @@ export interface RestoreNodeResult {
   // Claude resume-selection prompt. `operator_recovered` is the terminal
   // outcome after `restore.outcome_reconciled`; never produced directly by
   // the orchestrator's restore pipeline (only by reconcileNodeRuntimeTruth).
-  status: "resumed" | "rebuilt" | "fresh" | "failed" | "attention_required" | "operator_recovered";
+  //
+  // OPR.0.3.4.2 — the ratified five-term restore vocabulary:
+  // `resumed` (original session resumed) / `fresh-primed` (deliberate
+  // blank-slate launch, policy- or --fresh-driven; replaces the old `fresh`
+  // for launches) / `awaiting-decision` (original unresumable + no --fresh:
+  // STOPPED with ZERO session running — operator must choose) /
+  // `attention_required` (a LIVE session parked on a runtime prompt) /
+  // `failed` (genuine harness error only). `awaiting-decision` is never
+  // emitted while a session is live. (`fresh` is retained for the legacy
+  // continuity-restoring skip path only; `rebuilt`/`operator_recovered` sit
+  // outside the five-term split.)
+  status: "resumed" | "rebuilt" | "fresh" | "fresh-primed" | "awaiting-decision" | "failed" | "attention_required" | "operator_recovered";
   error?: string;
   /** Pane evidence captured when status is `attention_required` (L3, optional). */
   attentionEvidence?: string | null;
@@ -342,7 +353,8 @@ export type RestoreOutcome =
 // L3 extends with `attention_required` (Claude resume-selection prompt proxy)
 // and `operator_recovered` (terminal post-reconciliation outcome — never produced
 // directly by restore, only emitted via `restore.outcome_reconciled`).
-export type NodeRestoreOutcome = "resumed" | "rebuilt" | "fresh" | "failed" | "attention_required" | "operator_recovered" | "n-a";
+// OPR.0.3.4.2 - carries the five-term restore vocabulary into `rig ps`.
+export type NodeRestoreOutcome = "resumed" | "rebuilt" | "fresh" | "fresh-primed" | "awaiting-decision" | "failed" | "attention_required" | "operator_recovered" | "n-a";
 export type OccupantLifecycle = "active" | "retiring" | "retired" | "context_walled" | "compacted" | "crashed" | "unknown";
 export type ContinuityOutcome = "resumed" | "rebuilt" | "forked" | "fresh" | "failed";
 export type HandoverResult = "complete" | "unchanged" | "partial" | "failed" | null;

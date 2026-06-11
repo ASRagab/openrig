@@ -219,6 +219,11 @@ function deriveContinuityOutcome(
   // the lifecycleState projection picks them up via restoreOutcome directly.
   if (restoreOutcome === "attention_required") return null;
   if (restoreOutcome === "operator_recovered") return "resumed";
+  // OPR.0.3.4.2: a deliberate fresh-prime IS fresh continuity; awaiting-decision
+  // means zero session, so no continuity outcome exists — null (the
+  // restoreOutcome field carries the distinct term).
+  if (restoreOutcome === "fresh-primed") return "fresh";
+  if (restoreOutcome === "awaiting-decision") return null;
   return restoreOutcome;
 }
 
@@ -239,6 +244,9 @@ function deriveRestoreOutcome(db: Database.Database, rigId: string, nodeId: stri
     if (nodeResult.status === "failed") return "failed";
     if (nodeResult.status === "rebuilt") return "rebuilt";
     if (nodeResult.status === "fresh") return "fresh";
+    // OPR.0.3.4.2 - the five-term vocabulary flows into rig ps distinctly.
+    if (nodeResult.status === "fresh-primed") return "fresh-primed";
+    if (nodeResult.status === "awaiting-decision") return "awaiting-decision";
     // L3 outcomes (attention_required, operator_recovered)
     if (nodeResult.status === "attention_required") return "attention_required";
     if (nodeResult.status === "operator_recovered") return "operator_recovered";

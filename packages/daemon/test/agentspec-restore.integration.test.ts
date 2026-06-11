@@ -289,7 +289,8 @@ describe("AS-T09: Continuity + snapshot/restore evolution", () => {
       // Node honestly reports its restore outcome (mock resume didn't actually resume)
       const nodeResult = result.result.nodes.find((n) => n.nodeId === node.id);
       // Status reflects actual resume outcome, not assumed success
-      expect(["resumed", "fresh", "rebuilt"]).toContain(nodeResult!.status);
+      // OPR.0.3.4.2: deliberate fresh launches report fresh-primed.
+      expect(["resumed", "fresh-primed", "rebuilt"]).toContain(nodeResult!.status);
     }
     ctx.db.close();
   });
