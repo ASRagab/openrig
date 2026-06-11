@@ -246,7 +246,10 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
 
       if (data.peers.length > 0) {
         console.log("");
-        console.log("Peers:");
+        // OPR.99.0.6.1: name the contract on the header so peers cannot be
+        // misread as the edge-subset or as host inventory. Keeps the literal
+        // `Peers:` prefix (existing output greps key on it).
+        console.log("Peers: (this rig's roster, excluding self — directional edges below; `rig ps --nodes` for inventory incl. self + live state)");
         for (const peer of data.peers) {
           console.log(`  ${peer.logicalId.padEnd(20)} ${(peer.sessionName ?? "—").padEnd(30)} ${peer.runtime}`);
         }

@@ -603,6 +603,7 @@ Identity resolution order:
 Notes:
 - If the daemon is unreachable but an identity source can still be resolved, `--json` returns a partial result instead of crashing.
 - Human-readable output includes transcript location and context usage when available.
+- `peers[]` is this rig's roster excluding self (no edge filter); use `edges{}` for directional relationships and `rig ps --nodes` for node inventory including self + live state.
 - In Claude Code projects, unattended `rig whoami` on boot may require the local permissions allow list to include `Bash(rig:*)`.
 - `--host <id>` routes the same command to a remote host declared in `~/.openrig/hosts.yaml` via single-hop ssh (CLI-side shell-out; daemon untouched). Identity resolution happens on the REMOTE rig (each host has its own daemon + tmux + identity context); local `--node-id`/`--session` flags are forwarded to the remote `rig whoami` invocation. The remote rig's output is verbatim passthrough on success; failure is distinguished into the same `ssh-unreachable` / `permission-gate` / `remote-daemon-unreachable` / `remote-command-failed` enum as `rig ps --host` and `rig send --host`.
 

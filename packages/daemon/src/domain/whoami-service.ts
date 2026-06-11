@@ -33,6 +33,14 @@ export interface WhoamiResult {
     podNamespace: string | null;
     memberId: string;
   }>;
+  /**
+   * OPR.99.0.6.1 — the peers[] roster contract, stated in-band so a fresh
+   * agent cannot misread the field. `peers[]` is the same-rig ROSTER excluding
+   * self (no edge/status filter); `edges{}` is the directional graph;
+   * `rig ps --nodes` is the node inventory including self + live state.
+   * Additive note only — `peers[]` name and shape are unchanged.
+   */
+  peersNote: string;
   edges: {
     outgoing: Array<{ kind: string; to: { logicalId: string; sessionName: string | null } }>;
     incoming: Array<{ kind: string; from: { logicalId: string; sessionName: string | null } }>;
@@ -327,6 +335,7 @@ export class WhoamiService {
       resolvedBy,
       identity,
       peers,
+      peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state",
       edges: { outgoing, incoming },
       transcript,
       commands: { sendExamples, captureExamples },

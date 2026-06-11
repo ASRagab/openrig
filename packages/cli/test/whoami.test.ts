@@ -44,6 +44,7 @@ const WHOAMI_RESPONSE = {
     resolvedSpecName: "impl", resolvedSpecVersion: "1.0",
   },
   peers: [{ logicalId: "dev.qa", sessionName: "dev-qa@my-rig", runtime: "codex", podId: "pod-dev-123", podNamespace: "dev", memberId: "qa" }],
+  peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state",
   edges: {
     outgoing: [{ kind: "delegates_to", to: { logicalId: "dev.qa", sessionName: "dev-qa@my-rig" } }],
     incoming: [],
@@ -287,6 +288,41 @@ describe("Whoami CLI", () => {
     expect(output).toContain("Edges:");
     expect(output).toContain("delegates_to");
     expect(output).toContain("Transcript:");
+  });
+
+  // OPR.99.0.6.1 — the clarified Peers header (the roster contract, in-band).
+  it("human Peers header names the roster contract and points at edges + rig ps --nodes", async () => {
+    process.env["OPENRIG_NODE_ID"] = "node-1";
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami"]);
+    });
+    const output = logs.join("\n");
+    // Legacy grep target preserved verbatim.
+    expect(output).toContain("Peers:");
+    // The discriminator: a fresh reader cannot misread peers[] as the
+    // edge-subset (pointed to edges below) or as host inventory (pointed to
+    // rig ps --nodes for inventory incl. self).
+    expect(output).toContain("roster, excluding self");
+    expect(output).toContain("directional edges below");
+    expect(output).toContain("rig ps --nodes");
+    // Peers + edges still render normally under the clarified header.
+    expect(output).toContain("dev.qa");
+    expect(output).toContain("delegates_to");
+  });
+
+  it("--json carries the additive peersNote; peers[] name/shape unchanged; no roster field", async () => {
+    process.env["OPENRIG_NODE_ID"] = "node-1";
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--json"]);
+    });
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.peersNote).toContain("roster excluding self");
+    expect(Array.isArray(parsed.peers)).toBe(true);
+    expect(Object.keys(parsed.peers[0]).sort()).toEqual(
+      ["logicalId", "memberId", "podId", "podNamespace", "runtime", "sessionName"],
+    );
+    expect(parsed.roster).toBeUndefined();
+    expect(parsed.podRoster).toBeUndefined();
   });
 
   it("human output shows missing session honestly and omits transcript section for unbound nodes", async () => {

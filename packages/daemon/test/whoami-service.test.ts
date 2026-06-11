@@ -106,6 +106,43 @@ describe("WhoamiService", () => {
     expect(result!.peers.find((p) => p.logicalId === "dev.impl")).toBeUndefined();
   });
 
+  // OPR.99.0.6.1 — the peers[] roster contract, stated and asserted.
+  it("peers[] is the same-rig roster excluding self, independent of directional edges (the contract)", () => {
+    const { rig, nodeA } = seedRig();
+    // A third node with NO edge to/from the queried node: still a peer.
+    rigRepo.addNode(rig.id, "dev.unedged", { role: "worker", runtime: "terminal", podId: "pod-dev" });
+
+    const result = svc.resolve({ nodeId: nodeA.id });
+
+    const peerIds = result!.peers.map((p) => p.logicalId).sort();
+    expect(peerIds).toEqual(["dev.qa", "dev.unedged"]);
+    // dev.unedged has no directional relationship to dev.impl - membership in
+    // peers[] is roster-based, not edge-based.
+    expect(result!.edges.outgoing.find((e) => e.to.logicalId === "dev.unedged")).toBeUndefined();
+    expect(result!.edges.incoming.find((e) => e.from.logicalId === "dev.unedged")).toBeUndefined();
+    // Shape compat: the peer entry keys are unchanged (no rename/removal).
+    expect(Object.keys(result!.peers[0]!).sort()).toEqual(
+      ["logicalId", "memberId", "podId", "podNamespace", "runtime", "sessionName"],
+    );
+  });
+
+  it("result carries the additive peersNote stating the corrected meaning", () => {
+    const { nodeA } = seedRig();
+    const result = svc.resolve({ nodeId: nodeA.id });
+
+    expect(result!.peersNote).toContain("roster excluding self");
+    expect(result!.peersNote).toContain("edges");
+    expect(result!.peersNote).toContain("rig ps --nodes");
+  });
+
+  it("emits NO roster/podRoster field (advisor ruling: peers[] already IS the roster)", () => {
+    const { nodeA } = seedRig();
+    const result = svc.resolve({ nodeId: nodeA.id }) as unknown as Record<string, unknown>;
+
+    expect(result["roster"]).toBeUndefined();
+    expect(result["podRoster"]).toBeUndefined();
+  });
+
   it("unknown nodeId returns null", () => {
     seedRig();
     const result = svc.resolve({ nodeId: "nonexistent" });
