@@ -20,6 +20,9 @@ import type { ContextUsageStore } from "../domain/context-usage-store.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SessionTransport } from "../domain/session-transport.js";
 import type { PreviewRateLimiter } from "../domain/preview/preview-rate-limiter.js";
+import type { ClaimService } from "../domain/claim-service.js";
+import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
+import { convergeOp } from "../domain/topology-converge.js";
 
 export const sessionsRoutes = new Hono();
 export const nodesRoutes = new Hono();
@@ -360,6 +363,52 @@ sessionAdminRoutes.get("/:sessionName/preview", async (c) => {
   };
   rateLimiter?.set(cacheKey, payload);
   return c.json(payload);
+});
+
+// POST /api/sessions/:sessionName/reconcile — OPR.0.3.4.3 no-launch reconcile.
+// Adopt a LIVE hand-resumed canonical session back into its persisted node via
+// the reconcile_session converge op (sugar over the topology spine). Never
+// launches/kills/replays startup or writes input into the target pane.
+sessionAdminRoutes.post("/:sessionName/reconcile", async (c) => {
+  const sessionName = decodeURIComponent(c.req.param("sessionName")!);
+  const claimService = c.get("claimService" as never) as ClaimService | undefined;
+  const podInstantiator = c.get("podInstantiator" as never) as PodRigInstantiator | undefined;
+  if (!claimService || !podInstantiator) {
+    return c.json({ error: "Reconcile unavailable: claim service not configured on this daemon." }, 503);
+  }
+
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const rigId = typeof body["rigId"] === "string" ? body["rigId"] : undefined;
+  const logicalId = typeof body["logicalId"] === "string" ? body["logicalId"] : undefined;
+  if ((rigId && !logicalId) || (!rigId && logicalId)) {
+    return c.json({ error: "rigId and logicalId must be provided together (or both omitted)." }, 400);
+  }
+
+  const converged = await convergeOp(
+    { instantiator: podInstantiator, claimService },
+    rigId ?? "",
+    { kind: "reconcile_session", sessionName, rigId, logicalId },
+    ".",
+  );
+  if (converged.kind !== "reconcile_session" || !converged.supported) {
+    return c.json({ error: "Unexpected converge result for reconcile_session" }, 500);
+  }
+  const outcome = converged.outcome;
+
+  if (!outcome.ok) {
+    switch (outcome.code) {
+      case "session_not_found":
+      case "node_not_found":
+      case "rig_not_found":
+        return c.json(outcome, 404);
+      case "node_mismatch":
+        return c.json(outcome, 409);
+      default:
+        return c.json(outcome, 500);
+    }
+  }
+
+  return c.json(outcome, 200);
 });
 
 // POST /api/sessions/:sessionRef/unclaim

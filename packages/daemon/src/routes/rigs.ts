@@ -611,12 +611,12 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
     : undefined;
 
   const converged = await convergeOp(
-    podInstantiator,
+    { instantiator: podInstantiator },
     rigId,
     { kind: "add_member", pod: podNamespace, member: member as Record<string, unknown>, edges },
     rigRoot,
   );
-  // add_member is the one supported converge kind; the route is its sugar.
+  // This route is the add_member sugar over the converge interface.
   if (converged.kind !== "add_member" || !converged.supported) {
     return c.json({ error: "Unexpected converge result for add_member" }, 500);
   }

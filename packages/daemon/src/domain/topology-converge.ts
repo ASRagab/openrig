@@ -1,4 +1,5 @@
 import type { PodRigInstantiator, AddMemberOutcome } from "./rigspec-instantiator.js";
+import type { ClaimService, ReconcileSessionOutcome } from "./claim-service.js";
 
 /**
  * Topology-mutation converge spine (OPR.0.3.3.24, AC-6 scaffold).
@@ -20,6 +21,12 @@ import type { PodRigInstantiator, AddMemberOutcome } from "./rigspec-instantiato
 /** The complete topology-mutation op-kind set. */
 export type TopologyOp =
   | { kind: "add_member"; pod: string; member: Record<string, unknown>; edges?: Array<{ from: string; to: string; kind: string }> }
+  // OPR.0.3.4.3 — adopt a live hand-resumed canonical session back into its
+  // persisted node WITHOUT launch/kill/input (the no-launch reconcile path).
+  // An imperative REPAIR op: not derivable from a declarative membership diff
+  // (the node already exists; only the live-binding projection is stale), so
+  // diffTopology does not classify it — convergeOp applies it directly.
+  | { kind: "reconcile_session"; sessionName: string; rigId?: string; logicalId?: string }
   | { kind: "remove_member"; logicalId: string }
   | { kind: "move_member"; logicalId: string; toPod: string }
   | { kind: "fork_member"; logicalId: string; toMember: string }
@@ -28,7 +35,7 @@ export type TopologyOp =
 export type TopologyOpKind = TopologyOp["kind"];
 
 /** The op-kinds converge() implements this release. The rest are classified-deferred. */
-export const SUPPORTED_OP_KINDS: readonly TopologyOpKind[] = ["add_member"];
+export const SUPPORTED_OP_KINDS: readonly TopologyOpKind[] = ["add_member", "reconcile_session"];
 
 export function isSupportedOpKind(kind: TopologyOpKind): boolean {
   return SUPPORTED_OP_KINDS.includes(kind);
@@ -39,6 +46,7 @@ export const DEFERRED_OP_REASON = "detected, not yet supported in this release";
 
 export type ConvergeResult =
   | { kind: "add_member"; supported: true; outcome: AddMemberOutcome }
+  | { kind: "reconcile_session"; supported: true; outcome: ReconcileSessionOutcome }
   | { kind: TopologyOpKind; detected: true; supported: false; reason: string };
 
 /** A member as DECLARED in the desired spec (one pod-scoped member fragment). */
@@ -93,15 +101,28 @@ export function diffTopology(declared: DeclaredMember[], live: LiveMember[]): To
   return ops;
 }
 
+/** The domain services the converge boundary composes per op kind (OPR.0.3.4.3:
+ *  the spine grew a second implemented op, so convergeOp takes a deps object —
+ *  add_member runs on the instantiator, reconcile_session on the claim service's
+ *  no-input reconcile binding). */
+export interface ConvergeDeps {
+  instantiator: PodRigInstantiator;
+  /** Required for reconcile_session ops; add_member-only callers may omit it. */
+  claimService?: ClaimService;
+}
+
 /**
  * Apply a single topology op. `add_member` runs the extracted create-node +
- * launch-binding seam via PodRigInstantiator.addMemberToPod. Every other kind is
- * reported honestly as detected-but-unsupported (NEVER silently skipped). The
- * agent-ergonomics (json + honest 3-part errors) the CLI and MCP expose live ON
- * this converge boundary, so future verbs inherit human/agent parity.
+ * launch-binding seam via PodRigInstantiator.addMemberToPod; `reconcile_session`
+ * runs ClaimService.reconcileSession — the NO-LAUNCH, NO-INPUT adopt of a live
+ * hand-resumed session into its persisted node (never reaches NodeLauncher.
+ * launchNode or any pane-input primitive). Every other kind is reported honestly
+ * as detected-but-unsupported (NEVER silently skipped). The agent-ergonomics
+ * (json + honest 3-part errors) the CLI and MCP expose live ON this converge
+ * boundary, so future verbs inherit human/agent parity.
  */
 export async function convergeOp(
-  instantiator: PodRigInstantiator,
+  deps: ConvergeDeps,
   rigId: string,
   op: TopologyOp,
   rigRoot: string,
@@ -109,11 +130,26 @@ export async function convergeOp(
 ): Promise<ConvergeResult> {
   switch (op.kind) {
     case "add_member": {
-      const outcome = await instantiator.addMemberToPod(rigId, op.pod, op.member, rigRoot, {
+      const outcome = await deps.instantiator.addMemberToPod(rigId, op.pod, op.member, rigRoot, {
         cwdOverride: opts?.cwdOverride,
         edges: op.edges,
       });
       return { kind: "add_member", supported: true, outcome };
+    }
+    case "reconcile_session": {
+      if (!deps.claimService) {
+        return {
+          kind: "reconcile_session",
+          supported: true,
+          outcome: { ok: false, code: "reconcile_error", message: "Claim service unavailable; cannot reconcile." },
+        };
+      }
+      const outcome = await deps.claimService.reconcileSession({
+        sessionName: op.sessionName,
+        rigId: op.rigId,
+        logicalId: op.logicalId,
+      });
+      return { kind: "reconcile_session", supported: true, outcome };
     }
     case "remove_member":
     case "move_member":

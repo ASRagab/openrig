@@ -65,9 +65,13 @@ describe("topology-converge", () => {
   });
 
   describe("supported-op-kind set", () => {
-    it("supports only add_member this release", () => {
-      expect(SUPPORTED_OP_KINDS).toEqual(["add_member"]);
+    // OPR.0.3.4.3 grew the supported set: add_member (slice 24) +
+    // reconcile_session (the no-launch adopt). Identity-migrating kinds stay
+    // classified-deferred to the 0.4.0 identity theme.
+    it("supports exactly add_member + reconcile_session", () => {
+      expect(SUPPORTED_OP_KINDS).toEqual(["add_member", "reconcile_session"]);
       expect(isSupportedOpKind("add_member")).toBe(true);
+      expect(isSupportedOpKind("reconcile_session")).toBe(true);
       for (const k of ["remove_member", "move_member", "fork_member", "change_runtime"] as const) {
         expect(isSupportedOpKind(k)).toBe(false);
       }
@@ -108,7 +112,7 @@ describe("topology-converge", () => {
         member: { id: "server2", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp" },
       };
 
-      const result = await convergeOp(setup.podInstantiator, rig.id, op, ".");
+      const result = await convergeOp({ instantiator: setup.podInstantiator }, rig.id, op, ".");
 
       expect(result.kind).toBe("add_member");
       expect(result.supported).toBe(true);
@@ -128,7 +132,7 @@ describe("topology-converge", () => {
         member: { id: "server", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp" },
       };
 
-      const result = await convergeOp(setup.podInstantiator, rig.id, op, ".");
+      const result = await convergeOp({ instantiator: setup.podInstantiator }, rig.id, op, ".");
       expect(result.kind).toBe("add_member");
       if (result.kind !== "add_member" || !result.supported) return;
       expect(result.outcome.ok).toBe(false);
@@ -146,7 +150,7 @@ describe("topology-converge", () => {
       ];
 
       for (const op of unsupported) {
-        const result = await convergeOp(setup.podInstantiator, rig.id, op, ".");
+        const result = await convergeOp({ instantiator: setup.podInstantiator }, rig.id, op, ".");
         expect(result.supported).toBe(false);
         if (result.supported) continue;
         expect(result.detected).toBe(true);
