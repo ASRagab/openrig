@@ -8,6 +8,375 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.3.3] - 2026-06-11
+
+**Status**: released. npm `@openrig/cli@0.3.3` (latest); GitHub Release
+`v0.3.3`; git tag `v0.3.3`.
+
+### Summary For Installing Agents
+
+- **Package version**: package metadata bumped at release-manager step;
+  CLI reports the new version after `npm publish`.
+- **Migrations**: one new migration in 0.3.3 — `042_rig_archive`
+  (`ALTER TABLE rigs ADD COLUMN archived_at TEXT` + `idx_rigs_archived`;
+  append-only, non-destructive, no rigs-row restructure). Existing
+  databases upgrade by running `rig daemon start`.
+- **Node engines**: unchanged from 0.3.2 (CLI accepts Node `>=20`).
+- **Backward compatibility**: existing CLI argument shapes, daemon
+  route paths, RigSpec/AgentSpec schemas, and persisted settings
+  remain backward compatible. New routes are additive
+  (`/api/rigs/:id/archive`, `/api/rigs/:id/unarchive`,
+  `/api/rigs/:rigId/pods/:podNamespace/members`). New CLI commands
+  (`rig archive`, `rig unarchive`, `rig add` / `rig add-member`) are
+  additive. New `rig ps`, summary, and `rig up` flags
+  (`--include-archived`, `?includeArchived=true`, `?archived=only`)
+  are additive and default to existing exclude-archived behavior.
+
+### Large Startup-File Transport (slice 16)
+
+`TmuxAdapter.sendText` no longer caps at the OS `MAX_ARG_STRLEN`
+limit:
+
+- **Payloads over 100KB** are written to a unique temp file (Node
+  `fs`, never shell-embedded), loaded into a unique tmux buffer,
+  and pasted with `paste-buffer -d -r`. `-r` preserves raw LF so
+  multi-line packs do not early-submit on every newline; `-d`
+  drops the buffer on successful paste. The single trailing C-m
+  stays the caller's separate `sendKeys(["C-m"])`.
+- **Payloads under 100KB** keep the exact inline
+  `tmux send-keys -t <t> -l <text>` command (behavior-preserving).
+- **Cleanup**: temp file unlinked in `finally`; explicit
+  `delete-buffer` on paste-error path; unique temp + buffer names
+  per call so parallel `rig up` seats do not collide.
+- **Backward-compatible constructor**: optional second arg supplies
+  the file/buffer ops (default wires Node `fs` + `os.tmpdir`);
+  `new TmuxAdapter(exec)` is unchanged.
+
+### `send_text` Inline Dash Sentinel (slice 17)
+
+Inline `tmux send-keys -t <t> -l <text>` now carries a `--`
+end-of-options sentinel:
+
+- Any small `send_text` startup payload whose content begins with
+  `-` (notably `---` YAML frontmatter — the norm for per-seat
+  packs) is no longer parsed by tmux as flags.
+- Inert for non-dash content.
+- The slice-16 large/buffer path is already immune (content
+  travels via a file, never argv) and is untouched.
+
+### cmux 0.64.x Compatibility (slice 18)
+
+`surface.list` normalizer resolves the surface handle across cmux
+0.64.x AND 0.63.x:
+
+- cmux 0.64.x renamed the surface identifier: `list-panels --json`
+  rows carry `ref` with no `id` (0.63.x carried `id`). Result:
+  `surfaceId` came back undefined and cmux-transport never mapped
+  `surface.sendText` -> `cmux send`, throwing
+  "Unknown cmux method: surface.sendText" (HTTP 500
+  `build_workspace_failed`).
+- New `normalizeSurfaceRow` resolves the handle from
+  `ref ?? surface_ref ?? surface_id ?? id`, normalizing every
+  row regardless of array key (`panels` / `pane_surfaces` /
+  `surfaces`).
+- One resolution order serves both versions — no
+  version-negotiation shim. Mirrors the existing
+  `normalizeWorkspaceRow` and create/split handle patterns.
+
+### `rig archive` Affordance (slice 19)
+
+New top-level commands and a non-destructive archive lifecycle:
+
+```
+rig archive <rigId> [--force] [--json]
+rig unarchive <rigId> [--json]
+```
+
+- **Non-destructive**: rig row preserved; `archived_at` set;
+  `rig.archived` event fires. `unarchive` clears `archived_at`
+  and fires `rig.unarchived`.
+- **Default reads exclude archived**: `rig ps`,
+  `/api/rigs/summary`, `/api/rigs`, `/api/ps`. Opt-in via
+  `rig ps --include-archived` / `?includeArchived=true` /
+  `?archived=only`. `rig ps` marks archived rows with `*` and
+  renders a legend; the flag propagates through cross-host argv.
+- **`rig up` archived-name refusal (AC-7)**: a name matching ONLY
+  an archived rig is refused with a 3-part error pointing at
+  `rig unarchive`; `--json` emits `rig_archived`. Never silently
+  restores.
+- **`--force` on archive**: required when a rig is running or
+  degraded; surfaces a 3-part fact / consequence / action error
+  without it (AC-6).
+- **UI**: lazy collapsible "Archive" section under the localhost
+  host node, fed by `useArchivedRigs` (separate query against
+  `/api/rigs/summary?archived=only`), not by client-side
+  filtering. `rig.archived` / `rig.unarchived` events drive
+  global query invalidation (`["rigs","summary"]` +
+  `["rigs","summary","archived"]` + `["ps"]` + `["nodes", rigId]`
+  when present) so a CLI archive reactively refreshes other
+  mounted UIs.
+- **Migration `042_rig_archive`**: `ALTER TABLE rigs ADD COLUMN
+  archived_at TEXT` + `idx_rigs_archived`. Append-only; mirrors
+  the `023_stream_items` precedent.
+
+### `rig add` / `rig add-member` (slice 24)
+
+New top-level command for the `add_member` converge op:
+
+```
+rig add <rigId> <podNamespace> <member-fragment-path> \
+    [--json] [--rig-root <root>]
+```
+
+- **Member fragment**: YAML or JSON; tolerates a bare member or a
+  `{ member }` wrapper; uses the spec snake_case field names
+  (`id`, `runtime`, `agent_ref`, `profile`, `cwd`, ...).
+- **Daemon route**:
+  `POST /api/rigs/:rigId/pods/:podNamespace/members`. Outcome ->
+  HTTP: `rig_not_found` / `pod_not_found` -> 404,
+  `member_conflict` -> 409, `validation_failed` /
+  `preflight_failed` -> 400, success -> 201. Per-node launch
+  status (`launched` / `failed` / `attention_required`) rides in
+  the 201 body.
+- **MCP tool**: `rig_add` ships in lockstep.
+- **Honest edge validation**: non-array `edges` is REJECTED
+  (CLI prints error + exits 1; route returns 400
+  `validation_failed`; domain returns `validation_failed` as
+  defense in depth). Edge `kind` is validated against the
+  canonical `VALID_EDGE_KINDS` set exported from
+  `rigspec-schema.ts` and reused (not duplicated). Edges still
+  carry NO runtime behavior (the edge-runtime fence holds).
+- **Built on the topology-converge spine**: `Op` union + differ +
+  `convergeOp` scaffold (AC-6); `rig add` is imperative CLI
+  sugar over the converge interface, not a bypass.
+
+### `rig down` Accepts Name-or-Id (slice 22)
+
+`rig down <name>` now works:
+
+- `/api/rigs/summary?includeArchived=true` is fetched; id-match
+  across ALL rigs (archived ids still reach teardown);
+  name-match ACTIVE rigs only.
+- Same-name active+archived pair resolves the ACTIVE rig (not
+  ambiguous).
+- Archived-only name does not resolve by name (use the id, or
+  `rig unarchive` first).
+- The packaged `openrig-user` skill is corrected across specs
+  source + assets/plugins copy + `_canonical` mirror; the
+  `down.ts` resolver comment is corrected. The historical v0.3.1
+  and v0.3.2 CHANGELOG entries and release notes are left intact
+  (the bug genuinely existed at those releases).
+
+### Honest Codex Restore Gate (slice 21 FR-2)
+
+`verifyResumeLaunch` no longer returns `ok:true` unless the
+native-resume-probe proves the seat actually resumed:
+
+- **Unresolved operator-action gates** (update that cannot
+  auto-dismiss, trust, model-selection) and a bounded poll that
+  never reaches `resumed` return `ok:false` with
+  `recovery: attention_required` plus last-12-line pane evidence.
+- **Routes into existing projection**: `HarnessLaunchResult` ->
+  startup-orchestrator `startupStatus: attention_required` ->
+  `ps` / `status` projection. Same path the Codex auth-refusal
+  case already shipped; no new state machinery.
+- **Auto-dismiss preserved**: a skippable update gate still
+  auto-dismisses and continues to success; only UNRESOLVED gates
+  fail loudly. The readiness loop (`checkReady`) stays the
+  SECOND check that upgrades the seat to `ready` once it
+  genuinely reaches the TUI.
+- **Carry-forward**: FR-1 (native Codex session-id hook) scope-
+  tipped to 0.4.0 after build-time forensic; FR-2 ships alone in
+  0.3.3.
+
+### `rig send --verify` Honest Delivery Outcomes (slice 99.0.6.3)
+
+The three outcomes are now named in the response:
+
+- **`delivered`**: `ok:true` + post-capture re-confirmed the
+  snippet (the prior `Verified: yes`).
+- **`rendered-unconfirmed`**: text + Enter both succeeded but
+  the capture could not re-confirm (redraw race, or the capture
+  threw). LANDED, NOT failure. Exit stays clean.
+- **`failed`**: the transport itself failed (`send_failed` /
+  `submit_failed` carry `outcome: "failed"`; HTTP mapping
+  unchanged).
+
+The legacy `Verified: yes/no` line is preserved verbatim
+(parsers); a new `Delivery:` line carries the named outcome plus,
+for `rendered-unconfirmed`, a `rig capture <session>`
+confirmation pointer. `--json` carries `outcome` through.
+Mid-work / wait-for-idle REFUSALS deliberately carry no outcome
+(nothing was sent).
+
+### `rig whoami` Peers Contract (slice 99.0.6.1)
+
+`peers[]` is this rig's roster EXCLUDING self. It is NOT a
+directionally-edged subset, and it is NOT host inventory.
+
+- **`WhoamiResult.peersNote`** (required string, additive)
+  carries the contract in-band, naming the three pointers:
+  `peers[]` (roster), `edges{}` (directional graph),
+  `rig ps --nodes` (inventory including self + live state).
+- **CLI Peers header**: keeps the literal `Peers:` prefix
+  verbatim (shipped parsers grep on it), then adds the
+  in-band clarifier.
+- **No new field**: `peers[]` name and shape are unchanged; no
+  `roster` / `podRoster` field is added (peers[] already IS the
+  roster).
+
+### Workflow Instantiate By Name (slice 04.1)
+
+`rig workflow instantiate <built-in-name>` (e.g. `conveyor`,
+`basic-loop`) now resolves end-to-end:
+
+- `WorkflowRuntime.instantiate` resolves the identifier against
+  the seeded spec cache BY NAME first via the new
+  `WorkflowSpecCache.resolveSourcePathByName`, falling back to
+  literal-sourcePath only when no named spec matches.
+- The cache returns the STORED path verbatim — no source-tree
+  re-derivation — so the `dist/builtins` production layout
+  stays safe.
+- Diagnostic rows are excluded via `version != ''` (valid specs
+  always carry a version) so resolution needs no dependency on
+  the slice-11 status column / migration.
+
+### Guided Golden Path State Clarity (slice 04.2)
+
+The new-operator golden path now points at the correct discovery
+verb:
+
+- `rig workflow specs` lists built-in / seeded workflow specs
+  (`(built-in)` tagged). USE THIS to discover names before
+  `rig workflow instantiate <name>`.
+- `rig workflow list` lists workflow INSTANCES; empty for a
+  fresh operator.
+
+Corrected in `docs/reference/getting-started.md` and in the
+CLI's `setup` golden-path text (`goldenPathNextSteps()` step 4).
+
+### For-You Manage-By-Exception (slice 20)
+
+Feed-interaction UX on existing signals only (the 0.4.0
+attention-detection layer is untouched):
+
+- **Drill-to-terminal**: new `FeedCardTerminalDrill` in the card
+  footer opens the resolved source/author session's terminal
+  PREVIEW via `GET /api/sessions/:sessionName/preview`,
+  reusing `TerminalPreviewPopover` over the same
+  externally-owned-trigger event contract `TopologyTerminalView`
+  uses. Session-NAME keyed ONLY. Honest framing — "terminal
+  preview" / "captured snapshot, not live"; disabled with an
+  honest title when no session resolves.
+- **Decision-band sort**: `feed-classifier` exports
+  `sortFeedByDecisionBand` — a stable two-band partition
+  (action-required + approval above progress / observation /
+  shipped) using the existing newest-first comparator within
+  each band. Applied at the single `Feed.tsx` merge-consumption
+  seam. Not a ranking engine.
+- **One-click approve (approve-only)**: `VerbActions` gains an
+  additive `oneClickVerbs` prop. APPROVE submits directly on
+  click; deny/route stay select+confirm. Defense in depth:
+  prop type narrowed to
+  `Array<Extract<MissionControlVerb, "approve">>` so misuse is a
+  compile error, and a runtime `ONE_CLICK_SAFE_VERBS = {"approve"}`
+  allowlist rejects cast-forced `"deny"` / `"route"`. Reuses the
+  same `performSubmit` path (identical optimistic receipt and
+  held-error behavior).
+
+### CLI Release-Surface Parser (slice 13.1)
+
+Deterministic TypeScript Compiler API extractor that walks
+Commander registrations in `packages/cli/src/commands/*.ts` at
+two git refs and emits a structured release-surface-diff:
+
+- Resolves both Commander idioms (chained inline subcommands
+  and factory indirection through `addCommand(buildChildCommand())`).
+- Emits the REGISTRATION name (`rig-policy.ts` surfaces as
+  `policy`); option name-tokens taken from `.option()` arg[0]
+  only so template-literal descriptions never drop an option.
+- Reads batched via one `git cat-file --batch` per ref (fast,
+  offline, deterministic).
+- 3-part honest failure shape; never a silent empty diff.
+- NOT registered as a `rig` verb at 0.3.3 — the module is
+  product code with hermetic test fixtures (including a
+  v0.3.1..v0.3.2 worked example checked in at
+  `src/release-surface/release-surface-diff.v0.3.1-v0.3.2.yaml`).
+
+### Skill <-> CLI-Surface Binding Index (slice 13.2)
+
+Deterministic offline lookup that joins a release surface-diff
+to "which skills are affected by this release":
+
+- Composes with the slice 13.1 parser; invocation-agnostic.
+- Implements the ratified join grammar: component-wise prefix
+  match in either direction (so `up` does not match `update`);
+  conservative over-include bias for the no-false-negative floor.
+- Drops `--version` from the binding index (the canonical grammar
+  is command paths only, not global flags); the skill body still
+  documents `rig --version` as prose.
+- Ships with the v0.3.2-affected-skills regression fixture
+  derived from the corpus.
+
+### Known Limitations / 0.3.4+ Deferrals
+
+- **Slice-21 FR-1 (native Codex session-id hook)**: scope-tipped
+  to 0.4.0 after build-time forensic.
+- **Slice-13 component 3 (auto-rollout dispatcher)**: skill-layer
+  landing for this release; product-code dispatcher / invocation
+  is intentionally out of the shipped runtime bundle. 13.1
+  parser + 13.2 binding index ARE shipped product code.
+- **Slice-05 sub-scopes carried forward**: agent / port /
+  managed-app collision detection (Item 4.3); broader install-
+  into-existing-rig pathway acceptance (Item 4.4);
+  `--target-name` CLI flag for install-time rig-name overrides.
+- **Slice-21 FR-4(d) accepted-queue-state schema**: deferred from
+  0.3.2; carried forward.
+- **Onboarding journey + battle-hardening**: slices 04
+  (new-user-journey), 08 (hooks-elite), 10 (rig-self), 11
+  (personal-rig) carried forward to a later release.
+- **Workspace symlink alignment**: daemon-side workspace-resolver
+  alignment with operator symlinked workspace roots remains a
+  follow-up; non-blocking for 0.3.3.
+- **Slice-13 permission-block-routing-architecture remains held**:
+  big-green-light gated by operator review; `rigx-experimental`
+  only; not split-deferred (stays held).
+- **`rig view list/show --json` flag inconsistency** — wrapper-
+  layer routing path remains; the daemon's `view show <name>`
+  route returns JSON correctly when invoked directly.
+  Workaround: human-readable output for now.
+
+### Quick Verification Commands
+
+```bash
+# Confirm CLI version after the release-manager version bump
+rig --version
+
+# Confirm daemon starts and migration 042 applies
+rig daemon start
+
+# Confirm rig archive surface is wired
+rig archive --help
+rig unarchive --help
+
+# Confirm rig add surface is wired
+rig add --help
+
+# Confirm rig down accepts name-or-id
+rig down --help
+
+# Confirm rig workflow specs lists built-ins
+rig workflow specs
+
+# Confirm rig send --verify carries the delivery outcome
+rig send --help | grep -i verify
+
+# Confirm rig whoami peers contract is stated in-band
+rig whoami --json | jq '.peersNote'
+```
+
+---
+
 ## [0.3.2] - 2026-06-02
 
 **Status**: released. npm `@openrig/cli@0.3.2` (latest); GitHub Release

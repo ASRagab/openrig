@@ -381,6 +381,12 @@ rig whoami --node-id <id>
 
 If the daemon is unreachable but identity can still be inferred, `--json` may return a partial result instead of crashing.
 
+`WhoamiResult` (v0.3.3+) carries a required `peersNote` field with three pointers
+the agent can use to navigate the rest of the rig from a cold start. The
+human-formatted CLI output preserves the literal `Peers:` line prefix verbatim
+(parser/test compatibility) and surfaces the clarifier in-band beneath it; the
+JSON form exposes `peersNote` directly for programmatic consumers.
+
 ## Inventory and Monitoring
 
 ```bash
@@ -428,13 +434,31 @@ rig send <session> "message"
 rig send <session> "message" --verify
 rig send <session> "message" --force
 rig send <session> "message" --json
+rig send <session> --body-file <path> [--verify]
+rig send <session> --body-file - [--verify]
 ```
 
 Use `--verify` when you want delivery evidence. Use `--force` only when you intentionally want to bypass activity-risk checks.
 
+`--body-file <path>` reads the message body from a file; `--body-file -` reads
+from stdin. Use either form to kill the backtick-shell-corruption class for
+substantive bodies (the inline positional `"message"` form is fine for short
+plain text). `--body-file` is mutually exclusive with the positional body
+argument.
+
+`--verify` delivery outcomes (v0.3.3+):
+- `delivered` — text + Enter both succeeded and capture re-confirmed the body landed.
+- `rendered-unconfirmed` — text + Enter both succeeded but capture could not re-confirm the body (TUI redraw race or scroll). The message landed; the post-send re-check could not prove it. Treat as landed-but-unconfirmable, NOT failure.
+- `failed` — the send transport itself failed.
+
+The legacy `Verified: yes/no` line is preserved verbatim (parser/test
+compatibility). A new `Delivery: <outcome>` line carries the named outcome
+above.
+
 Observed operator nuance for `--verify`:
-- `Sent to ...` + `Verified: yes` = strong positive delivery evidence.
-- `Sent to ...` + `Verified: no` = ambiguous delivery, not automatic failure. The message may still land; treat this as verification drift until disproven.
+- `Sent to ...` + `Verified: yes` (`Delivery: delivered`) = strong positive delivery evidence.
+- `Sent to ...` + `Verified: no` + `Delivery: rendered-unconfirmed` = the message landed; capture could not re-prove it. Don't blind-retry — check reply / `rig capture` / transcript before sending again.
+- `Sent to ...` + `Verified: no` + `Delivery: failed` = send-transport failure.
 - no `Sent to ...` line or a hard error = send failure.
 
 When you get `Verified: no`, do not immediately retry blindly. First check one of:
@@ -557,6 +581,28 @@ rig down <rig> --json
 ```
 
 If `--snapshot` succeeds, human output includes the restore hint.
+
+### Archive a stopped rig (recoverable) — v0.3.3+
+
+```bash
+rig archive <rig> [--json]
+rig unarchive <rig> [--json]
+```
+
+`rig archive` marks a stopped rig as archived (sets `archivedAt`) without
+discarding it. The rig is preserved for later restoration via `rig unarchive`,
+which clears `archivedAt` and returns the rig to the active set.
+
+Archive vs delete:
+- `rig down --delete` — permanent removal; not recoverable.
+- `rig archive` — recoverable; the rig is hidden from the default active view but its record + snapshots are preserved.
+
+Visibility in `rig ps`:
+- `rig ps` — active rigs only (default).
+- `rig ps --include-archived` — includes archived rigs, marked with `*`.
+
+SSE events `rig.archived` / `rig.unarchived` drive Project / dashboard updates;
+consumers that depend on the rig list should subscribe rather than poll.
 
 ### Environment services
 
@@ -769,6 +815,27 @@ rig remove <rigId> <nodeRef> [--json]
 rig shrink <rigId> <podRef> [--json]
 rig unclaim <sessionRef> [--json]
 ```
+
+### Add a member to an existing pod — v0.3.3+
+
+```bash
+rig add <rig> <member-fragment-path> [--json]
+rig add-member <rig> <member-fragment-path> [--json]
+```
+
+`rig add` (alias `rig add-member`) is the top-level verb for the `add_member`
+converge op. It adds a single member to an existing pod from a YAML/JSON member
+fragment file. The fragment must declare the target pod; the daemon resolves
+the pod by that declared identity, validates the member, runs preflight, and
+launches the member in place.
+
+HTTP outcomes:
+- `201` — member added; per-node launch state included in the response.
+- `400` — `validation_failed` or `preflight_failed` (the fragment or its launch posture is rejected before any state change).
+- `409` — `member_conflict` (a member with that identity already exists in the pod).
+
+Use `rig add` when you want additive growth inside a pod without re-running
+the full `rig expand` pod-fragment path or rebuilding the rig.
 
 ## Specs and Validation
 

@@ -9,13 +9,13 @@ applies-when: |
   JSON output, cross-host, coordination primitives.
 siblings: [README.md, architecture/daemon-core.md]
 prerequisite-reads: [README.md]
-last-verified-against-source: 4f4db0fe
-last-updated: 2026-06-02
+last-verified-against-source: 53794fbe
+last-updated: 2026-06-11
 ---
 
 # OpenRig CLI Reference
 
-Verified against the shipped CLI on 2026-06-02 (v0.3.2) using:
+Verified against the shipped CLI on 2026-06-11 (v0.3.3) using:
 - `packages/cli/src/index.ts`
 - `packages/cli/src/commands/*.ts`
 - `packages/cli/src/mcp-server.ts`
@@ -26,7 +26,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 ## Overview
 
 - Binary: `rig`
-- Top-level command groups: `59`
+- Top-level command groups: `62`
 - Output mode: human-readable by default; many commands also support `--json`
 - Daemon-backed commands fail when the daemon is stopped or unhealthy; `daemon`, `config`, `preflight`, and `doctor` also have local responsibilities
 - Managed apps are launched through the normal spec/library surfaces; the canonical shipped example is `rig up secrets-manager`
@@ -53,6 +53,9 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | `bundle` | Manage rig bundles |
 | `up` | Bootstrap a rig from a spec or bundle |
 | `down` | Tear down a rig |
+| `archive` | Archive a rig (soft + reversible: hides it from the default view, retains all data) |
+| `unarchive` | Unarchive a rig (reverse of `rig archive`): returns it to the default view |
+| `add` | Add a member to an existing pod in a running rig (`add_member` converge op) |
 | `env` | Inspect and control rig environment services |
 | `ps` | List rigs and their status |
 | `mcp` | MCP server for agent integration |
@@ -288,6 +291,33 @@ Notes:
   refuses to tear down any of them and lists the matching ids - re-run with
   `rig down <id>`. An id always resolves directly (ids are never ambiguous).
 
+### `rig archive`
+
+Usage: `rig archive <rigId> [--force] [--json]`
+
+Flags:
+- `--force`: archive even if the rig is running or degraded
+- `--json`: JSON output for agents
+
+Notes:
+- Soft, reversible archive: hides the rig from the default explorer and `rig ps`, while retaining the rig record, topology, and snapshots.
+- Different from `rig down --delete` (delete is destructive; archive is recoverable).
+- Archived rigs are hidden from default `rig ps`; use `rig ps --include-archived` to see them.
+- Archiving a running or degraded rig requires `--force`; without it the call returns HTTP `409` with a three-part honest error and exits `2`.
+- Reverse with `rig unarchive <rigId>`.
+- Emits `rig.archived` SSE event.
+- Surface source-verified against `packages/cli/src/commands/archive.ts` at `53794fbe` (v0.3.3).
+
+### `rig unarchive`
+
+Usage: `rig unarchive <rigId> [--json]`
+
+Notes:
+- Reverse of `rig archive`: clears the `archived_at` flag so the rig returns to the default explorer and `rig ps` view.
+- Always non-destructive (the row and snapshots were retained while archived); no `--force` and no running-rig guard.
+- Emits `rig.unarchived` SSE event.
+- Surface source-verified against `packages/cli/src/commands/unarchive.ts` at `53794fbe` (v0.3.3).
+
 ### `rig env`
 
 Usage:
@@ -500,6 +530,24 @@ Notes:
 - Adds a pod fragment to a running rig.
 - `--rig-root` controls agent resolution.
 - Member YAML may carry `session_source` (see "Session source declaration" below) to start the new seat from a prior native conversation (`mode: fork`) or from operator-declared artifacts (`mode: rebuild`).
+
+### `rig add`
+
+Usage: `rig add <rig-id> <pod-namespace> <member-fragment-path> [--json] [--rig-root <path>]`
+
+Arguments:
+- `<rig-id>`: id of the target rig
+- `<pod-namespace>`: namespace of the existing pod to add the member to
+- `<member-fragment-path>`: path to a YAML/JSON member-fragment file (spec snake_case fields)
+
+Notes:
+- The `add_member` converge op verb: adds a member to an existing pod in a running rig from a YAML/JSON member-fragment file.
+- Member fragment accepts both the bare form (top-level member fields) and the wrapper form (`{ member: {...}, edges?: [...] }`). A top-level `edges:` field in the bare form is lifted as pod-local edges and is NOT silently dropped.
+- A present-but-non-array `edges` field is rejected with an honest error (no silent drop).
+- `--rig-root <path>` controls agent resolution.
+- HTTP outcomes: `201` on success (with the new node + persisted edges + optional warnings); `409 member_conflict`; `400 validation_failed` / `preflight_failed`; `404 pod_not_found` (lists existing pods).
+- Exit code is non-zero if the HTTP call failed OR the new node did not fully launch (`status !== "launched"`).
+- Surface source-verified against `packages/cli/src/commands/add.ts` at `53794fbe` (v0.3.3).
 
 ### Session source declaration (`session_source`)
 
@@ -1006,7 +1054,7 @@ Two subcommand groups: `slice` and `mission`.
 - `create <name> [--template <kind>] [--id <dot-id>] [--title <text>] [--json]` — create a new mission (mints a stable dot-ID into frontmatter). `--template` auto-selects when name matches `release-X.Y.Z`; `--id` overrides name-pattern inference.
 
 Notes:
-- Surface source-verified against `packages/cli/src/commands/scope.ts` at `4f4db0fe` (v0.3.2).
+- Surface source-verified against `packages/cli/src/commands/scope.ts` at `53794fbe` (v0.3.3).
 
 ## Operator Context-Mode Bindings (v0.3.2)
 
@@ -1034,7 +1082,7 @@ Notes:
 - Restate-and-confirm posture (HG-4): `set` is restate-only until `--confirm` is passed. This prevents accidental script application.
 - `--qualifier` strict reject for `global_host` (HG-7 guard finding): operators who type `--scope global_host --qualifier <id>` get an error and the daemon is never contacted. The CLI does NOT silently drop the qualifier.
 - Operator-edit mutations (`set --confirm`, `unset`) require an operator bearer token (`--bearer` or `OPENRIG_AUTH_BEARER_TOKEN` env).
-- Surface source-verified against `packages/cli/src/commands/rig-policy.ts` at `4f4db0fe` (v0.3.2).
+- Surface source-verified against `packages/cli/src/commands/rig-policy.ts` at `53794fbe` (v0.3.3).
 
 ## Commands Not Present
 
