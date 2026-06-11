@@ -2384,6 +2384,75 @@ describe("RestoreOrchestrator", () => {
       expect(binding?.tmuxSession).toBe("r99-worker");
     });
 
+    it("(B) POST-LAUNCH rollback with NO prior binding: launched binding is CLEARED, nothing points at the killed session", async () => {
+      // Guard BLOCKING dc16061c: priorState.binding === null. The launch
+      // created a binding; rollback must remove it — a binding left pointing
+      // at the killed session violates the zero-session contract.
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+        // deliberately NO withBinding — the node has no prior binding
+      });
+      const nodeId = snap.data.nodes[0]!.id;
+      expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({ ok: false as const, code: "resume_failed", message: "err" });
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("awaiting-decision");
+      // Launched mid-flow, killed at terminal.
+      expect((tmux.createSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      // No session row left running for the node.
+      const running = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE node_id = ? AND status = 'running'").get(nodeId) as { c: number };
+      expect(running.c).toBe(0);
+      // THE finding: the launched binding must not survive the rollback.
+      expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+    });
+
+    it("(B) POST-LAUNCH rollback: a null prior-binding field does NOT preserve launched-row data (exact restore, no partial merge)", async () => {
+      // Guard BLOCKING dc16061c item 3: prior binding exists but has a null
+      // field (cmuxSurface). If launched-binding data lands in that field
+      // mid-flow, a merge-style restore would keep it; exact restore must
+      // return the field to its prior null.
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+        withBinding: "worker", // prior binding: tmuxSession only, cmuxSurface null
+      });
+      const nodeId = snap.data.nodes[0]!.id;
+      const tmux = mockTmux();
+      const claude = {
+        canResume: vi.fn((type: string | null) => type === "claude_name" || type === "claude_id"),
+        resume: vi.fn(async () => {
+          // Simulate post-launch binding data (the launched row the merge
+          // would otherwise preserve) before the resume concludes failed.
+          sessionRegistry.updateBinding(nodeId, { cmuxSurface: "launched-surface" });
+          return { ok: false as const, code: "resume_failed", message: "err" };
+        }),
+      } as unknown as ClaudeResumeAdapter;
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
+      const binding = sessionRegistry.getBindingForNode(nodeId);
+      // Prior binding restored exactly: tmuxSession back, null field stays null.
+      expect(binding?.tmuxSession).toBe("r99-worker");
+      expect(binding?.cmuxSurface).toBeNull();
+    });
+
     it("PRECISION GUARD: a successful resume is never auto-killed", async () => {
       const snap = seedRigAndSnapshot({
         nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],

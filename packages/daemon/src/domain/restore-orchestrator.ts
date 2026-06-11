@@ -505,12 +505,22 @@ export class RestoreOrchestrator {
   }
 
   private restoreNodeState(nodeId: string, priorState: { binding: import("./types.js").Binding | null; sessions: { id: string; status: string }[] }): void {
-    // Restore prior binding
+    // Restore prior binding EXACTLY, not as a partial merge. The launch path
+    // may have created a binding for this node (NodeLauncher), and
+    // updateBinding alone is an upsert MERGE: a null prior binding would
+    // leave the launched binding pointing at a killed session, and null
+    // prior fields would silently preserve launched-row values. Clear first,
+    // then recreate from the prior fields — or leave absent when no prior
+    // binding existed. Shared by launch-failure compensation and
+    // rollbackToZeroSession so both carry the same exact semantics.
+    this.sessionRegistry.clearBinding(nodeId);
     if (priorState.binding) {
       this.sessionRegistry.updateBinding(nodeId, {
+        attachmentType: priorState.binding.attachmentType ?? undefined,
         tmuxSession: priorState.binding.tmuxSession ?? undefined,
         tmuxWindow: priorState.binding.tmuxWindow ?? undefined,
         tmuxPane: priorState.binding.tmuxPane ?? undefined,
+        externalSessionName: priorState.binding.externalSessionName ?? undefined,
         cmuxWorkspace: priorState.binding.cmuxWorkspace ?? undefined,
         cmuxSurface: priorState.binding.cmuxSurface ?? undefined,
       });
