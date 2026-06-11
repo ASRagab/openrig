@@ -126,6 +126,10 @@ export type RigEvent =
   | { type: "session.discovered"; discoveredId: string; tmuxSession: string; tmuxPane: string; runtimeHint: string; confidence: string }
   | { type: "session.vanished"; tmuxSession: string; tmuxPane: string }
   | { type: "node.claimed"; rigId: string; nodeId: string; logicalId: string; discoveredId: string }
+  // OPR.0.3.4.3 — a live (hand-resumed) canonical session adopted back into its
+  // persisted node WITHOUT launch/relaunch/input. Distinct from node.claimed so
+  // the operator is never misled about which op happened.
+  | { type: "node.reconciled"; rigId: string; nodeId: string; logicalId: string; sessionName: string }
   | { type: "seat.handover_completed"; rigId: string; nodeId: string; logicalId: string; previousOccupant: string; currentOccupant: string; source: string; reason: string; operator: string | null }
   // Bundle events (cross-rig)
   | { type: "bundle.created"; bundleName: string; bundleVersion: string; archiveHash: string }

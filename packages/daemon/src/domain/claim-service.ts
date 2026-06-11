@@ -11,6 +11,43 @@ export type ClaimResult =
   | { ok: true; nodeId: string; sessionId: string }
   | { ok: false; code: string; error: string };
 
+/**
+ * OPR.0.3.4.3 — outcome of the no-launch reconcile (adopt a hand-resumed
+ * canonical session back into its persisted node). Honest split: `projectionDrift`
+ * lists topology metadata the reconcile could NOT prove about the live pane;
+ * `continuity` is ALWAYS "unverified" — reconnecting the projection never claims
+ * the provider conversation is continuous.
+ */
+export interface ReconcileSessionResult {
+  rigId: string;
+  rigName: string;
+  nodeId: string;
+  logicalId: string;
+  sessionName: string;
+  sessionId: string;
+  /** Topology metadata the reconcile could not prove on the live pane (e.g.
+   *  "runtime unverified: pane command 'node' does not confirm runtime 'codex'"). */
+  projectionDrift: string[];
+  /** Provider-session conversation continuity is never verified by reconcile. */
+  continuity: "unverified";
+}
+
+export type ReconcileSessionOutcome =
+  | { ok: true; result: ReconcileSessionResult }
+  | { ok: false; code: "session_not_found"; message: string }
+  | { ok: false; code: "node_not_found"; message: string }
+  | { ok: false; code: "rig_not_found"; message: string }
+  | { ok: false; code: "node_mismatch"; message: string }
+  | { ok: false; code: "reconcile_error"; message: string };
+
+export interface ReconcileSessionOptions {
+  sessionName: string;
+  /** Optional explicit disambiguation; when given they are authoritative and
+   *  cross-checked against the session-name mapping. */
+  rigId?: string;
+  logicalId?: string;
+}
+
 interface ClaimServiceDeps {
   db: Database.Database;
   rigRepo: RigRepository;
@@ -194,6 +231,190 @@ export class ClaimService {
     } catch (err) {
       return { ok: false, code: "claim_error", error: (err as Error).message };
     }
+  }
+
+  /**
+   * OPR.0.3.4.3 — no-launch reconcile: adopt a LIVE, hand-resumed canonical
+   * session back into its persisted node. The safest outage repair (manual
+   * `claude --resume` / `codex resume` into the canonical tmux name) leaves the
+   * daemon projection showing the seat down; this binds the live process to its
+   * OWN node and flips the projection, and does NOTHING else.
+   *
+   * THE SAFETY LINE (guard rev1): reuses ONLY the DB binding / projection /
+   * metadata portions of bind — NEVER the post-claim input path. It does not
+   * call launchNode / createSession / killSession / sendText / sendKeys /
+   * deliverClaimHint / startup-or-resume delivery / compact-menu automation.
+   * Allowed target ops: hasSession check, pane metadata/PID reads,
+   * binding/session/projection upserts, non-input tmux metadata
+   * (setSessionOption), event emission, transcript bookkeeping.
+   *
+   * Identity boundary: binds to the EXISTING node — same node id, no re-key,
+   * no migration. Honest split: projectionDrift (unproven topology metadata)
+   * is reported separately; continuity is always "unverified".
+   */
+  async reconcileSession(opts: ReconcileSessionOptions): Promise<ReconcileSessionOutcome> {
+    const sessionName = opts.sessionName.trim();
+    if (!sessionName) {
+      return { ok: false, code: "session_not_found", message: "sessionName is required." };
+    }
+
+    // 1. Resolve the persisted node for this canonical session name. The
+    // session-name mapping is the daemon's own history (bindings + session
+    // rows); explicit --rig/--node are authoritative and cross-checked.
+    let nodeRow: { id: string; rig_id: string; logical_id: string; runtime: string | null; cwd: string | null } | undefined;
+    if (opts.rigId && opts.logicalId) {
+      const rig = this.rigRepo.getRig(opts.rigId);
+      if (!rig) {
+        return { ok: false, code: "rig_not_found", message: `Rig "${opts.rigId}" not found.` };
+      }
+      const node = rig.nodes.find((candidate) => candidate.logicalId === opts.logicalId);
+      if (!node) {
+        return { ok: false, code: "node_not_found", message: `Logical ID "${opts.logicalId}" does not exist in rig "${rig.rig.name}".` };
+      }
+      nodeRow = { id: node.id, rig_id: opts.rigId, logical_id: node.logicalId, runtime: node.runtime ?? null, cwd: node.cwd ?? null };
+      // Cross-check: if the daemon's history maps this session name to a
+      // DIFFERENT node, refuse honestly rather than silently re-pointing.
+      const mapped = this.resolveNodeIdForSessionName(sessionName);
+      if (mapped && mapped !== node.id) {
+        return {
+          ok: false,
+          code: "node_mismatch",
+          message: `Session "${sessionName}" maps to a different persisted node than ${opts.logicalId}. Re-check --rig/--node, or omit them to use the daemon's mapping.`,
+        };
+      }
+    } else {
+      const mappedNodeId = this.resolveNodeIdForSessionName(sessionName);
+      if (!mappedNodeId) {
+        return {
+          ok: false,
+          code: "node_not_found",
+          message: `No persisted node maps to session "${sessionName}". If this seat was never managed, use rig discover + rig bind; reconcile only re-adopts a previously managed seat. You can disambiguate with --rig <rig> --node <logicalId>.`,
+        };
+      }
+      const row = this.db
+        .prepare("SELECT id, rig_id, logical_id, runtime, cwd FROM nodes WHERE id = ?")
+        .get(mappedNodeId) as { id: string; rig_id: string; logical_id: string; runtime: string | null; cwd: string | null } | undefined;
+      if (!row) {
+        return { ok: false, code: "node_not_found", message: `Persisted node for session "${sessionName}" no longer exists.` };
+      }
+      nodeRow = row;
+    }
+
+    const rig = this.rigRepo.getRig(nodeRow.rig_id);
+    if (!rig) {
+      return { ok: false, code: "rig_not_found", message: `Rig for node "${nodeRow.logical_id}" no longer exists.` };
+    }
+
+    // 2. Verify a LIVE tmux session with the canonical name exists (read-only).
+    if (!this.tmuxAdapter) {
+      return { ok: false, code: "reconcile_error", message: "tmux adapter unavailable; cannot verify the live session." };
+    }
+    const alive = await this.tmuxAdapter.hasSession(sessionName);
+    if (!alive) {
+      return {
+        ok: false,
+        code: "session_not_found",
+        message: `No live tmux session named "${sessionName}". Reconcile adopts a RUNNING session; to start the seat, use the launch path instead.`,
+      };
+    }
+
+    // 3. Read-only pane facts for the honest drift report. Reading never
+    // injects input; failures degrade to drift entries, not errors.
+    const projectionDrift: string[] = [];
+    let paneCommand: string | null = null;
+    try {
+      paneCommand = await this.tmuxAdapter.getPaneCommand(sessionName);
+    } catch { paneCommand = null; }
+    if (nodeRow.runtime) {
+      const expectation: Record<string, string[]> = {
+        "claude-code": ["claude", "node"],
+        codex: ["codex", "node"],
+        terminal: [],
+      };
+      const expected = expectation[nodeRow.runtime];
+      if (!paneCommand) {
+        projectionDrift.push(`runtime unverified: pane command unreadable; node declares runtime "${nodeRow.runtime}"`);
+      } else if (expected && expected.length > 0 && !expected.includes(paneCommand)) {
+        projectionDrift.push(`runtime unverified: pane command "${paneCommand}" does not confirm runtime "${nodeRow.runtime}"`);
+      }
+    }
+    if (nodeRow.cwd) {
+      projectionDrift.push(`cwd unverified: node declares "${nodeRow.cwd}"; the live pane's cwd is not provable without injecting input`);
+    }
+
+    // 4. The DB portion of bind, reconcile-shaped: supersede stale session
+    // rows for THIS node, upsert the binding to the live session, register a
+    // fresh claimed-session row (status running), emit node.reconciled — one tx.
+    try {
+      let sessionId = "";
+      let persistedEvent: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
+      const tx = this.db.transaction(() => {
+        const stale = this.db
+          .prepare("SELECT id FROM sessions WHERE node_id = ? AND status = 'running'")
+          .all(nodeRow!.id) as Array<{ id: string }>;
+        for (const row of stale) {
+          this.sessionRegistry.markSuperseded(row.id);
+        }
+        this.sessionRegistry.updateBinding(nodeRow!.id, { tmuxSession: sessionName });
+        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName);
+        sessionId = session.id;
+        persistedEvent = this.eventBus.persistWithinTransaction({
+          type: "node.reconciled",
+          rigId: nodeRow!.rig_id,
+          nodeId: nodeRow!.id,
+          logicalId: nodeRow!.logical_id,
+          sessionName,
+        });
+      });
+      tx();
+      if (persistedEvent) this.eventBus.notifySubscribers(persistedEvent);
+
+      // 5. Best-effort NON-INPUT housekeeping: OpenRig-owned tmux metadata
+      // (setSessionOption only) + transcript capture (pipe-pane bookkeeping).
+      // Deliberately NO deliverClaimHint and NO context-collector provisioning
+      // — nothing that writes into the live pane or the seat's workspace.
+      try {
+        await this.setRiggedMetadata(sessionName, {
+          nodeId: nodeRow.id,
+          sessionName,
+          rigId: nodeRow.rig_id,
+          rigName: rig.rig.name,
+          logicalId: nodeRow.logical_id,
+        });
+      } catch { /* best-effort */ }
+      try {
+        await startTmuxTranscriptCapture(this.tmuxAdapter, this.transcriptStore, rig.rig.name, sessionName);
+      } catch { /* best-effort */ }
+
+      return {
+        ok: true,
+        result: {
+          rigId: nodeRow.rig_id,
+          rigName: rig.rig.name,
+          nodeId: nodeRow.id,
+          logicalId: nodeRow.logical_id,
+          sessionName,
+          sessionId,
+          projectionDrift,
+          continuity: "unverified",
+        },
+      };
+    } catch (err) {
+      return { ok: false, code: "reconcile_error", message: (err as Error).message };
+    }
+  }
+
+  /** Map a canonical session name to its persisted node via the daemon's own
+   *  history: the current binding first, then the most recent session row. */
+  private resolveNodeIdForSessionName(sessionName: string): string | null {
+    const bound = this.db
+      .prepare("SELECT node_id FROM bindings WHERE tmux_session = ?")
+      .get(sessionName) as { node_id: string } | undefined;
+    if (bound) return bound.node_id;
+    const recent = this.db
+      .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY created_at DESC, id DESC LIMIT 1")
+      .get(sessionName) as { node_id: string } | undefined;
+    return recent?.node_id ?? null;
   }
 
   async createAndBindToPod(opts: CreateAndBindToPodOptions): Promise<ClaimResult> {
