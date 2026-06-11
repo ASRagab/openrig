@@ -72,6 +72,13 @@ export function addMemberCommand(depsOverride?: StatusDeps): Command {
         return;
       }
 
+      // A PRESENT-but-non-array edges field is an honest error, never silently
+      // omitted (governance FM2 no-silent-drop).
+      if (edges !== undefined && edges !== null && !Array.isArray(edges)) {
+        console.error("Invalid member fragment: 'edges' must be an array of { from, to, kind }.");
+        process.exitCode = 1;
+        return;
+      }
       const body: Record<string, unknown> = { member };
       if (Array.isArray(edges)) body["edges"] = edges;
       if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;

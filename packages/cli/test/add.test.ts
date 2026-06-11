@@ -250,4 +250,16 @@ describe("rig add", () => {
     expect(sent.member["edges"]).toBeUndefined();
     expect(sent.member["id"]).toBe("server2");
   });
+
+  it("rejects a present-but-non-array edges field (exit 1, never posted, no silent omit)", async () => {
+    capturedBody = null;
+    writeFileSync(fragmentPath, `member:\n  id: server2\n  runtime: terminal\n  agent_ref: "builtin:terminal"\n  profile: none\n  cwd: /tmp\nedges: not-an-array\n`);
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
+    });
+    expect(exitCode).toBe(1);
+    expect(logs.join("\n")).toContain("edges");
+    // Rejected before the POST - never silently omitted and sent.
+    expect(capturedBody).toBeNull();
+  });
 });

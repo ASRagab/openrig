@@ -281,7 +281,7 @@ export class RigInstantiator {
 // -- Pod-aware instantiator (AgentSpec reboot) --
 
 import { RigSpecCodec as PodRigSpecCodec } from "./rigspec-codec.js";
-import { RigSpecSchema as PodRigSpecSchema } from "./rigspec-schema.js";
+import { RigSpecSchema as PodRigSpecSchema, VALID_EDGE_KINDS } from "./rigspec-schema.js";
 import { rigPreflight, preflightValidatedSpec } from "./rigspec-preflight.js";
 import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig } from "./profile-resolver.js";
@@ -824,20 +824,36 @@ export class PodRigInstantiator {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
     }
 
-    // 7. Resolve + validate any declared pod-local edges BEFORE creating the
-    // node, so a bad edge fails fast with no orphan seat. Endpoints are member
-    // ids within the pod; they resolve against the new member + existing
-    // pod-mates (qualified logical ids). Edges carry NO runtime behavior yet
-    // (the OPR.0.3.3.24 edge-runtime fence) - we persist the declared graph so
-    // it is NOT silently dropped (governance FM2).
-    const declaredEdges = opts?.edges ?? [];
+    // 7. Validate + resolve any declared pod-local edges BEFORE creating the
+    // node, so a bad edge fails fast with no orphan seat. Two honest failure
+    // classes: (a) DECLARATION validity (non-array / empty fields / a kind
+    // outside the canonical VALID_EDGE_KINDS - mirrors the rigspec pod-local
+    // edge contract, NOT a second looser path) -> validation_failed; (b) live
+    // ENDPOINT resolution against the new member + existing pod-mates ->
+    // edge_unresolved. Edges carry NO runtime behavior yet (the edge-runtime
+    // fence); we persist the declared graph so it is NOT silently dropped (FM2).
+    const rawEdges = opts?.edges;
+    if (rawEdges !== undefined && rawEdges !== null && !Array.isArray(rawEdges)) {
+      return { ok: false, code: "validation_failed", errors: ["edges: must be an array of { from, to, kind }"] };
+    }
+    const declaredEdges = Array.isArray(rawEdges) ? rawEdges : [];
+    const edgeErrors: string[] = [];
+    declaredEdges.forEach((edge, i) => {
+      if (typeof edge?.from !== "string" || typeof edge?.to !== "string" || typeof edge?.kind !== "string"
+        || edge.from.trim() === "" || edge.to.trim() === "" || edge.kind.trim() === "") {
+        edgeErrors.push(`edges[${i}]: from, to, and kind are required non-empty strings`);
+        return;
+      }
+      if (!VALID_EDGE_KINDS.has(edge.kind)) {
+        edgeErrors.push(`edges[${i}].kind: must be one of ${[...VALID_EDGE_KINDS].join(", ")} (got "${edge.kind}")`);
+      }
+    });
+    if (edgeErrors.length > 0) {
+      return { ok: false, code: "validation_failed", errors: edgeErrors };
+    }
     const knownLogicalIds = new Set<string>([...rig.nodes.map((node) => node.logicalId), qualifiedId]);
     const resolvedEdges: Array<{ from: string; to: string; kind: string }> = [];
     for (const edge of declaredEdges) {
-      if (typeof edge?.from !== "string" || typeof edge?.to !== "string" || typeof edge?.kind !== "string"
-        || edge.from.trim() === "" || edge.to.trim() === "" || edge.kind.trim() === "") {
-        return { ok: false, code: "edge_unresolved", message: `Pod-local edge must have non-empty from, to, and kind (got ${JSON.stringify(edge)}).` };
-      }
       const from = `${podNamespace}.${edge.from}`;
       const to = `${podNamespace}.${edge.to}`;
       if (!knownLogicalIds.has(from) || !knownLogicalIds.has(to)) {

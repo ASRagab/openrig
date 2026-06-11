@@ -162,4 +162,30 @@ describe("POST /api/rigs/:rigId/pods/:podNamespace/members", () => {
     const body = await res.json();
     expect(body.code).toBe("edge_unresolved");
   });
+
+  it("returns 400 for a present-but-non-array edges field (no silent drop)", async () => {
+    const rig = await seedRigWithPod();
+    const res = await setup.app.request(`/api/rigs/${rig.id}/pods/infra/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ member: terminalMember("server2"), edges: { from: "server2", to: "server", kind: "delegates_to" } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("validation_failed");
+    // Not silently created.
+    expect(setup.rigRepo.getRig(rig.id)!.nodes.some((n) => n.logicalId === "infra.server2")).toBe(false);
+  });
+
+  it("returns 400 for an invalid edge kind (validation_failed)", async () => {
+    const rig = await seedRigWithPod();
+    const res = await setup.app.request(`/api/rigs/${rig.id}/pods/infra/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ member: terminalMember("server2"), edges: [{ from: "server2", to: "server", kind: "nonsense_kind" }] }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("validation_failed");
+  });
 });

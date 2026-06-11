@@ -599,9 +599,15 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
   const rigRoot = typeof body["rigRoot"] === "string" ? body["rigRoot"] : ".";
   // Optional pod-local edges (from/to are member ids within the pod). Carried
   // through to the converge op so declared topology intent is not dropped; the
-  // domain validates + persists them (no edge-runtime behavior yet).
-  const edges = Array.isArray(body["edges"])
-    ? (body["edges"] as Array<{ from: string; to: string; kind: string }>)
+  // domain validates kinds + resolves endpoints + persists them (no edge-runtime
+  // behavior yet). A PRESENT-but-non-array edges field is rejected honestly,
+  // never silently treated as absent (governance FM2 no-silent-drop).
+  const rawEdges = body["edges"];
+  if (rawEdges !== undefined && rawEdges !== null && !Array.isArray(rawEdges)) {
+    return c.json({ ok: false, code: "validation_failed", errors: ["edges: must be an array of { from, to, kind }"] }, 400);
+  }
+  const edges = Array.isArray(rawEdges)
+    ? (rawEdges as Array<{ from: string; to: string; kind: string }>)
     : undefined;
 
   const converged = await convergeOp(

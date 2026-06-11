@@ -225,13 +225,38 @@ describe("PodRigInstantiator.addMemberToPod", () => {
     expect(edgeRows(rig.id)).toHaveLength(0);
   });
 
-  it("rejects a malformed edge (missing kind) with edge_unresolved", async () => {
+  it("rejects a malformed edge (empty kind) with validation_failed", async () => {
     const rig = await seedRigWithPod();
     const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
       edges: [{ from: "server2", to: "server", kind: "" }],
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("edge_unresolved");
+    expect(result.code).toBe("validation_failed");
+    // No orphan node from a rejected declaration.
+    expect(setup.rigRepo.getRig(rig.id)!.nodes.some((n) => n.logicalId === "infra.server2")).toBe(false);
+  });
+
+  it("rejects an edge kind outside the canonical set (validation_failed, shared VALID_EDGE_KINDS)", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
+      edges: [{ from: "server2", to: "server", kind: "nonsense_kind" }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("validation_failed");
+    expect(result.errors.join(" ")).toContain("delegates_to");
+    expect(edgeRows(rig.id)).toHaveLength(0);
+  });
+
+  it("rejects a present-but-non-array edges field with validation_failed (no silent drop)", async () => {
+    const rig = await seedRigWithPod();
+    const result = await setup.podInstantiator.addMemberToPod(rig.id, "infra", terminalMember("server2"), ".", {
+      edges: { from: "server2", to: "server", kind: "delegates_to" } as never,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("validation_failed");
+    expect(setup.rigRepo.getRig(rig.id)!.nodes.some((n) => n.logicalId === "infra.server2")).toBe(false);
   });
 });
