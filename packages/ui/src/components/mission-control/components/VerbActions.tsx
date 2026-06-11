@@ -20,6 +20,16 @@ export interface VerbActionsProps {
   actorSession: string;
   /** Restrict the verbs offered (e.g., my-queue may only show approve/deny). */
   enabledVerbs?: MissionControlVerb[];
+  /**
+   * OPR.0.3.3.20 — verbs that submit DIRECTLY on click (no select+confirm
+   * step), firing the same mutation + optimistic-receipt + held-error paths.
+   * APPROVE-ONLY by contract (PRD scope + section S): the type narrows the
+   * prop to "approve", and ONE_CLICK_SAFE_VERBS enforces the same allowlist
+   * at runtime — a verb outside it (including input-free verbs like deny)
+   * is NEVER one-clicked even if a caller forces it in; it falls back to the
+   * controlled select+confirm flow. For-You passes ["approve"].
+   */
+  oneClickVerbs?: Array<Extract<MissionControlVerb, "approve">>;
   onSettled?: () => void;
   /**
    * 0.3.1 demo-bug fix — optimistic outcome callback. Fires on
@@ -31,6 +41,12 @@ export interface VerbActionsProps {
    */
   onOptimisticOutcome?: (outcome: FeedActionOutcome) => void;
 }
+
+/** The one-click ALLOWLIST (OPR.0.3.3.20, approve-only by scope ruling).
+ *  Being input-free is necessary but NOT sufficient — deny needs no input yet
+ *  stays in the controlled select+confirm flow. A verb one-clicks only if the
+ *  caller lists it AND it is in this set. */
+const ONE_CLICK_SAFE_VERBS: ReadonlySet<MissionControlVerb> = new Set(["approve"]);
 
 function extractMutationErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -80,6 +96,7 @@ export function VerbActions({
   qitemId,
   actorSession,
   enabledVerbs = [...MISSION_CONTROL_VERBS],
+  oneClickVerbs,
   onSettled,
   onOptimisticOutcome,
 }: VerbActionsProps) {
@@ -116,18 +133,17 @@ export function VerbActions({
     setErrorMessage(null);
   }
 
-  function submit() {
-    if (!activeVerb) return;
-    const verb = activeVerb;
-    const dest = needsDestination ? destinationSession : undefined;
-    const reasonText = needsReason ? reason : undefined;
+  // Shared by the select+confirm submit AND the one-click path so both fire
+  // the identical mutation + optimistic-receipt + held-error behavior.
+  function performSubmit(verb: MissionControlVerb, inputs: { dest?: string; annotationText?: string; reasonText?: string }) {
+    const { dest, annotationText, reasonText } = inputs;
     mutation.mutate(
       {
         verb,
         qitemId,
         actorSession,
         destinationSession: dest,
-        annotation: needsAnnotation ? annotation : undefined,
+        annotation: annotationText,
         reason: reasonText,
       },
       {
@@ -151,6 +167,22 @@ export function VerbActions({
         },
       },
     );
+  }
+
+  function submit() {
+    if (!activeVerb) return;
+    performSubmit(activeVerb, {
+      dest: needsDestination ? destinationSession : undefined,
+      annotationText: needsAnnotation ? annotation : undefined,
+      reasonText: needsReason ? reason : undefined,
+    });
+  }
+
+  // OPR.0.3.3.20 — one-click submit, approve-only: both the caller's list AND
+  // the ONE_CLICK_SAFE_VERBS allowlist must contain the verb. Act-driven:
+  // fires on the operator's click, never on a timer.
+  function isOneClick(verb: MissionControlVerb): boolean {
+    return Boolean((oneClickVerbs as MissionControlVerb[] | undefined)?.includes(verb)) && ONE_CLICK_SAFE_VERBS.has(verb);
   }
 
   const destinationsQuery = useMissionControlDestinations(needsDestination);
@@ -180,14 +212,26 @@ export function VerbActions({
         {enabledVerbs.map((verb) => {
           const meta = ACTION_VERB_META[verb];
           const Icon = meta.icon;
+          const oneClick = isOneClick(verb);
           return (
             <button
               key={verb}
               type="button"
               data-testid={`mc-verb-${verb}`}
-              onClick={() => selectVerb(verb)}
+              data-one-click={oneClick ? "true" : undefined}
+              onClick={() => {
+                // OPR.0.3.3.20 — one-click verbs record immediately (no
+                // select+confirm step); input-needing verbs always go
+                // through the controlled flow.
+                if (oneClick) {
+                  setErrorMessage(null);
+                  performSubmit(verb, {});
+                  return;
+                }
+                selectVerb(verb);
+              }}
               disabled={mutation.isPending}
-              title={meta.description}
+              title={oneClick ? `${meta.description} (records immediately)` : meta.description}
               className={cn(
                 "inline-flex min-h-[44px] items-center gap-1 border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors disabled:opacity-50",
                 activeVerb === verb ? verbToneClass[verb].active : verbToneClass[verb].idle,

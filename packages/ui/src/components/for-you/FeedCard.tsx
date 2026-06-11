@@ -3,6 +3,7 @@ import { ArrowRight, CalendarDays, CircleAlert, Clock, History, PackageCheck, X 
 
 import { CornerBracket } from "../dashboard/vellum/index.js";
 import { AuthorAgentTag } from "./AuthorAgentTag.js";
+import { FeedCardTerminalDrill } from "./FeedCardTerminalDrill.js";
 import { QueueItemTrigger } from "../drawer-triggers/QueueItemTrigger.js";
 import type { QueueItemViewerData } from "../drawer-viewers/QueueItemViewer.js";
 import type { QueueItemDetail } from "../../hooks/useSlices.js";
@@ -498,6 +499,10 @@ export function FeedCard({
               qitemId={qitemViewerData.qitemId}
               actorSession={actorSession}
               enabledVerbs={["approve", "deny", "route"]}
+              // OPR.0.3.3.20 — manage-by-exception: approve records in ONE
+              // click (no select+confirm step), firing the same instant
+              // receipt. approve ONLY — deny/route stay controlled.
+              oneClickVerbs={["approve"]}
               onOptimisticOutcome={
                 onOptimisticOutcome
                   ? (outcome) => onOptimisticOutcome(qitemViewerData.qitemId, outcome)
@@ -522,6 +527,10 @@ export function FeedCard({
                 show context
               </QueueItemTrigger>
             ) : null}
+            {/* OPR.0.3.3.20 — drill into the source/author seat's terminal
+                preview (session-name keyed; honest disabled state when no
+                session resolves). */}
+            <FeedCardTerminalDrill cardId={card.id} sessionName={source} />
           </div>
         </div>
       </div>
