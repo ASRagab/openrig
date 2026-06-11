@@ -434,17 +434,18 @@ rig send <session> "message"
 rig send <session> "message" --verify
 rig send <session> "message" --force
 rig send <session> "message" --json
-rig send <session> --body-file <path> [--verify]
-rig send <session> --body-file - [--verify]
 ```
 
 Use `--verify` when you want delivery evidence. Use `--force` only when you intentionally want to bypass activity-risk checks.
 
-`--body-file <path>` reads the message body from a file; `--body-file -` reads
-from stdin. Use either form to kill the backtick-shell-corruption class for
-substantive bodies (the inline positional `"message"` form is fine for short
-plain text). `--body-file` is mutually exclusive with the positional body
-argument.
+As of v0.3.3 (slice 17), content beginning with `--` or `-` is safe:
+`rig send <session> "content starting with -- or - is now safe"` delivers
+literally. The daemon's `send_text` path carries an explicit `--`
+end-of-options sentinel so tmux no longer parses dash-prefixed content
+as its own flags. The CLI surface itself is unchanged. For multi-line
+or large bodies handed off as durable work, use
+`rig queue create --body-file <path>` (`-` for stdin) — that's the
+queue-side surface, not `rig send`.
 
 `--verify` delivery outcomes (v0.3.3+):
 - `delivered` — text + Enter both succeeded and capture re-confirmed the body landed.
