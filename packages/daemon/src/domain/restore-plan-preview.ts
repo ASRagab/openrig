@@ -10,6 +10,7 @@
 // snapshot capture (the auto-rehydrate capture is itself a mutation and is
 // only reported as would-happen), no projection writes.
 
+import type Database from "better-sqlite3";
 import type { RigWithRelations, Snapshot } from "./types.js";
 
 export interface RestorePlanPreviewNode {
@@ -61,6 +62,39 @@ function intendedActionFor(rows: PreviewSessionRow[]): { intendedAction: Restore
     };
   }
   return { intendedAction: "fresh-primed" };
+}
+
+/** Gather the session rows the preview forecasts from — the snapshot's
+ *  captured sessions when one exists, otherwise the live rows an
+ *  auto-rehydrate capture WOULD snapshot (read-only SELECT; the capture
+ *  itself is a mutation and is never performed here). */
+export function collectPreviewSessionRows(
+  db: Database.Database,
+  rig: RigWithRelations,
+  snapshot: Snapshot | null,
+): PreviewSessionRow[] {
+  if (snapshot) {
+    return (snapshot.data.sessions ?? []).map((s) => ({
+      nodeId: s.nodeId,
+      restorePolicy: s.restorePolicy ?? null,
+      resumeType: s.resumeType ?? null,
+      resumeToken: s.resumeToken ?? null,
+      id: s.id,
+    }));
+  }
+  const nodeIds = rig.nodes.map((n) => n.id);
+  if (nodeIds.length === 0) return [];
+  const placeholders = nodeIds.map(() => "?").join(",");
+  const rows = db.prepare(
+    `SELECT id, node_id, restore_policy, resume_type, resume_token FROM sessions WHERE node_id IN (${placeholders})`
+  ).all(...nodeIds) as Array<{ id: string; node_id: string; restore_policy: string | null; resume_type: string | null; resume_token: string | null }>;
+  return rows.map((r) => ({
+    nodeId: r.node_id,
+    restorePolicy: r.restore_policy,
+    resumeType: r.resume_type,
+    resumeToken: r.resume_token,
+    id: r.id,
+  }));
 }
 
 export function buildRestorePlanPreview(

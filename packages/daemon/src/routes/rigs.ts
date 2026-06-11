@@ -18,6 +18,7 @@ import type { AgentActivityStore } from "../domain/agent-activity-store.js";
 import type { SeatActivityService } from "../domain/seat-activity-service.js";
 import { deriveRigLifecycleState } from "../domain/ps-projection.js";
 import { assessCurrentStateRehydrateEligibility } from "../domain/rehydrate-eligibility.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
 import type { ContextUsageStore } from "../domain/context-usage-store.js";
 import type { Pod, ExpansionPodFragment } from "../domain/types.js";
 import type { RigExpansionService } from "../domain/rig-expansion-service.js";
@@ -476,6 +477,11 @@ rigsRoutes.post("/:id/up", async (c) => {
   const rig = repo.getRig(rigId);
   if (!rig) return c.json({ error: `Rig "${rigId}" not found. List rigs with: rig ps` }, 404);
 
+  // OPR.0.3.4.4 — this independent Explorer restore route previously parsed
+  // NO body, so plan:true was silently ignored and the route always mutated.
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const plan = body["plan"] === true;
+
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshotCapture = c.get("snapshotCapture" as never) as SnapshotCapture;
   let snapshot = snapshotRepo.findLatestRestoreUsable(rigId);
@@ -489,6 +495,15 @@ rigsRoutes.post("/:id/up", async (c) => {
         blockers: eligibility.blockers,
       }, 404);
     }
+  }
+
+  // OPR.0.3.4.4 — read-only plan gate BEFORE the auto-rehydrate capture
+  // (the capture is itself a mutation) and before restoreOrch.restore().
+  if (plan) {
+    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null)), 200);
+  }
+
+  if (!snapshot) {
     snapshot = snapshotCapture.captureSnapshot(rigId, "auto-rehydrate");
     capturedCurrentState = true;
   }

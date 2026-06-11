@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
+import type { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { buildAttentionResponse } from "../src/routes/up.js";
 
@@ -32,6 +33,7 @@ describe("Up API route", () => {
   let rigRepo: RigRepository;
   let sessionRegistry: SessionRegistry;
   let snapshotCapture: SnapshotCapture;
+  let restoreOrchestrator: RestoreOrchestrator;
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -42,6 +44,7 @@ describe("Up API route", () => {
     rigRepo = setup.rigRepo;
     sessionRegistry = setup.sessionRegistry;
     snapshotCapture = setup.snapshotCapture;
+    restoreOrchestrator = setup.restoreOrchestrator;
   });
 
   afterEach(() => {
@@ -217,6 +220,129 @@ describe("Up API route", () => {
       expect(body.status).toBe("restored");
       expect(body.snapshotKind).toBe("auto-rehydrate");
       expect(body.warnings).toContain("No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.");
+    });
+  });
+
+  // OPR.0.3.4.4 — `--plan` must be READ-ONLY on the rig_name restore path.
+  // The rig_name branch early-returned BEFORE the bootstrap plan gate, so
+  // `rig up --existing <rig> --plan` mutated (recreated sessions, flipped
+  // detached->running). These tests pin the daemon-level gate.
+  describe("OPR.0.3.4.4 --plan read-only restore gate (rig_name path)", () => {
+    function snapshotOf(db_: Database.Database, table: string): unknown[] {
+      return db_.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
+    }
+
+    it("plan:true returns a read-only preview: restore() NOT called, zero session/snapshot mutation", async () => {
+      const rig = rigRepo.createRig("plan-ro-rig");
+      const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+      const sess = sessionRegistry.registerSession(node.id, "worker@plan-ro-rig");
+      db.prepare("UPDATE sessions SET resume_type = ?, resume_token = ?, status = ? WHERE id = ?")
+        .run("claude_name", "tok-1", "detached", sess.id);
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+      const sessionsBefore = snapshotOf(db, "sessions");
+      const snapshotsBefore = snapshotOf(db, "snapshots");
+      const bindingsBefore = snapshotOf(db, "bindings");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-ro-rig", plan: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("plan");
+      expect(body.mode).toBe("restore");
+      expect(body.mutated).toBe(false);
+      // Useful preview: per-seat intended action, derived from resume state.
+      expect(body.nodes).toHaveLength(1);
+      expect(body.nodes[0].logicalId).toBe("worker");
+      expect(body.nodes[0].intendedAction).toBe("resume-original");
+      expect(body.snapshot).not.toBeNull();
+      expect(body.wouldCaptureCurrentState).toBe(false);
+      // THE gate: no restore mutation of any kind.
+      expect(restoreSpy).not.toHaveBeenCalled();
+      expect(snapshotOf(db, "sessions")).toEqual(sessionsBefore);
+      expect(snapshotOf(db, "snapshots")).toEqual(snapshotsBefore);
+      expect(snapshotOf(db, "bindings")).toEqual(bindingsBefore);
+    });
+
+    it("plan:true previews awaiting-decision for a recorded-source/no-token seat (forecasts the slice-02 stop)", async () => {
+      const rig = rigRepo.createRig("plan-ad-rig");
+      const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+      const sess = sessionRegistry.registerSession(node.id, "worker@plan-ad-rig");
+      db.prepare("UPDATE sessions SET resume_type = ?, resume_token = NULL, status = ? WHERE id = ?")
+        .run("claude_name", "detached", sess.id);
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-ad-rig", plan: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.nodes[0].intendedAction).toBe("awaiting-decision");
+      expect(body.nodes[0].reason).toContain("no token");
+    });
+
+    it("plan:true with no usable snapshot reports wouldCaptureCurrentState WITHOUT capturing", async () => {
+      const rig = rigRepo.createRig("plan-rehydrate-rig");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const session = sessionRegistry.registerSession(node.id, "dev-impl@plan-rehydrate-rig");
+      sessionRegistry.updateStatus(session.id, "stopped");
+      sessionRegistry.updateStartupStatus(session.id, "failed");
+      insertStartupContextRow(db, node.id);
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-rehydrate-rig", plan: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("plan");
+      expect(body.snapshot).toBeNull();
+      expect(body.wouldCaptureCurrentState).toBe(true);
+      // The auto-rehydrate capture is a mutation; plan must NOT perform it.
+      const rows = db.prepare("SELECT COUNT(*) as c FROM snapshots WHERE rig_id = ?").get(rig.id) as { c: number };
+      expect(rows.c).toBe(0);
+      expect(restoreSpy).not.toHaveBeenCalled();
+    });
+
+    it("plan:true with no usable snapshot and ineligible state still 404s (same as apply)", async () => {
+      rigRepo.createRig("plan-no-snap");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-no-snap", plan: true }),
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).code).toBe("no_snapshot");
+    });
+
+    it("APPLY regression: plan absent still restores (restore() called once)", async () => {
+      const rig = rigRepo.createRig("plan-apply-rig");
+      rigRepo.addNode(rig.id, "worker", { role: "worker" });
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-apply-rig" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("restored");
+      expect(restoreSpy).toHaveBeenCalledTimes(1);
     });
   });
 

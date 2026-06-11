@@ -1,6 +1,6 @@
 import nodePath from "node:path";
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, DaemonConnectionError } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, startDaemon, type LifecycleDeps } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -302,15 +302,38 @@ Examples:
         }
       }
 
-      const res = await client.post<Record<string, unknown>>("/api/up", {
-        sourceRef,
-        plan: opts.plan ?? false,
-        autoApprove: opts.yes ?? false,
-        cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
-        targetRoot,
-        // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
-        freshLogicalIds: opts.fresh,
-      }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+      // OPR.0.3.4.4 — honest async: a client timeout / connection loss in
+      // APPLY mode does NOT mean the operation failed; the daemon may still
+      // be processing. Report in-progress/unknown with a verify command,
+      // never a bare connection failure (the false-failure that caused the
+      // outage's wrong next move). No operation id is surfaced client-side
+      // on timeout today, so the honest message is the MVP floor.
+      const printHonestTimeout = (err: DaemonConnectionError): void => {
+        console.error(`The CLI timed out waiting for the daemon, but the operation may STILL BE IN PROGRESS.`);
+        console.error(`This does not mean the operation failed; the daemon may still be processing it.`);
+        console.error(`Verify the actual state with: rig ps`);
+        console.error(`(underlying: ${err.message})`);
+        process.exitCode = 1;
+      };
+
+      let res: { status: number; data: Record<string, unknown> };
+      try {
+        res = await client.post<Record<string, unknown>>("/api/up", {
+          sourceRef,
+          plan: opts.plan ?? false,
+          autoApprove: opts.yes ?? false,
+          cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
+          targetRoot,
+          // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
+          freshLogicalIds: opts.fresh,
+        }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+      } catch (err) {
+        if (err instanceof DaemonConnectionError && !opts.plan) {
+          printHonestTimeout(err);
+          return;
+        }
+        throw err;
+      }
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));
@@ -350,6 +373,25 @@ Examples:
 
       // Success output
       const resStatus = res.data["status"] as string;
+
+      // OPR.0.3.4.4 — read-only restore plan preview (`--plan` on the
+      // existing-rig path). Renders intended per-seat actions; nothing ran.
+      if (resStatus === "plan" && res.data["mode"] === "restore") {
+        const planRigName = res.data["rigName"] as string | undefined;
+        const planSnapshot = res.data["snapshot"] as { id: string; kind: string; createdAt: string } | null;
+        console.log(`Plan: restore rig "${planRigName ?? source}" (read-only preview)`);
+        if (planSnapshot) {
+          console.log(`Snapshot: ${planSnapshot.id} (kind=${planSnapshot.kind}, captured ${planSnapshot.createdAt})`);
+        } else if (res.data["wouldCaptureCurrentState"] === true) {
+          console.log(`Snapshot: none usable — apply would first capture current DB state as an auto-rehydrate snapshot.`);
+        }
+        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reason?: string }>) ?? [];
+        for (const n of planNodes) {
+          console.log(`  ${n.logicalId}: ${n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
+        }
+        console.log("No changes made.");
+        return;
+      }
 
       if (resStatus === "restored") {
         // Existing-rig power-on handoff
@@ -403,14 +445,23 @@ Examples:
               if (yes) accepted.push(n.logicalId);
             }
             if (accepted.length > 0) {
-              const freshRes = await client.post<Record<string, unknown>>("/api/up", {
-                sourceRef,
-                plan: false,
-                autoApprove: opts.yes ?? false,
-                cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
-                targetRoot,
-                freshLogicalIds: accepted,
-              }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+              let freshRes: { status: number; data: Record<string, unknown> };
+              try {
+                freshRes = await client.post<Record<string, unknown>>("/api/up", {
+                  sourceRef,
+                  plan: false,
+                  autoApprove: opts.yes ?? false,
+                  cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
+                  targetRoot,
+                  freshLogicalIds: accepted,
+                }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+              } catch (err) {
+                if (err instanceof DaemonConnectionError) {
+                  printHonestTimeout(err);
+                  return;
+                }
+                throw err;
+              }
               const freshNodes = (freshRes.data["nodes"] as Array<{ logicalId: string; status: string }>) ?? [];
               for (const n of freshNodes.filter((fn) => accepted.includes(fn.logicalId))) {
                 console.log(`  ${n.logicalId}: ${n.status}`);
