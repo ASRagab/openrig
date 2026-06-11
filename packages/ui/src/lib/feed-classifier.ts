@@ -221,3 +221,23 @@ export function classifyFeed(events: ActivityEvent[]): FeedCard[] {
   const cards = events.map(classifyEvent).filter((c): c is FeedCard => c !== null);
   return cards.sort((a, b) => b.receivedAt - a.receivedAt);
 }
+
+// OPR.0.3.3.20 — manage-by-exception ordering. The kinds that need a human
+// decision; everything else is non-decision noise relative to them.
+const DECISION_KINDS: ReadonlySet<FeedCardKind> = new Set(["action-required", "approval"]);
+
+/**
+ * OPR.0.3.3.20 — targeted decision-band sort over the classified/merged feed.
+ * Lifts ALL action-required/approval cards (including event-only ones, which
+ * the newest-first sort alone leaves buried under newer progress noise) above
+ * progress/observation/shipped, preserving newest-first WITHIN each band.
+ * A two-band stable partition + the existing recency comparator — deliberately
+ * NOT a priority-ranking engine (no scores, no per-kind weights, no new fields
+ * on the cards).
+ */
+export function sortFeedByDecisionBand(cards: FeedCard[]): FeedCard[] {
+  const newestFirst = (a: FeedCard, b: FeedCard) => b.receivedAt - a.receivedAt;
+  const decision = cards.filter((c) => DECISION_KINDS.has(c.kind)).sort(newestFirst);
+  const rest = cards.filter((c) => !DECISION_KINDS.has(c.kind)).sort(newestFirst);
+  return [...decision, ...rest];
+}

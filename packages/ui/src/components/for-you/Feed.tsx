@@ -19,6 +19,7 @@ import { useActivityFeed } from "../../hooks/useActivityFeed.js";
 import { useAttentionItems } from "../../hooks/useAttentionItems.js";
 import {
   classifyFeed,
+  sortFeedByDecisionBand,
   type FeedCard as FeedCardModel,
   type FeedCardKind,
 } from "../../lib/feed-classifier.js";
@@ -256,8 +257,11 @@ export function Feed() {
     [attentionQuery.data],
   );
   const eventDerivedCards = useMemo(() => classifyFeed(events).slice(0, HISTORY_LIMIT), [events]);
+  // OPR.0.3.3.20 — manage-by-exception: band-sort the merged output so ALL
+  // decision cards (incl. event-only action-required) sit above non-decision
+  // noise, newest-first within each band.
   const rawCards = useMemo(
-    () => mergeAttentionIntoFeed(eventDerivedCards, queueDerivedAttention),
+    () => sortFeedByDecisionBand(mergeAttentionIntoFeed(eventDerivedCards, queueDerivedAttention)),
     [eventDerivedCards, queueDerivedAttention],
   );
   // OPR.0.3.2.20 — useDismissedSeqs auto-prunes by min-seq across
