@@ -551,7 +551,7 @@ describe("Rig CRUD routes", () => {
     const body = await res.json();
     expect(body.status).toBe("restored");
     expect(body.rigResult).toBe("partially_restored");
-    expect(body.nodes[0].status).toBe("fresh");
+    expect(body.nodes[0].status).toBe("fresh-primed");
   });
 
   it("POST /api/rigs/:id/up returns validation blockers as not_attempted", async () => {

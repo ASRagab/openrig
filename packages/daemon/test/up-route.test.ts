@@ -103,7 +103,7 @@ describe("Up API route", () => {
     const body = await res.json();
     expect(body.status).toBe("restored");
     expect(body.rigResult).toBe("partially_restored");
-    expect(body.nodes[0].status).toBe("fresh");
+    expect(body.nodes[0].status).toBe("fresh-primed");
   });
 
   it("POST /api/up restoring an existing rig name returns validation blockers", async () => {

@@ -739,7 +739,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     // NS-T04: resume failure is now FAILED loudly, no silent fallback to checkpoint
-    if (result.ok) expect(result.result.nodes[0]!.status).toBe("failed");
+    if (result.ok) expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
     fs.rmSync(tmpDir, { recursive: true });
   });
 
@@ -761,7 +761,7 @@ describe("RestoreOrchestrator", () => {
     const result = await orch.restore(snap.id);
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.result.nodes[0]!.status).toBe("failed");
+    if (result.ok) expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
   });
 
   it("restore_policy=relaunch_fresh -> resume NOT attempted", async () => {
@@ -867,7 +867,7 @@ describe("RestoreOrchestrator", () => {
     const result = await orch.restore(snap.id);
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.result.nodes[0]!.status).toBe("fresh");
+    if (result.ok) expect(result.result.nodes[0]!.status).toBe("fresh-primed");
   });
 
   it("node launch fails -> status 'failed', remaining nodes processed", async () => {
@@ -1195,8 +1195,8 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.result.nodes[0]!.status).toBe("failed");
-      expect(result.result.nodes[0]!.error).toContain("Resume requested but no token available");
+      expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
+      expect(result.result.nodes[0]!.error).toContain("no token available");
       expect(launchHarness).not.toHaveBeenCalled();
     }
   });
@@ -1216,8 +1216,8 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.result.nodes[0]!.status).toBe("failed");
-      expect(result.result.nodes[0]!.error).toContain("Resume requested but no token available");
+      expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
+      expect(result.result.nodes[0]!.error).toContain("no token available");
     }
   });
 
@@ -1249,8 +1249,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const nodeResult = result.result.nodes.find((n) => n.nodeId === node.id);
-      expect(nodeResult!.status).toBe("failed");
-      expect(nodeResult!.error).toContain("Resume requested but no token available");
+      expect(nodeResult!.status).toBe("awaiting-decision");
+      expect(nodeResult!.error).toContain("no token available");
       expect(mockAdapter.launchHarness).not.toHaveBeenCalled();
     }
   });
@@ -1319,8 +1319,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const nodeResult = result.result.nodes.find((n) => n.nodeId === node.id);
-      expect(nodeResult!.status).toBe("failed");
-      expect(nodeResult!.error).toContain("Resume requested but no token available");
+      expect(nodeResult!.status).toBe("awaiting-decision");
+      expect(nodeResult!.error).toContain("no token available");
       expect(mockAdapter.launchHarness).not.toHaveBeenCalled();
     }
   });
@@ -1471,7 +1471,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const nodeResult = result.result.nodes.find((n) => n.nodeId === node.id);
-      expect(nodeResult!.status).toBe("fresh");
+      expect(nodeResult!.status).toBe("fresh-primed");
     }
   });
 
@@ -1575,7 +1575,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const nodeResult = result.result.nodes.find((n) => n.nodeId === node.id);
-      expect(nodeResult!.status).toBe("fresh");
+      expect(nodeResult!.status).toBe("fresh-primed");
       expect(tmux.sendText).toHaveBeenCalledWith("infra-ui@test-rig", "npm run dev");
     }
   });
@@ -1697,8 +1697,8 @@ describe("RestoreOrchestrator", () => {
     if (!result.ok) return;
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
     expect(node).toBeDefined();
-    // D2 invariant: failed resume must be FAILED loudly, not silently downgraded to fresh
-    expect(node!.status).toBe("failed");
+    // OPR.0.3.4.2: missing-token stop-and-ask is awaiting-decision (zero session), never silent fresh
+    expect(node!.status).toBe("awaiting-decision");
   });
 
   it("D2: legacy node with resume attempted but unavailable returns failed, not fresh", async () => {
@@ -1718,8 +1718,8 @@ describe("RestoreOrchestrator", () => {
     if (!result.ok) return;
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
     expect(node).toBeDefined();
-    // D2 invariant: resume attempted but failed → status "failed", not "fresh"
-    expect(node!.status).toBe("failed");
+    // OPR.0.3.4.2: resume concluded failed -> rolled back to zero sessions, awaiting-decision (never silent fresh)
+    expect(node!.status).toBe("awaiting-decision");
   });
 
   // --- Epic 3 D3: rig-level restore result vocabulary ---
@@ -1776,7 +1776,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
-  it("D3: all nodes failed → rigResult failed", async () => {
+  it("D3: all nodes stop-and-ask → rigResult partially_restored (awaiting-decision is not failed)", async () => {
     const snapshot = seedRigAndSnapshot({
       nodes: [
         { logicalId: "agent-a", role: "worker", runtime: "claude-code" },
@@ -1794,7 +1794,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.result.rigResult).toBe("failed");
+    expect(result.result.rigResult).toBe("partially_restored");
   });
 
   it("D3: any fresh node prevents fully_restored", async () => {
@@ -1813,7 +1813,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
-    expect(node?.status).toBe("fresh");
+    expect(node?.status).toBe("fresh-primed");
     // D3 invariant per PM: fresh nodes prevent fully_restored
     expect(result.result.rigResult).not.toBe("fully_restored");
     expect(result.result.rigResult).toBe("partially_restored");
@@ -2316,4 +2316,230 @@ describe("RestoreOrchestrator", () => {
       }
     });
   });
+
+  // === OPR.0.3.4.2 — zero-session regression guard (the headline) ===
+  describe("OPR.0.3.4.2 awaiting-decision zero-session guard", () => {
+    it("(A) PRE-LAUNCH: missing token -> awaiting-decision with launchNode NOT called and session list unchanged", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        // resumeToken deliberately absent
+      });
+      const tmux = mockTmux();
+      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const launchSpy = vi.spyOn(nodeLauncher, "launchNode");
+      const orch = new RestoreOrchestrator({
+        db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
+        checkpointStore, nodeLauncher, tmuxAdapter: tmux,
+        claudeResume: mockClaudeResume(), codexResume: mockCodexResume(),
+      });
+
+      const before = db.prepare("SELECT COUNT(*) as c FROM sessions").get() as { c: number };
+      const result = await orch.restore(snap.id);
+      const after = db.prepare("SELECT COUNT(*) as c FROM sessions").get() as { c: number };
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("awaiting-decision");
+      expect(node.error).toContain("--fresh worker");
+      // ZERO session started: launchNode never called, session count unchanged.
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(after.c).toBe(before.c);
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    });
+
+    it("(B) POST-LAUNCH rollback: resume concluded failed -> awaiting-decision, launched session KILLED + superseded, prior state restored", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+        withBinding: "worker",
+      });
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({ ok: false as const, code: "resume_failed", message: "err" });
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("awaiting-decision");
+      expect(node.error).toContain("rolled back");
+      // The session was PRESENT mid-flow (launch happened: createSession called)
+      // and is ABSENT at the terminal (killSession called) - distinguishes
+      // (B)-rolled-back from (A)-never-launched.
+      expect((tmux.createSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      // No session row left running for the node.
+      const rig = rigRepo.listRigs()[0]!;
+      const nodeRow = rigRepo.getRig(rig.id)!.nodes[0]!;
+      const running = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE node_id = ? AND status = 'running'").get(nodeRow.id) as { c: number };
+      expect(running.c).toBe(0);
+      // Prior binding restored (the pre-restore tmux session name).
+      const binding = sessionRegistry.getBindingForNode(nodeRow.id);
+      expect(binding?.tmuxSession).toBe("r99-worker");
+    });
+
+    it("(B) POST-LAUNCH rollback with NO prior binding: launched binding is CLEARED, nothing points at the killed session", async () => {
+      // Guard BLOCKING dc16061c: priorState.binding === null. The launch
+      // created a binding; rollback must remove it — a binding left pointing
+      // at the killed session violates the zero-session contract.
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+        // deliberately NO withBinding — the node has no prior binding
+      });
+      const nodeId = snap.data.nodes[0]!.id;
+      expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({ ok: false as const, code: "resume_failed", message: "err" });
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("awaiting-decision");
+      // Launched mid-flow, killed at terminal.
+      expect((tmux.createSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      // No session row left running for the node.
+      const running = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE node_id = ? AND status = 'running'").get(nodeId) as { c: number };
+      expect(running.c).toBe(0);
+      // THE finding: the launched binding must not survive the rollback.
+      expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+    });
+
+    it("(B) POST-LAUNCH rollback: a null prior-binding field does NOT preserve launched-row data (exact restore, no partial merge)", async () => {
+      // Guard BLOCKING dc16061c item 3: prior binding exists but has a null
+      // field (cmuxSurface). If launched-binding data lands in that field
+      // mid-flow, a merge-style restore would keep it; exact restore must
+      // return the field to its prior null.
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+        withBinding: "worker", // prior binding: tmuxSession only, cmuxSurface null
+      });
+      const nodeId = snap.data.nodes[0]!.id;
+      const tmux = mockTmux();
+      const claude = {
+        canResume: vi.fn((type: string | null) => type === "claude_name" || type === "claude_id"),
+        resume: vi.fn(async () => {
+          // Simulate post-launch binding data (the launched row the merge
+          // would otherwise preserve) before the resume concludes failed.
+          sessionRegistry.updateBinding(nodeId, { cmuxSurface: "launched-surface" });
+          return { ok: false as const, code: "resume_failed", message: "err" };
+        }),
+      } as unknown as ClaudeResumeAdapter;
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("awaiting-decision");
+      const binding = sessionRegistry.getBindingForNode(nodeId);
+      // Prior binding restored exactly: tmuxSession back, null field stays null.
+      expect(binding?.tmuxSession).toBe("r99-worker");
+      expect(binding?.cmuxSurface).toBeNull();
+    });
+
+    it("PRECISION GUARD: a successful resume is never auto-killed", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+      });
+      const tmux = mockTmux();
+      const orch = createOrchestrator2(tmux, mockClaudeResume({ ok: true as const }));
+
+      const result = await orch.restore(snap.id);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("resumed");
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    });
+
+    it("BOUNDARY: a live parked resume prompt stays attention_required (no kill, never awaiting-decision)", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+      });
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({ ok: false as const, code: "attention_required", message: "resume selection prompt", evidence: "1. session-a\n2. session-b" } as never);
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("attention_required");
+      expect(node.status).not.toBe("awaiting-decision");
+      // The LIVE parked session is never killed.
+      expect((tmux.killSession as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    });
+
+    it("--fresh opt-in (operation B): listed seat launches deliberately and reports fresh-primed", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        // no token: without --fresh this seat would be awaiting-decision
+      });
+      const tmux = mockTmux();
+      const orch = createOrchestrator2(tmux, mockClaudeResume());
+
+      const result = await orch.restore(snap.id, { freshLogicalIds: ["worker"] });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("fresh-primed");
+      expect((tmux.createSession as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    it("--fresh on a resumable seat also fresh-primes (deliberate operator override)", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+      });
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({ ok: true as const });
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id, { freshLogicalIds: ["worker"] });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("fresh-primed");
+      // The resume path was deliberately skipped.
+      expect((claude.resume as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    });
+
+    it("five-term vocabulary: all five terms are distinct strings", () => {
+      const terms = ["resumed", "fresh-primed", "awaiting-decision", "attention_required", "failed"];
+      expect(new Set(terms).size).toBe(5);
+    });
+  });
+
+  function createOrchestrator2(tmux: TmuxAdapter, claude: ClaudeResumeAdapter) {
+    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    return new RestoreOrchestrator({
+      db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
+      checkpointStore, nodeLauncher, tmuxAdapter: tmux,
+      claudeResume: claude, codexResume: mockCodexResume(),
+    });
+  }
 });

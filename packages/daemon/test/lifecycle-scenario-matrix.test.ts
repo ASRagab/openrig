@@ -661,7 +661,9 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       const map = Object.fromEntries(outcome.result.nodes.map((n) => [n.nodeId, n.status]));
       expect(map[ctx.nodeIds.claudeOk]).toBe("resumed");
       expect(map[ctx.nodeIds.claudeAtt]).toBe("attention_required");
-      expect(map[ctx.nodeIds.codexFail]).toBe("failed");
+      // OPR.0.3.4.2: a CONCLUDED resume failure rolls back to zero sessions
+      // and reports awaiting-decision (the stop-and-ask), not failed.
+      expect(map[ctx.nodeIds.codexFail]).toBe("awaiting-decision");
 
       // restore.completed event payload preserves per-node discrimination.
       const completedRow = ctx.db
@@ -674,7 +676,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       ctx.db.close();
     });
 
-    it("all-failed → rigResult=failed (NOT partially_restored)", async () => {
+    it("all resume-failures stop-and-ask → rigResult=partially_restored (awaiting-decision is not failed)", async () => {
       const db = createFullTestDb();
       const rigRepo = new RigRepository(db);
       const sessionRegistry = new SessionRegistry(db);
@@ -711,7 +713,11 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       const outcome = await orchestrator.restore(snap.id);
       expect(outcome.ok).toBe(true);
       if (!outcome.ok) throw new Error(`restore failed: ${outcome.code}`);
-      expect(outcome.result.rigResult).toBe("failed");
+      // OPR.0.3.4.2: concluded resume failures are awaiting-decision (zero
+      // session, operator must choose) - not failed - so the rig rolls up
+      // partially_restored. Genuine all-harness-failure rollup stays covered
+      // by the launch-failure tests.
+      expect(outcome.result.rigResult).toBe("partially_restored");
 
       db.close();
     });

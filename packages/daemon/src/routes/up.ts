@@ -87,7 +87,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
  *
  * Shared helper used by both /api/up (rig_name) and /api/rigs/:rigId/up (Explorer).
  */
-async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }) {
+async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[]) {
   const { snapshotRepo, restoreOrchestrator } = deps;
 
   const rig = deps.rigRepo.getRig(rigId);
@@ -118,6 +118,8 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
   const result = await restoreOrchestrator.restore(snapshot.id, {
     adapters: deps.runtimeAdapters ?? {},
     fsOps: { exists: (p: string) => fs.existsSync(p) },
+    // OPR.0.3.4.2 — operation B opt-in seats from `rig up --existing --fresh`.
+    freshLogicalIds,
   });
   if (!result.ok) {
     if (result.code === "pre_restore_validation_failed") {
@@ -188,7 +190,10 @@ upRoutes.post("/", async (c) => {
         const ids = rigs.map((r) => r.id).join(", ");
         return c.json({ error: `Multiple rigs named "${sourceRef}" found (IDs: ${ids}). Use rig restore --rig <rigId> with a specific rig ID.`, code: "ambiguous_name" }, 409);
       }
-      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c) as any;
+      const freshLogicalIds = Array.isArray(body["freshLogicalIds"])
+        ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
+        : undefined;
+      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds) as any;
     }
 
     // File-based: resolve path now
