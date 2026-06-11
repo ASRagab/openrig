@@ -288,6 +288,63 @@ describe("Up API route", () => {
       expect(body.nodes[0].reason).toContain("no token");
     });
 
+    it("plan:true + freshLogicalIds previews fresh-primed for the listed RESUMABLE seat (operation-B honesty), zero mutation", async () => {
+      // Guard BLOCKING a23009d8: a token-resumable seat listed in --fresh
+      // must preview what apply would DO (deliberate fresh-prime), not what
+      // the token alone suggests (resume-original).
+      const rig = rigRepo.createRig("plan-fresh-rig");
+      const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+      const sess = sessionRegistry.registerSession(node.id, "worker@plan-fresh-rig");
+      db.prepare("UPDATE sessions SET resume_type = ?, resume_token = ?, status = ? WHERE id = ?")
+        .run("claude_name", "tok-1", "detached", sess.id);
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+      const sessionsBefore = snapshotOf(db, "sessions");
+      const snapshotsBefore = snapshotOf(db, "snapshots");
+      const bindingsBefore = snapshotOf(db, "bindings");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-fresh-rig", plan: true, freshLogicalIds: ["worker"] }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("plan");
+      expect(body.nodes[0].logicalId).toBe("worker");
+      expect(body.nodes[0].intendedAction).toBe("fresh-primed");
+      expect(body.nodes[0].reason).toContain("--fresh");
+      expect(restoreSpy).not.toHaveBeenCalled();
+      expect(snapshotOf(db, "sessions")).toEqual(sessionsBefore);
+      expect(snapshotOf(db, "snapshots")).toEqual(snapshotsBefore);
+      expect(snapshotOf(db, "bindings")).toEqual(bindingsBefore);
+    });
+
+    it("plan:true + freshLogicalIds leaves UNLISTED seats forecast from their resume state", async () => {
+      const rig = rigRepo.createRig("plan-fresh-mixed");
+      const nodeA = rigRepo.addNode(rig.id, "worker-a", { role: "worker", runtime: "claude-code" });
+      const nodeB = rigRepo.addNode(rig.id, "worker-b", { role: "worker", runtime: "claude-code" });
+      for (const [node, name] of [[nodeA, "worker-a"], [nodeB, "worker-b"]] as const) {
+        const sess = sessionRegistry.registerSession(node.id, `${name}@plan-fresh-mixed`);
+        db.prepare("UPDATE sessions SET resume_type = ?, resume_token = ?, status = ? WHERE id = ?")
+          .run("claude_name", "tok-1", "detached", sess.id);
+      }
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-fresh-mixed", plan: true, freshLogicalIds: ["worker-b"] }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const byId = Object.fromEntries((body.nodes as Array<{ logicalId: string; intendedAction: string }>).map((n) => [n.logicalId, n.intendedAction]));
+      expect(byId["worker-a"]).toBe("resume-original");
+      expect(byId["worker-b"]).toBe("fresh-primed");
+    });
+
     it("plan:true with no usable snapshot reports wouldCaptureCurrentState WITHOUT capturing", async () => {
       const rig = rigRepo.createRig("plan-rehydrate-rig");
       const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });

@@ -198,6 +198,32 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(upBodies[0]!.plan).toBe(true);
   });
 
+  it("--plan --fresh posts BOTH plan:true and freshLogicalIds, and renders the fresh-primed preview", async () => {
+    respond = (body) => ({
+      status: "plan",
+      mode: "restore",
+      rigId: "rig-1",
+      rigName: "myrig",
+      snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" },
+      wouldCaptureCurrentState: false,
+      nodes: Array.isArray(body.freshLogicalIds) && (body.freshLogicalIds as string[]).includes("dev.impl")
+        ? [{ logicalId: "dev.impl", intendedAction: "fresh-primed", reason: "listed in --fresh — apply would deliberately skip the resume (operation B)" }]
+        : [{ logicalId: "dev.impl", intendedAction: "resume-original" }],
+      mutated: false,
+    });
+
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan", "--fresh", "dev.impl"]);
+    });
+
+    expect(upBodies).toHaveLength(1);
+    expect(upBodies[0]!.plan).toBe(true);
+    expect(upBodies[0]!.freshLogicalIds).toEqual(["dev.impl"]);
+    const output = logs.join("\n");
+    expect(output).toContain("dev.impl: fresh-primed");
+    expect(output).toContain("No changes made.");
+  });
+
   it("HONEST TIMEOUT (apply mode): DaemonConnectionError renders in-progress/unknown + verify command, never a bare failure", async () => {
     const throwingClient = {
       get: async () => { throw new DaemonConnectionError("request timed out after 120000ms"); },

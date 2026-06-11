@@ -47,8 +47,16 @@ export interface PreviewSessionRow {
 }
 
 /** Forecast one seat's restore action — mirrors the orchestrator's pre-launch
- *  classification (OPR.0.3.4.2) without touching anything. */
-function intendedActionFor(rows: PreviewSessionRow[]): { intendedAction: RestorePlanPreviewNode["intendedAction"]; reason?: string } {
+ *  classification (OPR.0.3.4.2) without touching anything. A fresh-listed
+ *  seat (operation B, `--fresh <seat>`) forecasts `fresh-primed` BEFORE any
+ *  resume-token logic, exactly as apply mode deliberately skips the resume. */
+function intendedActionFor(rows: PreviewSessionRow[], freshRequested: boolean): { intendedAction: RestorePlanPreviewNode["intendedAction"]; reason?: string } {
+  if (freshRequested) {
+    return {
+      intendedAction: "fresh-primed",
+      reason: "listed in --fresh — apply would deliberately skip the resume (operation B)",
+    };
+  }
   const latest = rows.length > 0 ? rows.reduce((a, b) => (b.id > a.id ? b : a)) : null;
   const policy = latest?.restorePolicy ?? "resume_if_possible";
   const sourceRecorded = !!latest?.resumeType && latest.resumeType !== "none";
@@ -101,13 +109,15 @@ export function buildRestorePlanPreview(
   rig: RigWithRelations,
   snapshot: Snapshot | null,
   sessionRows: PreviewSessionRow[],
+  freshLogicalIds?: string[],
 ): RestorePlanPreview {
   const byNode = new Map<string, PreviewSessionRow[]>();
   for (const row of sessionRows) {
     (byNode.get(row.nodeId) ?? byNode.set(row.nodeId, []).get(row.nodeId)!).push(row);
   }
   const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
-    const { intendedAction, reason } = intendedActionFor(byNode.get(node.id) ?? []);
+    const freshRequested = freshLogicalIds?.includes(node.logicalId) ?? false;
+    const { intendedAction, reason } = intendedActionFor(byNode.get(node.id) ?? [], freshRequested);
     return { logicalId: node.logicalId, intendedAction, ...(reason ? { reason } : {}) };
   });
   return {
