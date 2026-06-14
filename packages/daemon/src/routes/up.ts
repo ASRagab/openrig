@@ -9,6 +9,7 @@ import type { SnapshotRepository } from "../domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import { assessCurrentStateRehydrateEligibility } from "../domain/rehydrate-eligibility.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
 
 export const upRoutes = new Hono();
 
@@ -87,7 +88,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
  *
  * Shared helper used by both /api/up (rig_name) and /api/rigs/:rigId/up (Explorer).
  */
-async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[]) {
+async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[], plan?: boolean) {
   const { snapshotRepo, restoreOrchestrator } = deps;
 
   const rig = deps.rigRepo.getRig(rigId);
@@ -106,6 +107,19 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
         blockers: eligibility.blockers,
       }, 404);
     }
+  }
+
+  // OPR.0.3.4.4 — read-only plan gate, BEFORE any restore mutation. The
+  // rig_name path previously early-returned past the bootstrap plan gate, so
+  // `rig up --existing <rig> --plan` mutated (the outage-01 bypass). Plan
+  // mode never reaches restoreOrchestrator.restore(), and the auto-rehydrate
+  // snapshot capture (itself a mutation) is reported as would-happen, never
+  // performed.
+  if (plan) {
+    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds), 200);
+  }
+
+  if (!snapshot) {
     snapshot = deps.snapshotCapture.captureSnapshot(rigId, "auto-rehydrate");
     capturedCurrentState = true;
   }
@@ -193,7 +207,7 @@ upRoutes.post("/", async (c) => {
       const freshLogicalIds = Array.isArray(body["freshLogicalIds"])
         ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
         : undefined;
-      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds) as any;
+      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan) as any;
     }
 
     // File-based: resolve path now

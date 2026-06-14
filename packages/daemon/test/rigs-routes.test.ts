@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
+import type { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 
 function insertStartupContextRow(db: Database.Database, nodeId: string) {
@@ -20,6 +21,7 @@ describe("Rig CRUD routes", () => {
   let sessionRegistry: SessionRegistry;
   let snapshotRepo: SnapshotRepository;
   let snapshotCapture: SnapshotCapture;
+  let restoreOrchestrator: RestoreOrchestrator;
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -29,6 +31,7 @@ describe("Rig CRUD routes", () => {
     sessionRegistry = setup.sessionRegistry;
     snapshotRepo = setup.snapshotRepo;
     snapshotCapture = setup.snapshotCapture;
+    restoreOrchestrator = setup.restoreOrchestrator;
   });
 
   afterEach(() => {
@@ -627,5 +630,83 @@ describe("Rig CRUD routes", () => {
     expect(body.code).toBe("no_snapshot");
     expect(body.error).toContain("restore-usable");
     expect(body.error).not.toContain("auto-pre-down snapshot");
+  });
+
+  // OPR.0.3.4.4 — the Explorer restore route is INDEPENDENT of /api/up (it
+  // parsed no body at all), so plan:true was silently ignored and the route
+  // always mutated. These tests pin the daemon-level read-only gate here too.
+  describe("OPR.0.3.4.4 --plan read-only restore gate (Explorer /:id/up)", () => {
+    it("plan:true returns a read-only preview: restore() NOT called, zero session/snapshot mutation", async () => {
+      const rig = repo.createRig("explorer-plan-rig");
+      const node = repo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+      const sess = sessionRegistry.registerSession(node.id, "worker@explorer-plan-rig");
+      db.prepare("UPDATE sessions SET resume_type = ?, resume_token = ?, status = ? WHERE id = ?")
+        .run("claude_name", "tok-1", "detached", sess.id);
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+      const sessionsBefore = db.prepare("SELECT * FROM sessions ORDER BY id").all();
+      const snapshotsBefore = db.prepare("SELECT * FROM snapshots ORDER BY id").all();
+      const bindingsBefore = db.prepare("SELECT * FROM bindings ORDER BY id").all();
+
+      const res = await app.request(`/api/rigs/${rig.id}/up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("plan");
+      expect(body.mode).toBe("restore");
+      expect(body.mutated).toBe(false);
+      expect(body.nodes).toHaveLength(1);
+      expect(body.nodes[0].intendedAction).toBe("resume-original");
+      // THE gate: no restore mutation of any kind.
+      expect(restoreSpy).not.toHaveBeenCalled();
+      expect(db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(sessionsBefore);
+      expect(db.prepare("SELECT * FROM snapshots ORDER BY id").all()).toEqual(snapshotsBefore);
+      expect(db.prepare("SELECT * FROM bindings ORDER BY id").all()).toEqual(bindingsBefore);
+    });
+
+    it("plan:true with no usable snapshot reports wouldCaptureCurrentState WITHOUT capturing", async () => {
+      const rig = repo.createRig("explorer-plan-rehydrate");
+      const node = repo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const session = sessionRegistry.registerSession(node.id, "dev-impl@explorer-plan-rehydrate");
+      sessionRegistry.updateStatus(session.id, "stopped");
+      sessionRegistry.updateStartupStatus(session.id, "failed");
+      insertStartupContextRow(db, node.id);
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await app.request(`/api/rigs/${rig.id}/up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.snapshot).toBeNull();
+      expect(body.wouldCaptureCurrentState).toBe(true);
+      const rows = db.prepare("SELECT COUNT(*) as c FROM snapshots WHERE rig_id = ?").get(rig.id) as { c: number };
+      expect(rows.c).toBe(0);
+      expect(restoreSpy).not.toHaveBeenCalled();
+    });
+
+    it("APPLY regression: body without plan still restores; bodyless POST unchanged", async () => {
+      const rig = repo.createRig("explorer-apply-rig");
+      repo.addNode(rig.id, "worker", { role: "worker" });
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await app.request(`/api/rigs/${rig.id}/up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: false }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe("restored");
+      expect(restoreSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });

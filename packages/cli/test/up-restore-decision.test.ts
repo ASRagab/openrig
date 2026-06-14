@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vites
 import http from "node:http";
 import { Command } from "commander";
 import { upCommand } from "../src/commands/up.js";
-import { DaemonClient } from "../src/client.js";
+import { DaemonClient, DaemonConnectionError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
@@ -163,6 +163,86 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
 
     expect(upBodies).toHaveLength(1);
     expect(logs.join("\n")).toContain("No fresh sessions started");
+    expect(exitCode).toBe(1);
+  });
+
+  // OPR.0.3.4.4 — plan-restore preview render + honest-async timeout.
+  it("--plan restore preview renders per-seat intended actions and 'No changes made.'", async () => {
+    respond = () => ({
+      status: "plan",
+      mode: "restore",
+      rigId: "rig-1",
+      rigName: "myrig",
+      snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" },
+      wouldCaptureCurrentState: false,
+      nodes: [
+        { logicalId: "dev.impl", intendedAction: "resume-original" },
+        { logicalId: "dev.qa", intendedAction: "awaiting-decision", reason: "resume source 'claude_name' recorded but no token available — apply would stop and ask (zero session)" },
+      ],
+      mutated: false,
+    });
+
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan"]);
+    });
+    const output = logs.join("\n");
+    expect(output).toContain('Plan: restore rig "myrig"');
+    expect(output).toContain("snap-9");
+    expect(output).toContain("dev.impl: resume-original");
+    expect(output).toContain("dev.qa: awaiting-decision");
+    expect(output).toContain("no token available");
+    expect(output).toContain("No changes made.");
+    expect(exitCode).toBeUndefined();
+    // The plan flag reached the daemon body.
+    expect(upBodies).toHaveLength(1);
+    expect(upBodies[0]!.plan).toBe(true);
+  });
+
+  it("--plan --fresh posts BOTH plan:true and freshLogicalIds, and renders the fresh-primed preview", async () => {
+    respond = (body) => ({
+      status: "plan",
+      mode: "restore",
+      rigId: "rig-1",
+      rigName: "myrig",
+      snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" },
+      wouldCaptureCurrentState: false,
+      nodes: Array.isArray(body.freshLogicalIds) && (body.freshLogicalIds as string[]).includes("dev.impl")
+        ? [{ logicalId: "dev.impl", intendedAction: "fresh-primed", reason: "listed in --fresh — apply would deliberately skip the resume (operation B)" }]
+        : [{ logicalId: "dev.impl", intendedAction: "resume-original" }],
+      mutated: false,
+    });
+
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan", "--fresh", "dev.impl"]);
+    });
+
+    expect(upBodies).toHaveLength(1);
+    expect(upBodies[0]!.plan).toBe(true);
+    expect(upBodies[0]!.freshLogicalIds).toEqual(["dev.impl"]);
+    const output = logs.join("\n");
+    expect(output).toContain("dev.impl: fresh-primed");
+    expect(output).toContain("No changes made.");
+  });
+
+  it("HONEST TIMEOUT (apply mode): DaemonConnectionError renders in-progress/unknown + verify command, never a bare failure", async () => {
+    const throwingClient = {
+      get: async () => { throw new DaemonConnectionError("request timed out after 120000ms"); },
+      post: async () => { throw new DaemonConnectionError("request timed out after 120000ms"); },
+    } as unknown as DaemonClient;
+    const customDeps = { ...deps(), clientFactory: () => throwingClient };
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(upCommand(customDeps));
+
+    const { logs, exitCode } = await captureLogs(async () => {
+      await prog.parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    const output = logs.join("\n");
+    // Honest in-progress/unknown framing, not a false "failed".
+    expect(output).toContain("may still be processing");
+    expect(output).toContain("does not mean the operation failed");
+    expect(output).toContain("rig ps");
+    expect(output).not.toContain("Up failed");
     expect(exitCode).toBe(1);
   });
 
