@@ -135,6 +135,52 @@ describe("PeriodicSnapshotScheduler", () => {
   });
 });
 
+describe("OPR.0.3.4.9 production wiring: startPeriodicSnapshotScheduler", () => {
+  it("enabled=true: scheduler.start AND psProjectionService.setPeriodicSnapshotState called", async () => {
+    const { startPeriodicSnapshotScheduler } = await import("../src/index.js");
+    const schedulerStart = vi.fn();
+    const setState = vi.fn();
+    const deps = {
+      periodicSnapshotScheduler: { start: schedulerStart },
+      psProjectionService: { setPeriodicSnapshotState: setState },
+      settingsStore: {
+        resolveOne: (key: string) => {
+          if (key === "snapshots.periodic.enabled") return { value: true };
+          if (key === "snapshots.periodic.interval_seconds") return { value: 300 };
+          if (key === "snapshots.periodic.retention_keep") return { value: 10 };
+          return { value: "" };
+        },
+      },
+    };
+
+    startPeriodicSnapshotScheduler(deps);
+
+    expect(schedulerStart).toHaveBeenCalledWith(300_000, 10);
+    expect(setState).toHaveBeenCalledWith(true, 300);
+  });
+
+  it("enabled=false: scheduler NOT started, psProjectionService NOT called", async () => {
+    const { startPeriodicSnapshotScheduler } = await import("../src/index.js");
+    const schedulerStart = vi.fn();
+    const setState = vi.fn();
+    const deps = {
+      periodicSnapshotScheduler: { start: schedulerStart },
+      psProjectionService: { setPeriodicSnapshotState: setState },
+      settingsStore: {
+        resolveOne: (key: string) => {
+          if (key === "snapshots.periodic.enabled") return { value: false };
+          return { value: 300 };
+        },
+      },
+    };
+
+    startPeriodicSnapshotScheduler(deps);
+
+    expect(schedulerStart).not.toHaveBeenCalled();
+    expect(setState).not.toHaveBeenCalled();
+  });
+});
+
 describe("PsProjectionService periodic snapshot status", () => {
   let db: Database.Database;
 

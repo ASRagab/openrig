@@ -6,6 +6,23 @@ import {
   detectTailscaleInterface,
 } from "./middleware/auth-bearer-token.js";
 
+/** OPR.0.3.4.9 — extracted for testability. Starts the periodic snapshot
+ *  scheduler and updates the ps-projection status when enabled. */
+export function startPeriodicSnapshotScheduler(deps: {
+  periodicSnapshotScheduler?: { start(intervalMs: number, retentionKeep: number): void };
+  psProjectionService: { setPeriodicSnapshotState(active: boolean, intervalSeconds: number): void };
+  settingsStore?: { resolveOne(key: string): { value: unknown } };
+}): void {
+  if (!deps.periodicSnapshotScheduler) return;
+  const settingsStore = deps.settingsStore;
+  const enabled = settingsStore ? settingsStore.resolveOne("snapshots.periodic.enabled").value === true : true;
+  if (!enabled) return;
+  const intervalS = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.interval_seconds").value as number) : 300;
+  const retentionKeep = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.retention_keep").value as number) : 10;
+  deps.periodicSnapshotScheduler.start(intervalS * 1000, retentionKeep);
+  deps.psProjectionService.setPeriodicSnapshotState(true, intervalS);
+}
+
 export async function startServer(port?: number) {
   const p = port ?? parseInt(readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT") ?? "7433", 10);
   const dbPath = readOpenRigEnv("OPENRIG_DB", "RIGGED_DB") ?? "openrig.sqlite";
@@ -56,17 +73,7 @@ export async function startServer(port?: number) {
         // PsProjectionService + node-inventory enrichment serve
         // fresh data on each request.
         deps.seatActivityService?.start(deps.rigRepo.db);
-        // OPR.0.3.4.9 — start the periodic snapshot scheduler (crash-insurance).
-        if (deps.periodicSnapshotScheduler) {
-          const settingsStore = deps.settingsStore;
-          const enabled = settingsStore ? settingsStore.resolveOne("snapshots.periodic.enabled").value === true : true;
-          if (enabled) {
-            const intervalS = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.interval_seconds").value as number) : 300;
-            const retentionKeep = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.retention_keep").value as number) : 10;
-            deps.periodicSnapshotScheduler.start(intervalS * 1000, retentionKeep);
-            deps.psProjectionService.setPeriodicSnapshotState(true, intervalS);
-          }
-        }
+        startPeriodicSnapshotScheduler(deps);
       }
     });
     servers.push(srv);
