@@ -115,6 +115,19 @@ describe("PeriodicSnapshotScheduler", () => {
     captureSpy.mockRestore();
   });
 
+  it("skips rig with older running + newer exited session (latest-session semantics)", async () => {
+    const rig = rigRepo.createRig("r-latest");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker" });
+    const oldSess = sessionRegistry.registerSession(node.id, "worker@r-latest");
+    sessionRegistry.updateStatus(oldSess.id, "running");
+    const newSess = sessionRegistry.registerSession(node.id, "worker@r-latest");
+    sessionRegistry.updateStatus(newSess.id, "exited");
+
+    await scheduler.tick();
+    const snaps = snapshotRepo.listSnapshots(rig.id, { kind: "auto-periodic" });
+    expect(snaps).toHaveLength(0);
+  });
+
   it("start/stop is idempotent", () => {
     scheduler.start(60000, 10);
     expect(scheduler.isActive).toBe(true);

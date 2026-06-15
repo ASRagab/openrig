@@ -62,11 +62,16 @@ export class PeriodicSnapshotScheduler {
   }
 
   private getRunningNonArchivedRigs(): string[] {
+    // Latest-session-per-node semantics: a node is running only when its
+    // NEWEST session (by created_at DESC, id DESC) has status='running'.
+    // Mirrors ps-projection.ts:116-118. An older running + newer exited
+    // session means the node is NOT running.
     const rows = this.deps.db.prepare(
       `SELECT DISTINCT r.id FROM rigs r
        JOIN nodes n ON n.rig_id = r.id
-       JOIN sessions s ON s.node_id = n.id
-       WHERE s.status = 'running' AND r.archived_at IS NULL`
+       WHERE r.archived_at IS NULL
+         AND (SELECT s.status FROM sessions s WHERE s.node_id = n.id
+              ORDER BY s.created_at DESC, s.id DESC LIMIT 1) = 'running'`
     ).all() as Array<{ id: string }>;
     return rows.map((r) => r.id);
   }

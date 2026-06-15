@@ -203,6 +203,13 @@ const DEFAULTS = {
       postRestoreAuditInstruction: DEFAULT_CLAUDE_COMPACTION_POST_RESTORE_AUDIT_INSTRUCTION,
     },
   },
+  snapshots: {
+    periodic: {
+      enabled: true,
+      intervalSeconds: 300,
+      retentionKeep: 10,
+    },
+  },
 } as const;
 
 export const VALID_KEYS = [
@@ -475,6 +482,20 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     if (coerced < 1 || coerced > 100) {
       throw new Error(
         `Invalid value for policies.claude_compaction.threshold_percent: must be in [1, 100], got ${coerced}`,
+      );
+    }
+  },
+  "snapshots.periodic.interval_seconds": (raw, coerced) => {
+    if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 60) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.interval_seconds: must be >= 60, got ${raw}`,
+      );
+    }
+  },
+  "snapshots.periodic.retention_keep": (raw, coerced) => {
+    if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.retention_keep: must be >= 1, got ${raw}`,
       );
     }
   },
