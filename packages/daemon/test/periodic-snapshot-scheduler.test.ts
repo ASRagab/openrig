@@ -244,6 +244,45 @@ describe("PsProjectionService periodic snapshot status", () => {
   });
 });
 
+describe("OPR.0.3.4.9 config validation: malformed numeric writes rejected", () => {
+  it("daemon SettingsStore rejects snapshots.periodic.interval_seconds=60abc", async () => {
+    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const store = new SettingsStore();
+    expect(() => store.set("snapshots.periodic.interval_seconds", "60abc")).toThrow(/expected an integer/);
+  });
+
+  it("daemon SettingsStore rejects snapshots.periodic.interval_seconds=60.5", async () => {
+    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const store = new SettingsStore();
+    expect(() => store.set("snapshots.periodic.interval_seconds", "60.5")).toThrow(/expected an integer/);
+  });
+
+  it("daemon SettingsStore rejects snapshots.periodic.retention_keep=0", async () => {
+    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const store = new SettingsStore();
+    expect(() => store.set("snapshots.periodic.retention_keep", "0")).toThrow(/must be >= 1/);
+  });
+
+  it("daemon SettingsStore rejects snapshots.periodic.interval_seconds=30", async () => {
+    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const store = new SettingsStore();
+    expect(() => store.set("snapshots.periodic.interval_seconds", "30")).toThrow(/must be >= 60/);
+  });
+
+  it("daemon SettingsStore accepts valid snapshots.periodic.interval_seconds=120", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-test-"));
+    const configPath = path.join(tmpDir, "settings.json");
+    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const store = new SettingsStore(configPath);
+    store.set("snapshots.periodic.interval_seconds", "120");
+    expect(store.resolveOne("snapshots.periodic.interval_seconds").value).toBe(120);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
 describe("findLatestRestoreUsable Option Y", () => {
   let db: Database.Database;
   let snapshotRepo: SnapshotRepository;

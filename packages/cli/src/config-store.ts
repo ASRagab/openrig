@@ -116,6 +116,13 @@ export interface RiggedConfig {
       postRestoreAuditInstruction: string;
     };
   };
+  snapshots: {
+    periodic: {
+      enabled: boolean;
+      intervalSeconds: number;
+      retentionKeep: number;
+    };
+  };
 }
 
 const DEFAULT_WORKSPACE_ROOT = getDefaultOpenRigPath("workspace");
@@ -486,6 +493,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     }
   },
   "snapshots.periodic.interval_seconds": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.interval_seconds: expected an integer >= 60, got "${raw}"`,
+      );
+    }
     if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 60) {
       throw new Error(
         `Invalid value for snapshots.periodic.interval_seconds: must be >= 60, got ${raw}`,
@@ -493,6 +505,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     }
   },
   "snapshots.periodic.retention_keep": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.retention_keep: expected an integer >= 1, got "${raw}"`,
+      );
+    }
     if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1) {
       throw new Error(
         `Invalid value for snapshots.periodic.retention_keep: must be >= 1, got ${raw}`,
@@ -622,6 +639,13 @@ export class ConfigStore {
           messageInline: v("policies.claude_compaction.message_inline") as string,
           messageFilePath: v("policies.claude_compaction.message_file_path") as string,
           postRestoreAuditInstruction: v("policies.claude_compaction.post_restore_audit_instruction") as string,
+        },
+      },
+      snapshots: {
+        periodic: {
+          enabled: v("snapshots.periodic.enabled") as boolean,
+          intervalSeconds: v("snapshots.periodic.interval_seconds") as number,
+          retentionKeep: v("snapshots.periodic.retention_keep") as number,
         },
       },
     };

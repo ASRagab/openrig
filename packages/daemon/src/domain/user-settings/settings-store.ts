@@ -416,6 +416,11 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
     }
   },
   "snapshots.periodic.interval_seconds": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.interval_seconds: expected an integer >= 60, got "${raw}"`,
+      );
+    }
     if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 60) {
       throw new Error(
         `Invalid value for snapshots.periodic.interval_seconds: must be >= 60, got ${raw}`,
@@ -423,6 +428,11 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
     }
   },
   "snapshots.periodic.retention_keep": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.retention_keep: expected an integer >= 1, got "${raw}"`,
+      );
+    }
     if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1) {
       throw new Error(
         `Invalid value for snapshots.periodic.retention_keep: must be >= 1, got ${raw}`,
