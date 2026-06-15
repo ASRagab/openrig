@@ -135,6 +135,56 @@ describe("PeriodicSnapshotScheduler", () => {
   });
 });
 
+describe("PsProjectionService periodic snapshot status", () => {
+  let db: Database.Database;
+
+  beforeEach(() => { db = createFullTestDb(); });
+  afterEach(() => { db.close(); });
+
+  it("periodicSnapshotActive=false and interval=0 by default (scheduler not started)", async () => {
+    const { PsProjectionService } = await import("../src/domain/ps-projection.js");
+    const svc = new PsProjectionService({ db });
+    const rig = new RigRepository(db).createRig("test-rig");
+    const entries = svc.getEntries();
+    const entry = entries.find((e) => e.rigId === rig.id);
+    expect(entry).toBeDefined();
+    expect(entry!.periodicSnapshotActive).toBe(false);
+    expect(entry!.periodicSnapshotIntervalSeconds).toBe(0);
+    expect(entry!.autoPeriodicSnapshotCount).toBe(0);
+  });
+
+  it("periodicSnapshotActive=true and interval matches after setPeriodicSnapshotState", async () => {
+    const { PsProjectionService } = await import("../src/domain/ps-projection.js");
+    const svc = new PsProjectionService({ db });
+    svc.setPeriodicSnapshotState(true, 300);
+    const rig = new RigRepository(db).createRig("active-rig");
+    const entries = svc.getEntries();
+    const entry = entries.find((e) => e.rigId === rig.id);
+    expect(entry!.periodicSnapshotActive).toBe(true);
+    expect(entry!.periodicSnapshotIntervalSeconds).toBe(300);
+  });
+
+  it("autoPeriodicSnapshotCount reflects actual auto-periodic snapshots", async () => {
+    const { PsProjectionService } = await import("../src/domain/ps-projection.js");
+    const rigRepo = new RigRepository(db);
+    const sessionReg = new SessionRegistry(db);
+    const eventBus = new EventBus(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const checkpointStore = new CheckpointStore(db);
+    const capture = new SnapshotCapture({ db, rigRepo, sessionRegistry: sessionReg, eventBus, snapshotRepo, checkpointStore });
+    const svc = new PsProjectionService({ db });
+    const rig = rigRepo.createRig("count-rig");
+    rigRepo.addNode(rig.id, "w", { role: "worker" });
+    capture.captureSnapshot(rig.id, "auto-periodic");
+    capture.captureSnapshot(rig.id, "auto-periodic");
+    capture.captureSnapshot(rig.id, "manual");
+
+    const entries = svc.getEntries();
+    const entry = entries.find((e) => e.rigId === rig.id);
+    expect(entry!.autoPeriodicSnapshotCount).toBe(2);
+  });
+});
+
 describe("findLatestRestoreUsable Option Y", () => {
   let db: Database.Database;
   let snapshotRepo: SnapshotRepository;
