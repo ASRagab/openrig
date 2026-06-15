@@ -415,6 +415,43 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(exitCode).toBe(1);
   });
 
+  it("mixed case: rig A restores cleanly + rig B preview 500 -> JSON started_with_errors + previewErrors + exit 1", async () => {
+    routes["/api/rigs/summary"] = () => [
+      { id: "rig-ok", name: "ok-rig", nodeCount: 1, lifecycleState: "detached" },
+      { id: "rig-err", name: "err-rig", nodeCount: 1, lifecycleState: "detached" },
+    ];
+    routes["/api/rigs/:id"] = () => ({ sessions: [] });
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body._rigId === "rig-ok") {
+        return {
+          status: "plan", mode: "restore", rigId: "rig-ok", rigName: "ok-rig",
+          snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+          wouldCaptureCurrentState: false,
+          nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
+          mutated: false,
+        };
+      }
+      return { _httpStatus: 500, error: "internal server error", code: "restore_error" };
+    };
+    routes["/api/up"] = () => ({
+      status: "restored", rigResult: "fully_restored",
+      nodes: [{ logicalId: "w", status: "resumed" }],
+      warnings: [],
+    });
+
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "start", "--all", "--json"]);
+    });
+    const jsonLine = logs.find((l) => l.startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    const parsed = JSON.parse(jsonLine!);
+    expect(parsed.status).toBe("started_with_errors");
+    expect(parsed.previewErrors).toBeDefined();
+    expect(parsed.previewErrors.some((e: { rigName: string }) => e.rigName === "err-rig")).toBe(true);
+    expect(parsed.restoredRigs.some((r: { rigName: string }) => r.rigName === "ok-rig")).toBe(true);
+    expect(exitCode).toBe(1);
+  });
+
   // ---- NON-2XX ERROR HANDLING (guard BLOCKING 25661f72) ----
 
   it("non-2xx /api/up (rig_not_stopped) -> honest error output, nonzero exit, not undefined success", async () => {
