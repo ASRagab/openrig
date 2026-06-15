@@ -93,13 +93,8 @@ export class NodeCmuxService {
       return { ok: true, action: "created_new" };
     }
 
-    // Non-tmux: persist binding immediately (helper console, no attach to fail).
-    this.sessionRegistry.updateBinding(nodeId, {
-      cmuxWorkspace: wsResult.data,
-      cmuxSurface: newSurfaceId,
-    });
-
-    // External-cli / no tmux: honest helper console
+    // External-cli / no tmux: honest helper console. Defer binding
+    // persistence until after helper text + focus succeed (same rule as tmux).
     const helperText = [
       `# Helper console for ${sessionName}`,
       `# This node is externally attached — no direct terminal session available.`,
@@ -112,6 +107,10 @@ export class NodeCmuxService {
     if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
     const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);
     if (!focusResult.ok) return { ok: false, error: focusResult.message, code: focusResult.code };
+    this.sessionRegistry.updateBinding(nodeId, {
+      cmuxWorkspace: wsResult.data,
+      cmuxSurface: newSurfaceId,
+    });
     return { ok: true, action: "created_helper" };
   }
 }
