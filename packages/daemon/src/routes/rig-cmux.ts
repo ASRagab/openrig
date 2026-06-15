@@ -119,6 +119,7 @@ rigCmuxRoutes.post("/launch", async (c) => {
   const deadline = Date.now() + READINESS_TIMEOUT_MS;
   const pending = new Map(candidates.map((c) => [c.logicalId, c]));
   let firstPass = true;
+  let noSessionStableRounds = 0;
 
   while ((pending.size > 0 || noSessionIds.size > 0) && Date.now() < deadline) {
     let foundThisCycle = 0;
@@ -154,9 +155,16 @@ rigCmuxRoutes.post("/launch", async (c) => {
     // Early-exit when no progress was made this cycle (no new live sessions
     // AND no new sessions discovered from no-session seats) and all remaining
     // pending are known-stale.
+    if (noSessionDiscovered === 0 && noSessionIds.size > 0) {
+      noSessionStableRounds++;
+    } else {
+      noSessionStableRounds = 0;
+    }
     if (!firstPass && foundThisCycle === 0 && noSessionDiscovered === 0) {
       const allPendingStale = pending.size === 0 || [...pending.values()].every((c) => STALE_STATUSES.has(c.sessionStatus ?? ""));
-      if (allPendingStale) break;
+      // Break if: no pending or all pending are stale, AND no-session seats
+      // have been stable for 2+ consecutive rounds (they won't appear).
+      if (allPendingStale && (noSessionIds.size === 0 || noSessionStableRounds >= 2)) break;
     }
     firstPass = false;
     if (Date.now() < deadline) {

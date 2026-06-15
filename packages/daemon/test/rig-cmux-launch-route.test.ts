@@ -624,6 +624,45 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
     expect(body.missing).toBeUndefined();
   });
 
+  it("OPR.0.3.4.8: no-session at first snapshot -> discovers canonical/live before timeout -> included", async () => {
+    let inventoryCallCount = 0;
+    const dynamicInventoryFn = () => {
+      inventoryCallCount++;
+      if (inventoryCallCount <= 1) {
+        return [{ logicalId: "a", canonicalSessionName: null, sessionStatus: null, attachmentType: "tmux", podId: "p1" }] as never;
+      }
+      return [{ logicalId: "a", canonicalSessionName: "a@late-start-rig", sessionStatus: "running", attachmentType: "tmux", podId: "p1" }] as never;
+    };
+    const app = new Hono();
+    const rigs = {
+      "rig-1": {
+        id: "rig-1",
+        name: "late-start-rig",
+        nodes: [{ logicalId: "a", podId: "p1", canonicalSessionName: null as string | null }],
+      },
+    };
+    const rigRepo = makeRigRepoStub(rigs);
+    const layoutService = new CmuxLayoutService(makeMockAdapter({ available: true }), { sleep: async () => {} });
+    const tmux = makeTmuxAdapterStub(new Set(["a@late-start-rig"]));
+    app.use("*", async (c, next) => {
+      c.set("rigRepo" as never, rigRepo);
+      c.set("cmuxAdapter" as never, makeMockAdapter({ available: true }));
+      c.set("cmuxLayoutService" as never, layoutService);
+      c.set("nodeInventoryFn" as never, dynamicInventoryFn);
+      c.set("tmuxAdapter" as never, tmux);
+      c.set("db" as never, {} as Database.Database);
+      await next();
+    });
+    app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
+
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; workspaces: Array<{ agents: string[] }>; missing?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.workspaces[0]!.agents).toContain("a@late-start-rig");
+    expect(body.missing).toBeUndefined();
+  });
+
   it("OPR.0.3.4.8: stale/exited session remains session-missing (never attached even after polling)", async () => {
     const app = buildApp({
       rigs: {
