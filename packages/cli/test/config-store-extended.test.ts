@@ -121,6 +121,44 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     expect([...VALID_KEYS]).toEqual(expected);
   });
 
+  // OPR.0.3.4.9 — CLI config resolve shape + malformed write rejection.
+  it("resolve().snapshots.periodic returns defaults", () => {
+    const store = new ConfigStore(configPath);
+    const config = store.resolve();
+    expect(config.snapshots.periodic.enabled).toBe(true);
+    expect(config.snapshots.periodic.intervalSeconds).toBe(300);
+    expect(config.snapshots.periodic.retentionKeep).toBe(10);
+  });
+
+  it("resolve().snapshots.periodic respects typed file writes", () => {
+    const store = new ConfigStore(configPath);
+    store.set("snapshots.periodic.enabled", "false");
+    store.set("snapshots.periodic.interval_seconds", "120");
+    store.set("snapshots.periodic.retention_keep", "2");
+    const config = store.resolve();
+    expect(config.snapshots.periodic.enabled).toBe(false);
+    expect(config.snapshots.periodic.intervalSeconds).toBe(120);
+    expect(config.snapshots.periodic.retentionKeep).toBe(2);
+  });
+
+  it("rejects malformed snapshots.periodic.interval_seconds (60abc, 60.5)", () => {
+    const store = new ConfigStore(configPath);
+    expect(() => store.set("snapshots.periodic.interval_seconds", "60abc")).toThrow(/expected an integer/);
+    expect(() => store.set("snapshots.periodic.interval_seconds", "60.5")).toThrow(/expected an integer/);
+  });
+
+  it("rejects malformed snapshots.periodic.retention_keep (1abc, 1.5)", () => {
+    const store = new ConfigStore(configPath);
+    expect(() => store.set("snapshots.periodic.retention_keep", "1abc")).toThrow(/expected an integer/);
+    expect(() => store.set("snapshots.periodic.retention_keep", "1.5")).toThrow(/expected an integer/);
+  });
+
+  it("rejects out-of-range snapshots.periodic.interval_seconds=30 and retention_keep=0", () => {
+    const store = new ConfigStore(configPath);
+    expect(() => store.set("snapshots.periodic.interval_seconds", "30")).toThrow(/must be >= 60/);
+    expect(() => store.set("snapshots.periodic.retention_keep", "0")).toThrow(/must be >= 1/);
+  });
+
   it("workspace.operator_seat_name roundtrip — default derives operator-${USER}@kernel; set → resolve reflects override", () => {
     const store = new ConfigStore(configPath);
     const before = store.resolve();
