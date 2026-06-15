@@ -225,6 +225,26 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
   });
 
   // B1 regression: non-target with tmux probe error does NOT get node.held
+  // Multi-target success: both targets launched, restore.subset_completed contains both
+  it("launches multiple targets in one call with restore.subset_completed containing both", async () => {
+    const { rigId, nodeIds } = seedPodAwareRig();
+    seedSnapshot(rigId, nodeIds);
+
+    const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver", "dev.guard"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.launched).toHaveLength(2);
+    const launchedIds = result.launched!.map((n) => n.logicalId).sort();
+    expect(launchedIds).toEqual(["dev.driver", "dev.guard"]);
+    expect(result.held).toHaveLength(0);
+
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'restore.subset_completed'").all() as { payload: string }[];
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]!.payload);
+    const eventNodeIds = payload.result.nodes.map((n: { logicalId: string }) => n.logicalId).sort();
+    expect(eventNodeIds).toEqual(["dev.driver", "dev.guard"]);
+  });
+
   it("does not emit node.held for non-target with tmux probe error (fail-closed)", async () => {
     const { rigId, nodeIds } = seedPodAwareRig();
     seedSnapshot(rigId, nodeIds);

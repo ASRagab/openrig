@@ -228,7 +228,7 @@ describe("Session routes", () => {
     expect(body.code).toBe("target_liveness_unknown");
   });
 
-  it("POST .../nodes/launch-subset accepts multiple seats and returns coherent result (OPR.0.3.4.11)", async () => {
+  it("POST .../nodes/launch-subset returns no_usable_snapshot without snapshot", async () => {
     const { app, rigRepo } = createTestApp(db);
     const podRepo = new PodRepository(db);
     const rig = rigRepo.createRig("subset-rig");
@@ -243,9 +243,53 @@ describe("Session routes", () => {
     });
 
     const body = await res.json();
-    // Without a usable snapshot, launchNodeSubset returns no_usable_snapshot
     expect(body.ok).toBe(false);
     expect(body.code).toBe("no_usable_snapshot");
+  });
+
+  it("POST .../nodes/launch-subset launches multiple targets with usable snapshot (OPR.0.3.4.11)", async () => {
+    const { app, rigRepo } = createTestApp(db);
+    const podRepo = new PodRepository(db);
+    const rig = rigRepo.createRig("multi-rig");
+    const pod = podRepo.createPod(rig.id, "dev", "Development");
+    const n1 = rigRepo.addNode(rig.id, "dev.driver", { runtime: "claude-code", podId: pod.id });
+    const n2 = rigRepo.addNode(rig.id, "dev.guard", { runtime: "codex", podId: pod.id });
+    // Seed a usable snapshot
+    const { SnapshotRepository } = await import("../src/domain/snapshot-repository.js");
+    const snapRepo = new SnapshotRepository(db);
+    snapRepo.createSnapshot(rig.id, "manual", {
+      rig: { id: rig.id, name: "multi-rig" },
+      nodes: [
+        { id: n1.id, logicalId: "dev.driver", rigId: rig.id, runtime: "claude-code", podId: pod.id },
+        { id: n2.id, logicalId: "dev.guard", rigId: rig.id, runtime: "codex", podId: pod.id },
+      ],
+      sessions: [
+        { id: "s1", nodeId: n1.id, sessionName: "dev-driver@multi-rig", status: "running", resumeType: "claude-native", resumeToken: "t1" },
+        { id: "s2", nodeId: n2.id, sessionName: "dev-guard@multi-rig", status: "running", resumeType: "codex-native", resumeToken: "t2" },
+      ],
+      edges: [],
+      checkpoints: {},
+    } as any);
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/launch-subset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seats: ["dev.driver", "dev.guard"], holdReason: "test" }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.launched).toHaveLength(2);
+    const launchedIds = body.launched.map((n: { logicalId: string }) => n.logicalId).sort();
+    expect(launchedIds).toEqual(["dev.driver", "dev.guard"]);
+
+    // Verify restore.subset_completed emitted with both nodes
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'restore.subset_completed'").all() as { payload: string }[];
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]!.payload);
+    const eventIds = payload.result.nodes.map((n: { logicalId: string }) => n.logicalId).sort();
+    expect(eventIds).toEqual(["dev.driver", "dev.guard"]);
   });
 
   it("POST .../nodes/launch-subset rejects empty seats array", async () => {
