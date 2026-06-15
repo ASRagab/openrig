@@ -49,6 +49,19 @@ describe("verifyCodexProfileLoads", () => {
     expect(result.migrationHint).toContain("Move the profile settings");
   });
 
+  it("FAIL: invalid TOML stderr is NOT misclassified as legacy migration (surfaces parse reason)", async () => {
+    const exec = vi.fn(async () => {
+      const err = new Error("Command failed") as Error & { stderr: string };
+      err.stderr = "Error: failed to load configuration\nexpected newline, found a period at line 3 column 12\n  in /Users/x/.codex/qa_invalid.config.toml";
+      throw err;
+    });
+    const result = await verifyCodexProfileLoads("qa_invalid", exec);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("expected newline");
+    expect(result.migrationHint).not.toContain("[profiles.qa_invalid]");
+    expect(result.migrationHint).toContain("valid TOML");
+  });
+
   it("honest failure: unknown error carries generic hint", async () => {
     const exec = vi.fn(async () => { throw new Error("permission denied"); });
     const result = await verifyCodexProfileLoads("test", exec);

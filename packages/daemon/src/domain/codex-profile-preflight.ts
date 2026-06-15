@@ -34,14 +34,17 @@ export async function verifyCodexProfileLoads(
       : (err instanceof Error ? err.message : String(err));
     const isLegacyTable = /legacy.*profiles?\./i.test(stderr) ||
       /cannot be used while.*contains legacy/i.test(stderr) ||
-      /failed to load configuration/i.test(stderr);
+      /\[profiles\./i.test(stderr) ||
+      /legacy profile selector/i.test(stderr);
+    const stderrLines = stderr.split("\n").filter((l) => l.trim());
+    const reason = stderrLines.slice(0, 3).join("; ");
     const migrationHint = isLegacyTable
       ? `Move the profile settings into ~/.codex/${profile}.config.toml and remove the legacy [profiles.${profile}] table/selector from config.toml.`
       : `Check ~/.codex/${profile}.config.toml is valid TOML (an absent file is OK — Codex default-layers it). Run 'codex -p ${profile} mcp list' manually to diagnose.`;
     return {
       ok: false,
       profile,
-      error: `Codex profile '${profile}' failed to load: ${stderr.split("\n")[0] ?? stderr}`,
+      error: `Codex profile '${profile}' failed to load: ${reason}`,
       migrationHint,
     };
   }

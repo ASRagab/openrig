@@ -186,9 +186,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const profile = binding.codexConfigProfile?.trim();
     const profileArg = profile ? ` -p ${shellQuote(profile)}` : "";
 
-    // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A stale profile
-    // (legacy [profiles.<name>] present, or missing .config.toml) must fail
-    // BEFORE the opaque `codex -p <profile> resume` failure.
+    // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
+    // [profiles.<name>] table or invalid TOML must fail BEFORE the opaque
+    // `codex -p <profile> resume` failure. An absent .config.toml passes
+    // (Codex default-layers it; advisor Option B).
     if (profile) {
       const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
       const { execSync } = await import("node:child_process");
