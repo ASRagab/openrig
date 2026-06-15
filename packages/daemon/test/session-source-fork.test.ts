@@ -349,6 +349,57 @@ describe("ClaudeCodeAdapter.launchHarness fork branch", () => {
   });
 });
 
+// OPR.0.3.4.5 — pod-aware consumer guard: ClaudeCodeAdapter.launchHarness
+// on a resume-selection menu returns attention_required with ZERO numeric
+// selection keystrokes (the governance BLOCKING safety line).
+describe("ClaudeCodeAdapter.launchHarness resume-selection menu (OPR.0.3.4.5)", () => {
+  it("returns attention_required with evidence, sends ZERO numeric selection keys", async () => {
+    const menuContent = [
+      "Choose a conversation to resume:",
+      "",
+      "  1. project-foo",
+      "  2. project-bar",
+      "",
+      "Enter your choice (1-2):",
+    ].join("\n");
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendKeys = vi.fn(async () => ({ ok: true as const }));
+    const tmux = {
+      ...mockTmux(),
+      sendText,
+      sendKeys,
+      getPaneCommand: vi.fn(async () => "claude"),
+      capturePaneContent: vi.fn(async () => menuContent),
+    } as unknown as TmuxAdapter;
+    const adapter = new ClaudeCodeAdapter({
+      tmux,
+      fsOps: mockClaudeFs(),
+      sleep: async () => {},
+    });
+
+    const result = await adapter.launchHarness(makeBinding(), {
+      name: "dev-impl@test-rig",
+      resumeToken: "resume-tok",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.recovery).toBe("attention_required");
+      expect(result.evidence).toBeTruthy();
+      expect(result.evidence).toContain("Choose a conversation");
+    }
+    // THE GUARD: no numeric selection keystroke was sent.
+    const allSendKeysArgs = sendKeys.mock.calls.flatMap((c) => {
+      const arg = c[1];
+      return Array.isArray(arg) ? arg : [String(arg ?? "")];
+    });
+    const allSendTextArgs = sendText.mock.calls.map((c) => String(c[1] ?? ""));
+    for (const s of [...allSendKeysArgs, ...allSendTextArgs]) {
+      expect(s).not.toMatch(/^[0-9]+$/);
+    }
+  });
+});
+
 // ============================================================================
 // Codex adapter fork branch
 // ============================================================================
