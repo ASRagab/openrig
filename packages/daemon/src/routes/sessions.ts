@@ -23,6 +23,7 @@ import type { PreviewRateLimiter } from "../domain/preview/preview-rate-limiter.
 import type { ClaimService } from "../domain/claim-service.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
+import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 
 export const sessionsRoutes = new Hono();
 export const nodesRoutes = new Hono();
@@ -38,6 +39,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     agentActivityStore: c.get("agentActivityStore" as never) as AgentActivityStore | undefined,
     seatActivityService: c.get("seatActivityService" as never) as SeatActivityService | undefined,
     rigLifecycleService: c.get("rigLifecycleService" as never) as RigLifecycleService | undefined,
+    restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
   };
 }
 
@@ -166,11 +168,28 @@ nodesRoutes.post("/:logicalId/launch", async (c) => {
   }
 
   if (node.podId) {
-    return c.json({
-      ok: false,
-      code: "pod_aware_launch_unsupported",
-      error: "Pod-aware node launch via this route bypasses startup orchestration. Use rig up, rig import --instantiate, or rig restore instead.",
-    }, 409);
+    const { restoreOrchestrator } = getDeps(c);
+    if (!restoreOrchestrator) {
+      return c.json({ ok: false, code: "internal_error", error: "Restore orchestrator not available" }, 500);
+    }
+    const body = await c.req.json().catch(() => ({})) as { holdReason?: string };
+    const result = await restoreOrchestrator.launchNodeSubset(rigId, [node.logicalId], { holdReason: body.holdReason });
+    if (!result.ok) {
+      return c.json(result, result.code === "rig_not_found" ? 404 : result.code === "no_matching_nodes" ? 404 : 500);
+    }
+    const failedTarget = result.failedTargets?.find((n) => n.logicalId === node.logicalId);
+    if (failedTarget) {
+      return c.json({ ok: false, code: "target_liveness_unknown", error: `Target '${node.logicalId}' tmux probe failed (fail-closed). Cannot determine if seat is live.`, failedTargets: result.failedTargets }, 503);
+    }
+    const launchedNode = result.launched?.[0];
+    if (launchedNode) {
+      return c.json({ ok: true, rigId, nodeId: launchedNode.nodeId, logicalId: launchedNode.logicalId, launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning }, 201);
+    }
+    const alreadyRunningNode = result.alreadyRunning?.find((n) => n.logicalId === node.logicalId);
+    if (alreadyRunningNode) {
+      return c.json({ ok: true, rigId, nodeId: alreadyRunningNode.nodeId, logicalId: alreadyRunningNode.logicalId, code: "already_running", launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning });
+    }
+    return c.json(result);
   }
 
   const result = await nodeLauncher.launchNode(rigId, logicalId);
@@ -184,6 +203,25 @@ nodesRoutes.post("/:logicalId/launch", async (c) => {
   }
 
   return c.json(result, 201);
+});
+
+// POST /api/rigs/:rigId/nodes/launch-subset — multi-target managed subset launch
+nodesRoutes.post("/launch-subset", async (c) => {
+  const rigId = c.req.param("rigId")!;
+  const { restoreOrchestrator } = getDeps(c);
+  if (!restoreOrchestrator) {
+    return c.json({ ok: false, code: "internal_error", error: "Restore orchestrator not available" }, 500);
+  }
+  const body = await c.req.json().catch(() => ({})) as { seats?: string[]; holdReason?: string };
+  if (!Array.isArray(body.seats) || body.seats.length === 0) {
+    return c.json({ ok: false, code: "invalid_request", error: "Request body must include a non-empty 'seats' array of logical IDs" }, 400);
+  }
+  const result = await restoreOrchestrator.launchNodeSubset(rigId, body.seats, { holdReason: body.holdReason });
+  if (!result.ok) {
+    return c.json(result, result.code === "rig_not_found" ? 404 : result.code === "no_matching_nodes" ? 404 : 500);
+  }
+  const hasLaunched = (result.launched?.length ?? 0) > 0;
+  return c.json(result, hasLaunched ? 201 : 200);
 });
 
 // GET /api/rigs/:rigId/nodes/:logicalId/preview?lines=N
