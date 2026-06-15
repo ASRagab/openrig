@@ -116,6 +116,13 @@ export interface RiggedConfig {
       postRestoreAuditInstruction: string;
     };
   };
+  snapshots: {
+    periodic: {
+      enabled: boolean;
+      intervalSeconds: number;
+      retentionKeep: number;
+    };
+  };
 }
 
 const DEFAULT_WORKSPACE_ROOT = getDefaultOpenRigPath("workspace");
@@ -203,6 +210,13 @@ const DEFAULTS = {
       postRestoreAuditInstruction: DEFAULT_CLAUDE_COMPACTION_POST_RESTORE_AUDIT_INSTRUCTION,
     },
   },
+  snapshots: {
+    periodic: {
+      enabled: true,
+      intervalSeconds: 300,
+      retentionKeep: 10,
+    },
+  },
 } as const;
 
 export const VALID_KEYS = [
@@ -253,6 +267,9 @@ export const VALID_KEYS = [
   "policies.claude_compaction.message_inline",
   "policies.claude_compaction.message_file_path",
   "policies.claude_compaction.post_restore_audit_instruction",
+  "snapshots.periodic.enabled",
+  "snapshots.periodic.interval_seconds",
+  "snapshots.periodic.retention_keep",
 ] as const;
 
 export type ValidKey = typeof VALID_KEYS[number];
@@ -303,6 +320,9 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "policies.claude_compaction.message_inline": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_MESSAGE_INLINE" },
   "policies.claude_compaction.message_file_path": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_MESSAGE_FILE_PATH" },
   "policies.claude_compaction.post_restore_audit_instruction": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_POST_RESTORE_AUDIT_INSTRUCTION" },
+  "snapshots.periodic.enabled": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_ENABLED" },
+  "snapshots.periodic.interval_seconds": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_INTERVAL_SECONDS" },
+  "snapshots.periodic.retention_keep": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_RETENTION_KEEP" },
 };
 
 // Maps dotted-string config keys to the camelCase RiggedConfig path.
@@ -346,6 +366,9 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "policies.claude_compaction.message_inline": ["policies", "claudeCompaction", "messageInline"],
   "policies.claude_compaction.message_file_path": ["policies", "claudeCompaction", "messageFilePath"],
   "policies.claude_compaction.post_restore_audit_instruction": ["policies", "claudeCompaction", "postRestoreAuditInstruction"],
+  "snapshots.periodic.enabled": ["snapshots", "periodic", "enabled"],
+  "snapshots.periodic.interval_seconds": ["snapshots", "periodic", "intervalSeconds"],
+  "snapshots.periodic.retention_keep": ["snapshots", "periodic", "retentionKeep"],
 };
 
 function isValidKey(key: string): key is ValidKey {
@@ -466,6 +489,30 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     if (coerced < 1 || coerced > 100) {
       throw new Error(
         `Invalid value for policies.claude_compaction.threshold_percent: must be in [1, 100], got ${coerced}`,
+      );
+    }
+  },
+  "snapshots.periodic.interval_seconds": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.interval_seconds: expected an integer >= 60, got "${raw}"`,
+      );
+    }
+    if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 60) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.interval_seconds: must be >= 60, got ${raw}`,
+      );
+    }
+  },
+  "snapshots.periodic.retention_keep": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim())) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.retention_keep: expected an integer >= 1, got "${raw}"`,
+      );
+    }
+    if (typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1) {
+      throw new Error(
+        `Invalid value for snapshots.periodic.retention_keep: must be >= 1, got ${raw}`,
       );
     }
   },
@@ -592,6 +639,13 @@ export class ConfigStore {
           messageInline: v("policies.claude_compaction.message_inline") as string,
           messageFilePath: v("policies.claude_compaction.message_file_path") as string,
           postRestoreAuditInstruction: v("policies.claude_compaction.post_restore_audit_instruction") as string,
+        },
+      },
+      snapshots: {
+        periodic: {
+          enabled: v("snapshots.periodic.enabled") as boolean,
+          intervalSeconds: v("snapshots.periodic.interval_seconds") as number,
+          retentionKeep: v("snapshots.periodic.retention_keep") as number,
         },
       },
     };

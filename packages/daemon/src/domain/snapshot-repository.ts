@@ -44,15 +44,19 @@ export class SnapshotRepository {
   }
 
   /**
-   * L3b: returns the latest snapshot whose persisted `data` carries the minimum
+   * Returns the latest snapshot whose persisted `data` carries the minimum
    * structural metadata `RestoreOrchestrator.restore`'s pre-validation requires.
-   * Prefers `auto-pre-down` over other kinds when both are present.
    *
-   * The single SQL query orders snapshots by `(kind = 'auto-pre-down') DESC,
-   * created_at DESC, id DESC` so an auto-pre-down candidate always comes first
-   * if any exists. The in-memory loop then validates each candidate and skips
-   * snapshots with corrupted JSON or missing topology metadata, returning the
-   * first usable row. Returns null when no usable snapshot exists.
+   * OPR.0.3.4.9 Option Y: prefers the most-recent of the crash-insurance tier
+   * {auto-pre-down, auto-periodic} -- the freshest of the two wins. A newer
+   * auto-periodic beats a stale auto-pre-down (the crash fix); a genuinely-
+   * fresher auto-pre-down still wins (graceful-cycle preserved). Manual,
+   * pre_restore, and auto-rehydrate remain below the tier (unchanged).
+   *
+   * The SQL query orders by `(kind IN ('auto-pre-down','auto-periodic')) DESC,
+   * created_at DESC, id DESC`. The in-memory loop validates each candidate and
+   * skips snapshots with corrupted JSON or missing topology metadata, returning
+   * the first usable row. Returns null when no usable snapshot exists.
    *
    * Distinct from `findLatestUsableSnapshot` (rig-repository.ts, L2): that
    * helper requires at least one persisted resume token and is consumed by
@@ -63,7 +67,7 @@ export class SnapshotRepository {
   findLatestRestoreUsable(rigId: string): Snapshot | null {
     const rows = this.db
       .prepare(
-        "SELECT * FROM snapshots WHERE rig_id = ? ORDER BY (kind = 'auto-pre-down') DESC, created_at DESC, id DESC"
+        "SELECT * FROM snapshots WHERE rig_id = ? ORDER BY (kind IN ('auto-pre-down', 'auto-periodic')) DESC, created_at DESC, id DESC"
       )
       .all(rigId) as SnapshotRow[];
 
@@ -126,6 +130,34 @@ export class SnapshotRepository {
 
     const toDelete = all.filter((r) => !keepIds.has(r.id));
 
+    if (toDelete.length === 0) return 0;
+
+    const placeholders = toDelete.map(() => "?").join(",");
+    this.db
+      .prepare(`DELETE FROM snapshots WHERE id IN (${placeholders})`)
+      .run(...toDelete.map((r) => r.id));
+
+    return toDelete.length;
+  }
+
+  /** OPR.0.3.4.9 — kind-scoped retention. Keeps the newest `keepCount` rows
+   *  of the given kind and deletes only older rows of THAT kind. Never touches
+   *  other kinds. Hard floor: keepCount >= 1 (never prune to zero). */
+  pruneSnapshotsByKind(rigId: string, kind: string, keepCount: number): number {
+    const effectiveKeep = Math.max(1, keepCount);
+    const keepers = this.db
+      .prepare(
+        "SELECT id FROM snapshots WHERE rig_id = ? AND kind = ? ORDER BY created_at DESC LIMIT ?"
+      )
+      .all(rigId, kind, effectiveKeep) as { id: string }[];
+
+    const keepIds = new Set(keepers.map((r) => r.id));
+
+    const all = this.db
+      .prepare("SELECT id FROM snapshots WHERE rig_id = ? AND kind = ?")
+      .all(rigId, kind) as { id: string }[];
+
+    const toDelete = all.filter((r) => !keepIds.has(r.id));
     if (toDelete.length === 0) return 0;
 
     const placeholders = toDelete.map(() => "?").join(",");
