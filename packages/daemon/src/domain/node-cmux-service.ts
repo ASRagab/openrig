@@ -1,6 +1,7 @@
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { CmuxAdapter } from "../adapters/cmux.js";
+import type { TmuxAdapter } from "../adapters/tmux.js";
 
 export type OpenCmuxAction = "focused_existing" | "created_new" | "created_helper";
 
@@ -12,11 +13,15 @@ export interface OpenCmuxResult {
 }
 
 export class NodeCmuxService {
+  private tmuxAdapter: TmuxAdapter | null;
   constructor(
     private rigRepo: RigRepository,
     private sessionRegistry: SessionRegistry,
     private cmuxAdapter: CmuxAdapter,
-  ) {}
+    tmuxAdapter?: TmuxAdapter,
+  ) {
+    this.tmuxAdapter = tmuxAdapter ?? null;
+  }
 
   async openOrFocusNodeSurface(rigId: string, logicalId: string): Promise<OpenCmuxResult> {
     const rig = this.rigRepo.getRig(rigId);
@@ -68,9 +73,15 @@ export class NodeCmuxService {
     // Session name from binding or logical id
     const sessionName = binding?.tmuxSession ?? binding?.externalSessionName ?? logicalId;
 
-    // tmux-backed: attach into tmux
+    // tmux-backed: attach into tmux (gate on liveness if tmuxAdapter available)
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux) {
+      if (this.tmuxAdapter) {
+        const alive = await this.tmuxAdapter.hasSession(binding.tmuxSession!);
+        if (!alive) {
+          return { ok: false, error: `tmux session '${binding.tmuxSession}' is not alive — cannot attach`, code: "session_not_found" };
+        }
+      }
       const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `tmux attach -t ${binding.tmuxSession}\n`, wsResult.data);
       if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
       const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);

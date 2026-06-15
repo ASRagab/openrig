@@ -650,7 +650,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { ContextUsageStore } = await import("./domain/context-usage-store.js");
   const contextUsageStore = new ContextUsageStore(db, { stateDir: OPENRIG_HOME });
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
-  const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmuxAdapter);
+  const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmuxAdapter, tmuxAdapter);
   const agentActivityStore = new AgentActivityStore({ db, eventBus });
 
   const deps: AppDeps = {
