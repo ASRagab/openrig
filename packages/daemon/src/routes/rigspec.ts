@@ -185,7 +185,9 @@ rigspecImportRoutes.post("/preflight", async (c) => {
     if (!rigRoot) return c.json({ ready: false, errors: ["X-Rig-Root header required for pod-aware specs"], warnings: [] }, 400);
     const cwdOverride = c.req.header("X-Cwd-Override") ?? undefined;
     const fsOps = { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
-    const result = rigPreflight({ rigSpecYaml: body, rigRoot, cwdOverride, fsOps });
+    const { execSync } = await import("node:child_process");
+    const exec = async (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
+    const result = await rigPreflight({ rigSpecYaml: body, rigRoot, cwdOverride, fsOps, exec });
     return c.json(result);
   }
 
