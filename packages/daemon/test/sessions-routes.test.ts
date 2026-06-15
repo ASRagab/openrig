@@ -182,6 +182,87 @@ describe("Session routes", () => {
     expect(body.code).toBe("no_usable_snapshot");
   });
 
+  it("POST .../launch returns 503 target_liveness_unknown when tmux probe fails for pod-aware node (OPR.0.3.4.11 B2)", async () => {
+    const tmuxMock = {
+      createSession: vi.fn(async () => true),
+      hasSession: vi.fn(async () => { throw new Error("tmux unavailable"); }),
+      sendKeys: vi.fn(async () => {}),
+      capturePaneContent: vi.fn(async () => ""),
+      getPaneCommand: vi.fn(async () => null),
+      getSessionStatus: vi.fn(async () => null),
+      waitForReady: vi.fn(async () => true),
+      listSessions: vi.fn(async () => []),
+      startPipePane: vi.fn(async () => true),
+      killSession: vi.fn(async () => {}),
+    };
+    const { app, rigRepo, sessionRegistry } = createTestApp(db, { tmux: tmuxMock as any });
+    const podRepo = new PodRepository(db);
+    const rig = rigRepo.createRig("probe-fail-rig");
+    const pod = podRepo.createPod(rig.id, "dev", "Development");
+    const node = rigRepo.addNode(rig.id, "dev.impl", {
+      runtime: "claude-code",
+      podId: pod.id,
+      agentRef: "local:agents/impl",
+      profile: "default",
+    });
+    // Seed a running session + usable snapshot so launchNodeSubset reaches the probe
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@probe-fail-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    const { SnapshotRepository } = await import("../src/domain/snapshot-repository.js");
+    const snapRepo = new SnapshotRepository(db);
+    snapRepo.createSnapshot(rig.id, "manual", {
+      rig: { id: rig.id, name: "probe-fail-rig" },
+      nodes: [{ id: node.id, logicalId: "dev.impl", rigId: rig.id, runtime: "claude-code", podId: pod.id }],
+      sessions: [{ id: session.id, nodeId: node.id, sessionName: "dev-impl@probe-fail-rig", status: "running", resumeType: "claude-native", resumeToken: "tok" }],
+      edges: [],
+      checkpoints: {},
+    } as any);
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/${encodeURIComponent("dev.impl")}/launch`, {
+      method: "POST",
+    });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("target_liveness_unknown");
+  });
+
+  it("POST .../nodes/launch-subset accepts multiple seats and returns coherent result (OPR.0.3.4.11)", async () => {
+    const { app, rigRepo } = createTestApp(db);
+    const podRepo = new PodRepository(db);
+    const rig = rigRepo.createRig("subset-rig");
+    const pod = podRepo.createPod(rig.id, "dev", "Development");
+    rigRepo.addNode(rig.id, "dev.driver", { runtime: "claude-code", podId: pod.id });
+    rigRepo.addNode(rig.id, "dev.guard", { runtime: "codex", podId: pod.id });
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/launch-subset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seats: ["dev.driver", "dev.guard"] }),
+    });
+
+    const body = await res.json();
+    // Without a usable snapshot, launchNodeSubset returns no_usable_snapshot
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("no_usable_snapshot");
+  });
+
+  it("POST .../nodes/launch-subset rejects empty seats array", async () => {
+    const { app, rigRepo } = createTestApp(db);
+    const rig = rigRepo.createRig("empty-rig");
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/launch-subset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seats: [] }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("invalid_request");
+  });
+
   it("POST .../focus with valid cmux binding -> calls focusSurface", async () => {
     const cmux = connectedCmux();
     await cmux.connect();
