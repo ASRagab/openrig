@@ -1861,7 +1861,10 @@ describe("RestoreOrchestrator", () => {
     expect(result.result.blockers?.[0]?.remediation).toContain("Restore the missing startup file");
   });
 
-  it("D1/D4: missing projection source or entry blocks restore before mutation", async () => {
+  // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
+  // A stale/missing projection DOES NOT abort a restore; it flags projection_drift
+  // and the restore PROCEEDS to the native-resume attempt.
+  it("D1/D4 updated: missing projection source or entry does NOT abort restore (projection_drift flagged, restore proceeds)", async () => {
     const snap = seedRigAndSnapshot({
       nodes: [{ logicalId: "agent-a", role: "worker", runtime: "claude-code" }],
       edges: [],
@@ -1889,12 +1892,91 @@ describe("RestoreOrchestrator", () => {
       fsOps: { exists: (p) => p !== missingSource && p !== missingEntry },
     });
 
+    // The restore PROCEEDS (not aborted) — projection staleness is a warning, not a blocker.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result.rigResult).not.toBe("not_attempted");
+    // Projection drift is flagged as a warning (compose slice-03's projection_drift shape).
+    expect(result.result.warnings.some((w) => w.includes("projection_drift"))).toBe(true);
+    expect(result.result.warnings.some((w) => w.includes(missingSource))).toBe(true);
+    expect(result.result.warnings.some((w) => w.includes(missingEntry))).toBe(true);
+  });
+
+  it("OPR.0.3.4.5 (09): stale projection with valid resume token -> session RESUMES, projection_drift flagged (native outranks fresh)", async () => {
+    const snap = seedRigAndSnapshot({
+      nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+      edges: [],
+      resumeType: "claude_name",
+      resumeToken: "tok",
+    });
+    const node = snap.data.nodes[0]!;
+    const missingEntry = "/tmp/openrig-stale-skill-05.md";
+    const snapshot = updateSnapshotData(snap, (data) => {
+      data.nodeStartupContext[node.id] = {
+        projectionEntries: [{
+          category: "skill",
+          effectiveId: "stale-skill",
+          sourceSpec: "local:agents/stale",
+          sourcePath: "/tmp/openrig-stale-root",
+          resourcePath: "skills/stale/SKILL.md",
+          absolutePath: missingEntry,
+        }],
+        resolvedStartupFiles: [],
+        startupActions: [],
+        runtime: "claude-code",
+      };
+    });
+
+    const orch = createOrchestrator({ claude: mockClaudeResume({ ok: true }) });
+    const result = await orch.restore(snapshot.id, {
+      fsOps: { exists: (p) => p !== missingEntry && p !== "/tmp/openrig-stale-root" },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const nodeResult = result.result.nodes.find((n) => n.logicalId === "worker");
+    // The session RESUMED (native continuity outranks projection staleness).
+    expect(nodeResult!.status).toBe("resumed");
+    // Projection drift is flagged, never silently swallowed.
+    expect(result.result.warnings.some((w) => w.includes("projection_drift"))).toBe(true);
+    expect(result.result.warnings.some((w) => w.includes("stale-skill") || w.includes(missingEntry))).toBe(true);
+  });
+
+  it("OPR.0.3.4.5 (09): missing REQUIRED startup file STILL fails (preserve the genuinely-fatal blocker)", async () => {
+    const snap = seedRigAndSnapshot({
+      nodes: [{ logicalId: "agent-a", role: "worker", runtime: "claude-code" }],
+      edges: [],
+      resumeType: "claude_name",
+      resumeToken: "tok",
+    });
+    const node = snap.data.nodes[0]!;
+    const missingPath = "/tmp/openrig-missing-required-startup-05.md";
+    const snapshot = updateSnapshotData(snap, (data) => {
+      data.nodeStartupContext[node.id] = {
+        projectionEntries: [],
+        resolvedStartupFiles: [{
+          path: "startup.md",
+          absolutePath: missingPath,
+          ownerRoot: "/tmp",
+          deliveryHint: "guidance_merge",
+          required: true,
+          appliesOn: ["restore"],
+        }],
+        startupActions: [],
+        runtime: "claude-code",
+      };
+    });
+
+    const result = await createOrchestrator().restore(snapshot.id, {
+      fsOps: { exists: (p) => p !== missingPath },
+    });
+
+    // Still blocked (required startup file is genuinely fatal).
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    const codes = result.result.blockers?.map((b) => b.code) ?? [];
-    expect(codes).toContain("projection_source_missing");
-    expect(codes).toContain("projection_entry_missing");
+    expect(result.code).toBe("pre_restore_validation_failed");
     expect(result.result.rigResult).toBe("not_attempted");
+    expect(result.result.blockers?.[0]?.code).toBe("required_startup_file_missing");
   });
 
   it("D1/D4: checkpoint with missing node cwd blocks before checkpoint write", async () => {
@@ -2535,11 +2617,8 @@ describe("RestoreOrchestrator", () => {
   });
 
   // OPR.0.3.4.6 — cross-surface regression guard: producer rollup.
-  // A mixed restore with attention_required and/or awaiting-decision must
-  // roll to partially_restored, never failed. Only all-failed rolls to failed.
   describe("OPR.0.3.4.6 honest-restore-status rollup guard", () => {
     it("attention_required + awaiting-decision + mixed -> partially_restored, never failed", () => {
-
       const nodes = [
         { nodeId: "n1", logicalId: "a", status: "resumed" as const },
         { nodeId: "n2", logicalId: "b", status: "fresh-primed" as const },
@@ -2553,7 +2632,6 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("attention_required alone -> partially_restored (NEVER collapsed to failed)", () => {
-
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "attention_required" },
       ]);
@@ -2562,7 +2640,6 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("awaiting-decision alone -> partially_restored (NEVER collapsed to failed)", () => {
-
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "awaiting-decision" },
       ]);
@@ -2571,7 +2648,6 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("all-failed -> failed (reserved for genuine all-failure only)", () => {
-
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "failed" },
         { nodeId: "n2", logicalId: "b", status: "failed" },
@@ -2580,12 +2656,87 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("all-resumed -> fully_restored", () => {
-
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "resumed" },
         { nodeId: "n2", logicalId: "b", status: "resumed" },
       ]);
       expect(result).toBe("fully_restored");
+    });
+  });
+
+  // OPR.0.3.4.5 — regression guards.
+  describe("OPR.0.3.4.5 regression guards", () => {
+    it("(05) CONSUMER human gate: Claude resume-selection menu -> ZERO sendKeys selection calls + attention_required", async () => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+        edges: [],
+        resumeType: "claude_name",
+        resumeToken: "tok",
+      });
+      const tmux = mockTmux();
+      const claude = mockClaudeResume({
+        ok: false as const,
+        code: "attention_required",
+        message: "resume selection prompt",
+        evidence: "1. session-a\n2. session-b",
+      } as never);
+      const orch = createOrchestrator2(tmux, claude);
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("attention_required");
+      const sendKeysCalls = (tmux.sendKeys as ReturnType<typeof vi.fn>).mock.calls;
+      const sendTextCalls = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls;
+      for (const call of [...sendKeysCalls, ...sendTextCalls]) {
+        const arg = String(call[1] ?? call[0] ?? "");
+        expect(arg).not.toMatch(/^[0-9]+$/);
+      }
+    });
+
+    it("(03) startup-replay gate: a resumed seat receives NO identity/onboarding injection (gate is on concluded-fresh)", async () => {
+      const rig = rigRepo.createRig("test-rig");
+      db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-guard03", rig.id, "Dev");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", podId: "pod-guard03" });
+      const session = sessionRegistry.registerSession(node.id, "dev-impl@test-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-guard03");
+      db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(
+        node.id, "[]", "[]",
+        JSON.stringify([{
+          type: "send_text",
+          value: "OpenRig session identity: guard03-test-identity",
+          phase: "after_ready",
+          appliesOn: ["fresh_start"],
+          builtin: "session_identity",
+          idempotent: false,
+        }]),
+        "claude-code",
+      );
+      const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+      sessionRegistry.updateStatus(session.id, "exited");
+      db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+
+      const launchHarness = vi.fn(async () => ({ ok: true as const, resumeToken: "resume-token-guard03", resumeType: "claude_id" }));
+      const mockAdapter = {
+        runtime: "claude-code",
+        listInstalled: vi.fn(async () => []),
+        project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+        deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+        checkReady: vi.fn(async () => ({ ready: true })),
+        launchHarness,
+      };
+      const tmux = mockTmux();
+      const orch = createOrchestrator({ tmux });
+      const result = await orch.restore(snap.id, { adapters: { "claude-code": mockAdapter } });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.result.nodes[0]!.status).toBe("resumed");
+      const allSent = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[1] ?? ""));
+      expect(allSent.every((s) => !s.includes("OpenRig session identity:"))).toBe(true);
     });
   });
 

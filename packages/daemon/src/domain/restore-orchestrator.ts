@@ -388,30 +388,21 @@ export class RestoreOrchestrator {
         }
       }
 
+      // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
+      // A stale/missing projected skill/artifact must NOT abort a restore that
+      // has a valid native resume. Demoted from critical blockers to warnings
+      // flagged as projection_drift (compose slice-03's drift reporting shape).
+      // The existing post-launch filter (:855-885) already skips missing
+      // entries with a "(skipped)" warning; here we prevent the pre-restore
+      // gate from blocking the attempt entirely. Missing REQUIRED startup
+      // files and genuinely-fatal blockers (malformed snapshot, missing nodes)
+      // stay critical above.
       for (const entry of startupCtx.projectionEntries ?? []) {
         if (this.pathLike(entry.sourcePath) && !exists(entry.sourcePath)) {
-          add({
-            code: "projection_source_missing",
-            severity: "critical",
-            nodeId: node.id,
-            logicalId: node.logicalId,
-            target: entry.effectiveId,
-            path: entry.sourcePath,
-            message: `Projection source root is missing for ${node.logicalId}: ${entry.sourcePath}`,
-            remediation: "Restore the agent/source root that owns this projected resource or capture a new snapshot.",
-          });
+          warnings.push(`projection_drift: source root missing for ${node.logicalId}: ${entry.sourcePath} (projection will be skipped at startup; session continuity is unaffected)`);
         }
         if (this.pathLike(entry.absolutePath) && !exists(entry.absolutePath)) {
-          add({
-            code: "projection_entry_missing",
-            severity: "critical",
-            nodeId: node.id,
-            logicalId: node.logicalId,
-            target: entry.effectiveId,
-            path: entry.absolutePath,
-            message: `Projection entry is missing for ${node.logicalId}: ${entry.absolutePath}`,
-            remediation: "Restore the projected source artifact or capture a new snapshot before retrying restore.",
-          });
+          warnings.push(`projection_drift: entry missing for ${node.logicalId}: ${entry.absolutePath} (projection will be skipped at startup; session continuity is unaffected)`);
         }
       }
     }
