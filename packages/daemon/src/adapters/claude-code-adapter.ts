@@ -293,6 +293,18 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         return { ok: true };
       }
 
+      // OPR.0.3.4.5: Claude resume-selection prompt -> attention_required,
+      // never timed-out. The menu is alive and recoverable; auto-selecting
+      // is governance BLOCKING. Surface evidence and exit immediately.
+      if (probe.status === "attention_required") {
+        return {
+          ok: false,
+          error: probe.detail,
+          recovery: "attention_required",
+          evidence: paneContent.split("\n").slice(-12).join("\n"),
+        };
+      }
+
       if (this.autoDriveProviderPrompts && probe.code === "trust_gate") {
         const enterResult = await this.tmux.sendKeys(tmuxSession, ["Enter"]);
         if (!enterResult.ok) {
@@ -317,6 +329,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     if (finalProbe.status === "resumed") {
       return { ok: true };
+    }
+
+    if (finalProbe.status === "attention_required") {
+      return {
+        ok: false,
+        error: finalProbe.detail,
+        recovery: "attention_required",
+        evidence: finalContent.split("\n").slice(-12).join("\n"),
+      };
     }
 
     if (finalCommand && SHELL_COMMANDS.has(finalCommand)) {
