@@ -40,6 +40,7 @@ interface RFNodeData {
   terminalActive?: boolean | null;
   hasAssignedWork?: boolean;
   pendingWorkCount?: number;
+  heldReason?: string | null;
 }
 
 interface RFNode {
@@ -79,6 +80,7 @@ export interface InventoryOverlay {
   terminalActive?: boolean | null;
   hasAssignedWork?: boolean;
   pendingWorkCount?: number;
+  heldReason?: string | null;
 }
 
 export function projectRigToGraph(input: RigGraphInput, inventoryOverlay?: InventoryOverlay[]): ReactFlowGraph {
@@ -142,6 +144,7 @@ export function projectRigToGraph(input: RigGraphInput, inventoryOverlay?: Inven
         terminalActive: overlay?.terminalActive,
         hasAssignedWork: overlay?.hasAssignedWork ?? false,
         pendingWorkCount: overlay?.pendingWorkCount ?? 0,
+        heldReason: overlay?.heldReason ?? null,
       },
     };
   });
@@ -182,6 +185,7 @@ export function projectRigToGraph(input: RigGraphInput, inventoryOverlay?: Inven
         terminalActive: null,
         hasAssignedWork: false,
         pendingWorkCount: 0,
+        heldReason: null,
       },
     });
   }

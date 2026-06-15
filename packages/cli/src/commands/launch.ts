@@ -29,8 +29,9 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
   cmd
     .argument("<rigId>", "Target rig ID")
     .argument("<nodeRef>", "Node logical ID or node ID")
+    .option("--hold-reason <reason>", "Reason for holding non-target seats")
     .option("--json", "JSON output")
-    .action(async (rigId: string, nodeRef: string, opts: { json?: boolean }) => {
+    .action(async (rigId: string, nodeRef: string, opts: { json?: boolean; holdReason?: string }) => {
       const deps = getDeps();
       const client = await getClient(deps);
       if (!client) {
@@ -38,7 +39,10 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
         return;
       }
 
-      const res = await client.post<LaunchResponse>(`/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(nodeRef)}/launch`, {});
+      const body: Record<string, string> = {};
+      if (opts.holdReason) body.holdReason = opts.holdReason;
+
+      const res = await client.post<LaunchResponse>(`/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(nodeRef)}/launch`, body);
       if (opts.json) {
         console.log(JSON.stringify(res.data, null, 2));
         if (res.status >= 400) process.exitCode = 1;

@@ -160,7 +160,7 @@ describe("Session routes", () => {
     expect(body.binding.tmuxSession).toBe("r00-badname-worker");
   });
 
-  it("POST .../launch rejects pod-aware nodes because the route bypasses startup orchestration", async () => {
+  it("POST .../launch routes pod-aware nodes through launchNodeSubset (OPR.0.3.4.11)", async () => {
     const { app, rigRepo, sessionRegistry } = createTestApp(db);
     const podRepo = new PodRepository(db);
     const rig = rigRepo.createRig("pod-rig");
@@ -176,12 +176,10 @@ describe("Session routes", () => {
       method: "POST",
     });
 
-    expect(res.status).toBe(409);
     const body = await res.json();
+    // Without a usable snapshot, launchNodeSubset returns no_usable_snapshot
     expect(body.ok).toBe(false);
-    expect(body.code).toBe("pod_aware_launch_unsupported");
-    expect(String(body.error)).toContain("bypasses startup orchestration");
-    expect(sessionRegistry.getBindingForNode(node.id)).toBeNull();
+    expect(body.code).toBe("no_usable_snapshot");
   });
 
   it("POST .../focus with valid cmux binding -> calls focusSurface", async () => {

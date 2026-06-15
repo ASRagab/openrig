@@ -228,34 +228,55 @@ function deriveContinuityOutcome(
 }
 
 function deriveRestoreOutcome(db: Database.Database, rigId: string, nodeId: string): NodeRestoreOutcome {
-  // Find the latest restore.completed event for this rig
-  const row = db.prepare(
-    "SELECT payload FROM events WHERE rig_id = ? AND type = 'restore.completed' ORDER BY seq DESC LIMIT 1"
-  ).get(rigId) as { payload: string } | undefined;
+  // OPR.0.3.4.11: per-node-latest across restore.completed AND restore.subset_completed.
+  // Read the latest event of either type that CONTAINS this node.
+  const rows = db.prepare(
+    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed') ORDER BY seq DESC"
+  ).all(rigId) as { payload: string }[];
 
-  if (!row) return "n-a";
+  for (const row of rows) {
+    try {
+      const event = JSON.parse(row.payload) as { result: RestoreResult };
+      const nodeResult = event.result.nodes.find((n) => n.nodeId === nodeId);
+      if (!nodeResult) continue;
+
+      if (nodeResult.status === "resumed") return "resumed";
+      if (nodeResult.status === "failed") return "failed";
+      if (nodeResult.status === "rebuilt") return "rebuilt";
+      if (nodeResult.status === "fresh") return "fresh";
+      if (nodeResult.status === "fresh-primed") return "fresh-primed";
+      if (nodeResult.status === "awaiting-decision") return "awaiting-decision";
+      if (nodeResult.status === "attention_required") return "attention_required";
+      if (nodeResult.status === "operator_recovered") return "operator_recovered";
+      if ((nodeResult.status as string) === "checkpoint_written") return "rebuilt";
+      if ((nodeResult.status as string) === "fresh_no_checkpoint") return "fresh";
+      return "n-a";
+    } catch {
+      continue;
+    }
+  }
+  return "n-a";
+}
+
+function deriveHeldReason(db: Database.Database, nodeId: string, sessionStatus: string | null): string | null {
+  if (sessionStatus === "running") return null;
+
+  const heldRow = db.prepare(
+    "SELECT seq, payload FROM events WHERE node_id = ? AND type = 'node.held' ORDER BY seq DESC LIMIT 1"
+  ).get(nodeId) as { seq: number; payload: string } | undefined;
+  if (!heldRow) return null;
+
+  // Superseded by a later restore.subset_completed or restore.completed containing this node
+  const laterLaunch = db.prepare(
+    "SELECT seq FROM events WHERE node_id = ? AND type IN ('restore.completed', 'restore.subset_completed') AND seq > ? ORDER BY seq DESC LIMIT 1"
+  ).get(nodeId, heldRow.seq) as { seq: number } | undefined;
+  if (laterLaunch) return null;
 
   try {
-    const event = JSON.parse(row.payload) as { result: RestoreResult };
-    const nodeResult = event.result.nodes.find((n) => n.nodeId === nodeId);
-    if (!nodeResult) return "n-a";
-
-    if (nodeResult.status === "resumed") return "resumed";
-    if (nodeResult.status === "failed") return "failed";
-    if (nodeResult.status === "rebuilt") return "rebuilt";
-    if (nodeResult.status === "fresh") return "fresh";
-    // OPR.0.3.4.2 - the five-term vocabulary flows into rig ps distinctly.
-    if (nodeResult.status === "fresh-primed") return "fresh-primed";
-    if (nodeResult.status === "awaiting-decision") return "awaiting-decision";
-    // L3 outcomes (attention_required, operator_recovered)
-    if (nodeResult.status === "attention_required") return "attention_required";
-    if (nodeResult.status === "operator_recovered") return "operator_recovered";
-    // Compat: old persisted events may contain pre-rename values
-    if ((nodeResult.status as string) === "checkpoint_written") return "rebuilt";
-    if ((nodeResult.status as string) === "fresh_no_checkpoint") return "fresh";
-    return "n-a";
+    const parsed = JSON.parse(heldRow.payload) as { reason?: string };
+    return parsed.reason ?? null;
   } catch {
-    return "n-a";
+    return null;
   }
 }
 
@@ -405,6 +426,7 @@ export function getNodeInventory(db: Database.Database, rigId: string): NodeInve
       // from cwd against the rig's typed workspace block. null when the
       // rig has no workspace declaration.
       workspace: resolveNodeWorkspace({ spec: workspaceSpec, cwd: row.cwd }),
+      heldReason: deriveHeldReason(db, row.node_id, row.session_status),
     };
   });
 }

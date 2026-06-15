@@ -537,4 +537,150 @@ describe("Node Inventory Projection", () => {
       expect(entry?.lifecycleState).toBe("detached");
     });
   });
+
+  describe("deriveRestoreOutcome per-node-latest (OPR.0.3.4.11)", () => {
+    it("reads restore.subset_completed for a target node", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedEvent(db, "rig-1", "node-1", "restore.subset_completed", {
+        rigId: "rig-1",
+        snapshotId: "snap-1",
+        result: {
+          snapshotId: "snap-1",
+          nodes: [
+            { nodeId: "node-1", logicalId: "dev.impl", status: "resumed" },
+          ],
+          warnings: [],
+        },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const agent = entries.find((e) => e.logicalId === "dev.impl");
+      expect(agent?.restoreOutcome).toBe("resumed");
+    });
+
+    it("non-target node keeps prior restore.completed outcome after restore.subset_completed", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedSession(db, "node-2", "infra-server@test-rig");
+      // Prior full restore: node-2 was attention_required
+      seedEvent(db, "rig-1", "node-2", "restore.completed", {
+        rigId: "rig-1",
+        snapshotId: "snap-0",
+        result: {
+          snapshotId: "snap-0",
+          nodes: [
+            { nodeId: "node-1", logicalId: "dev.impl", status: "resumed" },
+            { nodeId: "node-2", logicalId: "infra.server", status: "attention_required" },
+          ],
+          warnings: [],
+        },
+      });
+      // Later subset launch: only node-1
+      seedEvent(db, "rig-1", "node-1", "restore.subset_completed", {
+        rigId: "rig-1",
+        snapshotId: "snap-1",
+        result: {
+          snapshotId: "snap-1",
+          nodes: [
+            { nodeId: "node-1", logicalId: "dev.impl", status: "resumed" },
+          ],
+          warnings: [],
+        },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const target = entries.find((e) => e.logicalId === "dev.impl");
+      const nonTarget = entries.find((e) => e.logicalId === "infra.server");
+      expect(target?.restoreOutcome).toBe("resumed");
+      // Non-target keeps its prior outcome, NOT clobbered to n-a
+      expect(nonTarget?.restoreOutcome).toBe("attention_required");
+    });
+
+    it("never-restored node remains n-a even after subset_completed for other nodes", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedEvent(db, "rig-1", "node-1", "restore.subset_completed", {
+        rigId: "rig-1",
+        snapshotId: "snap-1",
+        result: {
+          snapshotId: "snap-1",
+          nodes: [
+            { nodeId: "node-1", logicalId: "dev.impl", status: "resumed" },
+          ],
+          warnings: [],
+        },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const other = entries.find((e) => e.logicalId === "infra.server");
+      expect(other?.restoreOutcome).toBe("n-a");
+    });
+  });
+
+  describe("heldReason (OPR.0.3.4.11)", () => {
+    it("derives heldReason from node.held event", () => {
+      seedPodAwareRig(db);
+      seedEvent(db, "rig-1", "node-2", "node.held", {
+        rigId: "rig-1",
+        nodeId: "node-2",
+        logicalId: "infra.server",
+        reason: "codex auth expired",
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const held = entries.find((e) => e.logicalId === "infra.server");
+      expect(held?.heldReason).toBe("codex auth expired");
+    });
+
+    it("heldReason is null when no node.held event exists", () => {
+      seedPodAwareRig(db);
+
+      const entries = getNodeInventory(db, "rig-1");
+      const entry = entries.find((e) => e.logicalId === "dev.impl");
+      expect(entry?.heldReason).toBeNull();
+    });
+
+    it("heldReason is superseded (null) when node has a running session", () => {
+      seedPodAwareRig(db);
+      seedEvent(db, "rig-1", "node-1", "node.held", {
+        rigId: "rig-1",
+        nodeId: "node-1",
+        logicalId: "dev.impl",
+        reason: "excluded_from_subset",
+      });
+      seedSession(db, "node-1", "dev-impl@test-rig", { status: "running" });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const entry = entries.find((e) => e.logicalId === "dev.impl");
+      expect(entry?.heldReason).toBeNull();
+    });
+
+    it("heldReason is superseded by a newer restore.subset_completed containing the node", () => {
+      seedPodAwareRig(db);
+      // First: held
+      seedEvent(db, "rig-1", "node-1", "node.held", {
+        rigId: "rig-1",
+        nodeId: "node-1",
+        logicalId: "dev.impl",
+        reason: "excluded_from_subset",
+      });
+      // Then: launched via subset
+      seedEvent(db, "rig-1", "node-1", "restore.subset_completed", {
+        rigId: "rig-1",
+        snapshotId: "snap-2",
+        result: {
+          snapshotId: "snap-2",
+          nodes: [
+            { nodeId: "node-1", logicalId: "dev.impl", status: "resumed" },
+          ],
+          warnings: [],
+        },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const entry = entries.find((e) => e.logicalId === "dev.impl");
+      expect(entry?.heldReason).toBeNull();
+    });
+  });
 });

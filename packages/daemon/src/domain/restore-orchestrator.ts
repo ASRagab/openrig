@@ -271,6 +271,110 @@ export class RestoreOrchestrator {
     }
   }
 
+  async launchNodeSubset(rigId: string, logicalIds: string[], opts?: {
+    adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
+    fsOps?: { exists(path: string): boolean };
+    holdReason?: string;
+  }): Promise<{
+    ok: boolean;
+    code?: string;
+    message?: string;
+    launched?: RestoreNodeResult[];
+    held?: Array<{ nodeId: string; logicalId: string; reason: string }>;
+    alreadyRunning?: Array<{ nodeId: string; logicalId: string }>;
+  }> {
+    const rig = this.rigRepo.getRig(rigId);
+    if (!rig) return { ok: false, code: "rig_not_found", message: `Rig ${rigId} not found` };
+
+    const snapshot = this.snapshotRepo.findLatestRestoreUsable(rigId);
+    if (!snapshot) return { ok: false, code: "no_usable_snapshot", message: `No usable snapshot for rig ${rigId}` };
+
+    const allNodes = rig.nodes;
+    const targetNodes = allNodes.filter((n) => logicalIds.includes(n.logicalId));
+    if (targetNodes.length === 0) return { ok: false, code: "no_matching_nodes", message: `No nodes match logical ids: ${logicalIds.join(", ")}` };
+
+    const nonTargetNodes = allNodes.filter((n) => !logicalIds.includes(n.logicalId));
+
+    // Per-target tmux-liveness classification (runtime truth, fail-closed)
+    const launched: RestoreNodeResult[] = [];
+    const alreadyRunning: Array<{ nodeId: string; logicalId: string }> = [];
+    const failedTargets: Array<{ nodeId: string; logicalId: string; reason: string }> = [];
+
+    for (const node of targetNodes) {
+      const sessions = this.sessionRegistry.getSessionsForRig(rigId)
+        .filter((s) => s.nodeId === node.id && s.status === "running");
+
+      let isLive = false;
+      let isUnknown = false;
+
+      for (const session of sessions) {
+        try {
+          const alive = await this.tmuxAdapter.hasSession(session.sessionName);
+          if (alive) { isLive = true; break; }
+        } catch {
+          isUnknown = true;
+        }
+      }
+
+      if (isLive) {
+        alreadyRunning.push({ nodeId: node.id, logicalId: node.logicalId });
+        continue;
+      }
+      if (isUnknown) {
+        failedTargets.push({ nodeId: node.id, logicalId: node.logicalId, reason: "tmux_probe_error" });
+        continue;
+      }
+
+      // Stale or no session — launchable
+      const planEntry = { node };
+      const warnings: string[] = [];
+      const result = await this.restoreNodeWithCompensation(
+        planEntry, rigId, snapshot.id, snapshot.data, { adapters: opts?.adapters, fsOps: opts?.fsOps }, warnings,
+      );
+      launched.push(result);
+    }
+
+    // Emit restore.subset_completed for launched targets only
+    if (launched.length > 0) {
+      const subsetResult: RestoreResult = {
+        snapshotId: snapshot.id,
+        preRestoreSnapshotId: null as unknown as string,
+        rigResult: rollupRestoreRigResult(launched),
+        nodes: launched,
+        warnings: [],
+      };
+      this.eventBus.emit({ type: "restore.subset_completed", rigId, snapshotId: snapshot.id, result: subsetResult });
+    }
+
+    // Emit node.held for non-running held non-targets
+    const held: Array<{ nodeId: string; logicalId: string; reason: string }> = [];
+    const holdReasonText = opts?.holdReason ?? "excluded_from_subset";
+    for (const node of nonTargetNodes) {
+      const sessions = this.sessionRegistry.getSessionsForRig(rigId)
+        .filter((s) => s.nodeId === node.id && s.status === "running");
+
+      let running = false;
+      for (const session of sessions) {
+        try {
+          if (await this.tmuxAdapter.hasSession(session.sessionName)) { running = true; break; }
+        } catch { /* fail-closed: don't emit held for unknown */ }
+      }
+
+      if (!running) {
+        this.eventBus.emit({
+          type: "node.held",
+          rigId,
+          nodeId: node.id,
+          logicalId: node.logicalId,
+          reason: holdReasonText,
+        });
+        held.push({ nodeId: node.id, logicalId: node.logicalId, reason: holdReasonText });
+      }
+    }
+
+    return { ok: true, launched, held, alreadyRunning };
+  }
+
   private validatePreRestore(
     data: SnapshotData,
     opts: {

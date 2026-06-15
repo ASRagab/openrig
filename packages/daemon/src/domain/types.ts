@@ -103,6 +103,8 @@ export type RigEvent =
   | { type: "snapshot.created"; rigId: string; snapshotId: string; kind: string }
   | { type: "restore.started"; rigId: string; snapshotId: string }
   | { type: "restore.completed"; rigId: string; snapshotId: string; result: RestoreResult }
+  | { type: "restore.subset_completed"; rigId: string; snapshotId: string; result: RestoreResult }
+  | { type: "node.held"; rigId: string; nodeId: string; logicalId: string; reason: string }
   // L3: appended (never replaces) when reconcileNodeRuntimeTruth upgrades a
   // failed/attention_required restoreOutcome to operator_recovered after
   // visible-runtime-evidence preconditions hold. The original failure event
@@ -470,6 +472,9 @@ export interface NodeInventoryEntry {
   hasAssignedWork?: boolean;
   /** Optional count of pending qitems assigned to this seat (cheap aggregate). */
   pendingWorkCount?: number;
+  /** OPR.0.3.4.11 — held reason derived from the latest `node.held` event.
+   *  Null when no held event, or superseded by a running session / later launch. */
+  heldReason?: string | null;
   /** PL-007: per-node workspace block when the rig declares a workspace.
    *  workspaceRoot mirrors RigSpec.workspace.workspaceRoot. activeRepo is
    *  the repo whose path contains the node's cwd, or RigSpec.workspace.

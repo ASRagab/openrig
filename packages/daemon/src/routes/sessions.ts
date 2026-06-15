@@ -23,6 +23,7 @@ import type { PreviewRateLimiter } from "../domain/preview/preview-rate-limiter.
 import type { ClaimService } from "../domain/claim-service.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
+import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 
 export const sessionsRoutes = new Hono();
 export const nodesRoutes = new Hono();
@@ -38,6 +39,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     agentActivityStore: c.get("agentActivityStore" as never) as AgentActivityStore | undefined,
     seatActivityService: c.get("seatActivityService" as never) as SeatActivityService | undefined,
     rigLifecycleService: c.get("rigLifecycleService" as never) as RigLifecycleService | undefined,
+    restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
   };
 }
 
@@ -166,11 +168,24 @@ nodesRoutes.post("/:logicalId/launch", async (c) => {
   }
 
   if (node.podId) {
-    return c.json({
-      ok: false,
-      code: "pod_aware_launch_unsupported",
-      error: "Pod-aware node launch via this route bypasses startup orchestration. Use rig up, rig import --instantiate, or rig restore instead.",
-    }, 409);
+    const { restoreOrchestrator } = getDeps(c);
+    if (!restoreOrchestrator) {
+      return c.json({ ok: false, code: "internal_error", error: "Restore orchestrator not available" }, 500);
+    }
+    const body = await c.req.json().catch(() => ({})) as { holdReason?: string };
+    const result = await restoreOrchestrator.launchNodeSubset(rigId, [logicalId], { holdReason: body.holdReason });
+    if (!result.ok) {
+      return c.json(result, result.code === "rig_not_found" ? 404 : result.code === "no_matching_nodes" ? 404 : 500);
+    }
+    const launchedNode = result.launched?.[0];
+    if (launchedNode) {
+      return c.json({ ok: true, rigId, nodeId: launchedNode.nodeId, logicalId: launchedNode.logicalId, launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning }, 201);
+    }
+    const alreadyRunningNode = result.alreadyRunning?.find((n) => n.logicalId === logicalId);
+    if (alreadyRunningNode) {
+      return c.json({ ok: true, rigId, nodeId: alreadyRunningNode.nodeId, logicalId: alreadyRunningNode.logicalId, code: "already_running", launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning });
+    }
+    return c.json(result);
   }
 
   const result = await nodeLauncher.launchNode(rigId, logicalId);
