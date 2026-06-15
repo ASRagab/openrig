@@ -9,13 +9,13 @@ applies-when: |
   JSON output, cross-host, coordination primitives.
 siblings: [README.md, architecture/daemon-core.md]
 prerequisite-reads: [README.md]
-last-verified-against-source: 53794fbe
-last-updated: 2026-06-11
+last-verified-against-source: 03a5f915
+last-updated: 2026-06-15
 ---
 
 # OpenRig CLI Reference
 
-Verified against the shipped CLI on 2026-06-11 (v0.3.3) using:
+Verified against the shipped CLI on 2026-06-15 (v0.3.4) using:
 - `packages/cli/src/index.ts`
 - `packages/cli/src/commands/*.ts`
 - `packages/cli/src/mcp-server.ts`
@@ -26,7 +26,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 ## Overview
 
 - Binary: `rig`
-- Top-level command groups: `62`
+- Top-level command groups: `64`
 - Output mode: human-readable by default; many commands also support `--json`
 - Daemon-backed commands fail when the daemon is stopped or unhealthy; `daemon`, `config`, `preflight`, and `doctor` also have local responsibilities
 - Managed apps are launched through the normal spec/library surfaces; the canonical shipped example is `rig up secrets-manager`
@@ -37,6 +37,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | Command | Description |
 | --- | --- |
 | `daemon` | Manage the OpenRig daemon |
+| `start` | Recovery entrypoint — daemon + kernel + per-rig restore (interactive or headless) |
 | `status` | Show rig status |
 | `snapshot` | Manage rig snapshots |
 | `restore` | Restore a rig from a snapshot |
@@ -50,6 +51,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | `attach` | Attach the current shell or agent into a rig node |
 | `bind` | Bind a discovered session to a rig node |
 | `adopt` | Materialize topology and bind discovered live sessions |
+| `reconcile-session` | No-launch, no-input adopt of a hand-resumed session |
 | `bundle` | Manage rig bundles |
 | `up` | Bootstrap a rig from a spec or bundle |
 | `down` | Tear down a rig |
@@ -147,6 +149,9 @@ Supported keys:
 - `transcripts.enabled`
 - `transcripts.path`
 - `workspace.root` (and other workspace-rooted paths used by `init-workspace`)
+- `snapshots.periodic.enabled` (default `true`) — daemon-side periodic snapshot scheduler on/off (v0.3.4)
+- `snapshots.periodic.interval_seconds` (default `300`) — interval between periodic snapshots
+- `snapshots.periodic.retention_keep` (default `10`) — number of periodic snapshots to retain per rig
 
 Precedence:
 - CLI flag
@@ -157,6 +162,7 @@ Precedence:
 Notes:
 - `--with-source` (top-level) and `--show-source` (`get`) report per-key source/default for honest provenance.
 - `init-workspace` scaffolds the default workspace at `~/.openrig/workspace/` (or the `--root` override) with mission/slice folders. `--force` overwrites scaffolded files (does NOT remove directories); `--dry-run` previews without writing. New in v0.3.0.
+- `snapshots.periodic.*` (v0.3.4): the daemon-side scheduler takes periodic snapshots per rig at `interval_seconds` and retains the newest `retention_keep`. At restore time, newest-wins between `auto-periodic` and `auto-pre-down` snapshots.
 
 Legacy env compatibility: the original runtime keys still accept deprecated
 `RIGGED_*` aliases. New typed config keys use `OPENRIG_*` only.
@@ -193,6 +199,21 @@ Notes:
 - `--backup` moves the state root aside to a collision-safe timestamped path such as `~/.openrig.backup-YYYYMMDD-HHMMSS`.
 - Managed tmux cleanup is intentionally conservative. It only removes sessions that are present in current DB state; unrelated tmux sessions are left alone.
 - Human output prints a compact destroy plan followed by the destroy result.
+
+### `rig start`
+
+Usage:
+- `rig start` (interactive: daemon + kernel + pick-and-restore)
+- `rig start --last [--json]` (headless: restore rigs that were last running)
+- `rig start --all [--json]` (headless: restore all rigs with restore-usable snapshots)
+- `rig start --rigs <name> [<name>...] [--json]` (headless: restore only the named rigs)
+
+Notes:
+- Recovery entrypoint introduced in v0.3.4 (slice 01). Sequencing-only: composes daemon start + kernel auto-boot wait + per-rig restore primitives; re-codes nothing.
+- NOT the getting-started boot hero — that remains `rig up <starter>`. `rig start` is for post-reboot/crash recovery.
+- TTY interactive flow lists last-running candidates with a readiness summary (`[ready to resume]`, `[will ask before fresh]`, `[fresh start]`, `[mixed]`), then offers restore-all or a spacebar multi-select picker.
+- Headless modes (`--last`, `--all`, `--rigs`) take zero prompts; if a node returns `awaiting-decision`, the CLI reports it honestly and prints the `rig up --existing <rig> --fresh <logicalId>` command to take action.
+- Surface source-verified against `packages/cli/src/commands/start.ts` at `03a5f915` (v0.3.4).
 
 ### `rig mcp`
 
@@ -245,7 +266,7 @@ Notes:
 
 ### `rig up`
 
-Usage: `rig up <source> [--plan] [--yes] [--cwd <path>] [--target <root>] [--existing] [--json]`
+Usage: `rig up <source> [--plan] [--yes] [--cwd <path>] [--target <root>] [--existing] [--fresh <seats...>] [--json]`
 
 Arguments:
 - `source`: path to `.yaml` or `.rigbundle`, or a bare name
@@ -262,10 +283,13 @@ Current behavior notes:
 - `--cwd <path>` overrides launch working directory for all members for this run only. For path-form `rig up <install-internal-spec>` invocations the CLI defaults `cwd` to the caller's directory (slice-22 Bug 3) so library specs match path-form behavior.
 - `--target <root>` is only for bundle/package installation. It does not override agent working directories.
 - `--existing` skips the library-spec name resolution and treats `<source>` as an existing rig name directly (disambiguates when a library spec and a stopped rig share the same name).
+- `--plan` previews the restore without executing (read-only). The preview honors an honest async timeout and reports per-node intended action.
+- `--fresh <seats...>` deliberately fresh-primes the named seats (logical ids) instead of resuming their original sessions (operation B); reported in the per-node status vocabulary as `fresh-primed`. Repeatable: `--fresh seat-a --fresh seat-b` or `--fresh seat-a seat-b`.
 - `local:` `agent_ref` values resolve relative to the rig spec directory, not the caller shell cwd.
 - If you copy a built-in spec to a new directory, keep its `agents/` tree beside it or rewrite those refs to `path:/absolute/path`.
 - Managed apps are first-class `up` targets. `rig up secrets-manager` launches the shipped Vault example from the library.
 - v0.3.2 paper-cut fix-round (slice-22): pre-launch failures now return structured HTTP 4xx (`cycle_error` / `preflight_failed` / `validation_failed` / `service_boot_failed`) instead of bare 500; failed boots no longer leave orphan rig records on disk.
+- v0.3.4: `rig up` is resume-original-by-default for existing rigs. Per-seat opt-in to deliberate fresh-prime is via `--fresh <seats...>`. The five-term restore status vocabulary surfaced per-node is `resumed` / `fresh-primed` / `awaiting-decision` / `attention_required` / `failed`. On TTY, `awaiting-decision` nodes trigger an interactive [y/N] ASK; in headless mode they are reported honestly with the exact `rig up --existing <rig> --fresh <logicalId>` follow-up command.
 
 Success modes:
 - fresh boot
@@ -522,6 +546,25 @@ Notes:
 - Materializes the topology first, then resolves/binds discovered sessions.
 - In JSON mode, emits the materialized nodes plus binding results.
 
+### `rig reconcile-session`
+
+Usage:
+- `rig reconcile-session <session> [--rig <rigId>] [--node <logicalId>] [--no-launch] [--json]`
+
+Arguments:
+- `session`: canonical session name (e.g. `dev-impl@my-rig`) of the LIVE session to adopt.
+
+Flags:
+- `--rig` and `--node` are paired disambiguators (both required together) when the session resolves ambiguously.
+- `--no-launch` is the only mode this command has; accepted for explicitness.
+
+Notes:
+- No-launch, no-input adopt of a hand-resumed canonical session (slice 03 / v0.3.4). The operator already resumed the session externally (e.g. `claude --resume`, `codex resume`) inside its canonical tmux session; the daemon still shows the seat down.
+- Binds the live process to its OWN persisted node (same node id, no re-key) and updates the projection so `rig ps` / topology / send / capture / queue routing work again.
+- NEVER launches, relaunches, kills, replays startup, presses resume menus, compacts, or types into the pane.
+- Anything that could not be proven is reported as projection drift; conversation continuity is never claimed.
+- Surface source-verified against `packages/cli/src/commands/reconcile-session.ts` at `03a5f915` (v0.3.4).
+
 ### `rig expand`
 
 Usage: `rig expand <rig-id> <pod-fragment-path> [--json] [--rig-root <path>]`
@@ -612,11 +655,13 @@ Notes:
 
 ### `rig launch`
 
-Usage: `rig launch <rigId> <nodeRef> [--json]`
+Usage: `rig launch <rigId> [nodeRef] [--seats <ids>] [--hold-reason <reason>] [--json]`
 
 Notes:
 - Launches or relaunches a node in a running rig.
-- `nodeRef` can be a logical ID or node ID.
+- `nodeRef` (optional) can be a logical ID or node ID for the single-target form.
+- `--seats <ids>` (v0.3.4, slice 11) takes a comma-separated list of logical IDs for node-granular managed partial restore — launch a named subset of seats while holding the rest. Retires the prior `pod_aware_launch_unsupported` dead-end.
+- `--hold-reason <reason>` records the reason non-target seats are being held; surfaced via observability so the held state is auditable.
 
 ### `rig remove`
 
@@ -935,10 +980,12 @@ Usage: `rig seat <subcommand>`
 Subcommands:
 - `status <seat> [options]` — show read-only seat handover observability status.
 - `handover <seat> [options]` — plan a safe two-phase seat handover.
+- `clear-attention <session> [--reason <text>] [--json]` — evidence-gated, operator-attested, audited reconcile of a stuck `attention_required` seat.
 
 Notes:
 - `status` reads the seat-handover observability tables (migration `021`); it does not mutate anything.
 - `handover` plans the two-phase sequence; actual execution happens through the existing seat-launch surfaces under operator gating.
+- `clear-attention` (v0.3.4) clears a stuck `attention_required` startup status using captured evidence; `--reason <text>` is an operator attestation override that skips the evidence gate (audited). Replaces SQLite hand-edit workarounds.
 
 ## Mission Control / Queue Observability (PL-005 Phase A)
 

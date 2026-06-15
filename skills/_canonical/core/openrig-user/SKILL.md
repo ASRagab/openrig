@@ -317,6 +317,118 @@ Known v0.3.0/v0.3.1 caveats:
 - Topology mobile drawer restoration and plugin source-label taxonomy are
   v0.3.2 carry-forwards.
 
+## Recovery and Resilience (v0.3.4+)
+
+v0.3.4's theme is Recovery + Resilience. The surfaces below compose into a
+single boot-to-running-rig path that survives crashes, hand-resumed sessions,
+profile-load drift, and partial workspace state without silently fudging
+status.
+
+### `rig start` — recovery entrypoint
+
+`rig start` is the top-level recovery sequencer. It does not invent recovery;
+it composes existing primitives (daemon start + kernel verify + per-rig
+restore) into one call.
+
+```bash
+rig start                    # interactive: daemon + kernel + pick-and-restore
+rig start --last             # headless: restore all rigs that were last running
+rig start --all              # headless: restore all rigs with restore-usable snapshots
+rig start --rigs <name> [<name>...]   # headless: restore only the named rigs
+rig start --json             # JSON output for agents
+```
+
+Framing: `rig start` is the RECOVERY entry point, not the getting-started
+hero. The fresh-user boot hero remains `rig up <starter>` (typically
+`rig up product-team`). Reach for `rig start` after a host reboot, daemon
+restart, or any "bring my rigs back" moment.
+
+### `rig reconcile-session` — no-launch adopt of a hand-resumed session
+
+When an operator has externally resumed an agent session (e.g. attached a
+shell, restarted a runtime by hand) and you want OpenRig to reconcile its
+lifecycle state without re-launching or sending input, use:
+
+```bash
+rig reconcile-session <session>
+rig reconcile-session <session> --rig <rigId> --node <logicalId>
+rig reconcile-session <session> --no-launch
+rig reconcile-session <session> --json
+```
+
+This is a no-launch, no-input adopt. `--rig`/`--node` disambiguate when the
+canonical session name does not uniquely resolve. `--no-launch` is accepted
+for explicitness (it is the only mode this command has).
+
+### Five-term restore status vocabulary
+
+The shipped restore vocabulary is intentionally honest. It surfaces in
+`rig up` / `rig restore` / `rig ps`. Use the term that fits — do not collapse
+to a generic "ok/failed":
+
+- `resumed` — seat resumed from its original session/snapshot and is live.
+- `fresh-primed` — seat opted into `--fresh` and was freshly started.
+- `awaiting-decision` — zero-session honest state. There is no resumable
+  session AND no `--fresh` opt-in was given; the seat is waiting for an
+  operator decision. Previously fudged as `failed`; that was wrong — nothing
+  is broken, the system is asking for input.
+- `attention_required` — seat is in a state needing operator attention; not
+  a transport failure. Clear via `rig seat clear-attention` once the
+  attention has been resolved.
+- `failed` — the send transport or launch genuinely failed.
+
+This replaces the prior collapsed model (the v0.3.3 four-term vocabulary, in
+which `rebuilt` was a term, is retired).
+
+### `rig seat clear-attention` — audited reconcile of stuck attention
+
+When a seat is stuck in `attention_required`, do NOT hand-edit SQLite to
+fake-clear the state. Use the evidence-gated, operator-attested, audited
+reconcile:
+
+```bash
+rig seat clear-attention <session>
+rig seat clear-attention <session> --reason "operator attested: founder re-authed, confirmed live"
+rig seat clear-attention <session> --json
+```
+
+`--reason <text>` is the operator-attestation override path; without it the
+command runs the evidence gate. Either way the action is audited.
+
+### Periodic snapshots — crash-insurance floor
+
+The daemon ships a periodic-snapshot scheduler. It runs independently of
+teardown events and provides the crash-insurance floor that prior
+event-only/teardown-only snapshots could not provide on hard crashes.
+
+Config keys (SettingsStore):
+- `snapshots.periodic.enabled` — default `true`
+- `snapshots.periodic.interval_seconds` — default `300`
+- `snapshots.periodic.retention_keep` — default `10`
+
+Newest-wins semantics: when both `auto-periodic` and `auto-pre-down`
+snapshots exist for a rig, the freshest of the two is selected for restore.
+A newer `auto-periodic` beats a stale `auto-pre-down` (the crash fix); a
+genuinely-fresher `auto-pre-down` still wins on graceful cycles. Manual
+snapshots are handled separately. See
+`packages/daemon/src/domain/snapshot-repository.ts` for the ordering rule.
+
+The last-snapshot floor surfaces in `rig ps` / status output so an operator
+can see at a glance how recent the crash-insurance floor is.
+
+### Codex profile-v2 preflight
+
+Profile-bearing launch/restore surfaces run a profile-load preflight. When
+profile-load issues are detected, the failure is honest and actionable
+(named error + remediation pointer) instead of a silent partial launch that
+would later look like an attention_required seat with no explanation.
+
+### cmux launch readiness
+
+cmux-backed launches no longer produce silent partial workspace state. When
+parts of the workspace are missing, the launch surfaces partial state
+honestly and the UI exposes a one-click open-missing affordance.
+
 ## Core Loop
 
 Most work in OpenRig reduces to this loop:
@@ -544,6 +656,8 @@ rig up <source>
 rig up <source> --plan
 rig up <source> --yes
 rig up <source> --cwd /path/to/project
+rig up <source> --existing
+rig up <source> --fresh <seat...>
 rig up <source> --json
 ```
 
@@ -556,6 +670,16 @@ Bare names are special:
 - if they match a library spec, `rig up` launches from the spec library
 - if they do not match a library spec, `rig up` treats the name as an existing-rig restore/power-on target
 - if both exist, `rig up` fails loudly on ambiguity
+
+Resume-original-by-default (v0.3.4+):
+- For an existing rig, `rig up <name>` resumes each seat from its original session/snapshot by default (operation A). Seats that successfully resume report `resumed`.
+- `--fresh <seat...>` is the per-seat opt-in for deliberate fresh-prime (operation B). Named seats are reported as `fresh-primed`.
+- `--existing` forces existing-rig restore semantics on a bare name, bypassing library-spec resolution. Useful when a rig name collides with a library spec name.
+- Example: `rig up --existing my-rig --fresh dev-impl` — resume everything in `my-rig` except `dev-impl`, which is freshly primed.
+- Seats with no resumable session land in `awaiting-decision` (zero-session honest state, NOT `failed`); see the five-term restore vocabulary in "Recovery and Resilience" below.
+
+`--plan` (v0.3.4+):
+- `rig up <source> --plan` produces a read-only restore plan preview. It surfaces per-seat resume/fresh-prime intent and any awaiting-decision seats without mutating state. Honest async timeout: a stuck plan reports the timeout rather than hanging silently.
 
 Current behavior notes:
 - `--target <root>` is only for `.rigbundle` / package installation. It does not change agent cwd.
@@ -812,10 +936,17 @@ This lets ordinary agents ask the manager for OpenRig help instead of every agen
 ```bash
 rig expand <rig-id> <pod-fragment-path> [--rig-root <path>] [--json]
 rig launch <rigId> <nodeRef> [--json]
+rig launch <rigId> --seats <a,b,c> [--hold-reason <text>] [--json]
 rig remove <rigId> <nodeRef> [--json]
 rig shrink <rigId> <podRef> [--json]
 rig unclaim <sessionRef> [--json]
 ```
+
+Node-granular managed partial restore (v0.3.4+):
+- `rig launch <rigId> <nodeRef>` relaunches a single seat by logical id or node id through orchestration.
+- `rig launch <rigId> --seats <a,b,c>` relaunches a comma-separated subset of seats.
+- `--hold-reason <text>` records a reason for holding non-target seats during the partial launch.
+- This is a SUPPORTED managed path. The prior `pod_aware_launch_unsupported` dead-end is retired; pod-aware narrow launch now goes through this surface rather than ad-hoc rebuilds.
 
 ### Add a member to an existing pod — v0.3.3+
 

@@ -8,6 +8,335 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.3.4] - 2026-06-15
+
+**Status**: released. npm `@openrig/cli@0.3.4` (latest); GitHub Release
+`v0.3.4`; git tag `v0.3.4`.
+
+### Summary For Installing Agents
+
+- **Package version**: package metadata bumped at release-manager step;
+  CLI reports the new version after `npm publish`.
+- **Migrations**: no new schema-bumping migrations in 0.3.4. Existing
+  databases upgrade by running `rig daemon start` on the new daemon.
+- **Node engines**: unchanged from 0.3.3 (CLI accepts Node `>=20`).
+- **Backward compatibility**: existing CLI argument shapes, daemon
+  route paths, RigSpec/AgentSpec schemas, and persisted settings
+  remain backward compatible. New routes are additive
+  (`POST /api/rigs/:id/up` plan / apply path is the same path 0.3.3
+  shipped; `POST /api/sessions/:session/reconcile` is new;
+  `POST /api/sessions/:session/clear-attention` is new;
+  `POST /api/rigs/:rigId/nodes/:nodeRef/launch` and
+  `POST /api/rigs/:rigId/nodes/launch-subset` are new). New CLI
+  commands (`rig start`, `rig reconcile-session`,
+  `rig seat clear-attention`) are additive. `rig up` flips from
+  fresh-by-default to resume-original-by-default — callers that
+  implicitly relied on fresh-prime as the default must now name
+  `--fresh <seats...>` explicitly.
+
+### `rig start` — Recovery Entry Point (slice 01)
+
+New top-level command. Sequences existing primitives: daemon-start
+-> kernel auto-boot wait -> candidate listing -> picker / flags ->
+per-rig restore (`/api/rigs/:id/up`) + reconcile:
+
+```
+rig start                            Interactive: daemon + kernel + pick-and-restore
+rig start --last                     Headless: restore all rigs that were last running
+rig start --all                      Headless: restore all rigs with restore-usable snapshots
+rig start --rigs <name> [<name>...]  Headless: restore only the named rigs
+rig start --json                     JSON output for agents
+```
+
+- **Id-grounded end-to-end**: candidate preview and apply both go
+  through `POST /api/rigs/:id/up`. Same-name rigs surface as
+  separate candidates; selection carries `rigId` so the name-based
+  `/api/up` route is never consulted in the recovery path (no
+  `ambiguous_name` 409).
+- **Re-codes nothing**: same `/api/rigs/:id/up` that
+  `rig up <existing>` uses; same five-term vocabulary on the
+  seat-level outcome.
+
+### `rig up` — Resume Original By Default (slice 02)
+
+`rig up <existing-rig>` resumes original sessions by default.
+`--fresh <seats...>` is now the explicit per-seat opt-in for
+operation B (deliberate fresh-prime):
+
+- **Default**: seats resume; outcome reports `resumed`.
+- **`--fresh <logicalId> [<logicalId>...]`**: deliberate fresh-
+  prime for the named seats; outcome reports `fresh-primed`.
+- **`awaiting-decision`**: when the daemon cannot resume and the
+  operator has not opted into fresh. TTY callers get a per-seat
+  `[y/N]` prompt; headless callers get the explicit hint
+  `rig up --existing <source> --fresh <logicalId>`. ZERO session
+  started for `awaiting-decision` seats.
+- **Backward-incompatible default flip**: callers that implicitly
+  depended on fresh-prime as the default must now name `--fresh`
+  explicitly. The `--existing` flag (treat `<source>` as a rig
+  name) is unchanged.
+
+### `rig reconcile-session` — Adopt a Hand-Resumed Session (slice 03)
+
+New top-level command. Adopts a LIVE, hand-resumed canonical
+session back into its persisted node without launching:
+
+```
+rig reconcile-session <session>
+rig reconcile-session <session> --rig <rigId> --node <logicalId>
+rig reconcile-session <session> --no-launch
+rig reconcile-session <session> --json
+```
+
+- **NEVER launches / relaunches / kills / replays startup / presses
+  resume menus / compacts / types into the pane.** The only mode
+  this command has; `--no-launch` is accepted for explicitness.
+- **Same node id, no re-key**: the live process binds back to its
+  OWN persisted node.
+- **Honest reporting**: projection drift is a list of unproven
+  metadata fields; conversation continuity is reported as a status
+  string, never claimed as proven.
+- **Daemon route**: `POST /api/sessions/:session/reconcile`.
+
+### `rig up --plan` — Read-Only Restore Preview (slice 04)
+
+```
+rig up <existing-rig> --plan [--json]
+```
+
+- **No mutation**: returns the restore plan only.
+- **Per-node `intendedAction`**: `resume` / `fresh-prime` /
+  `awaiting-decision` keyed to the five-term vocabulary.
+- **Snapshot the plan would consume**: surfaced in the response so
+  the operator can verify the floor before apply.
+- **Honest async timeout**: when the preview cannot complete
+  within bound, the response says so rather than claiming a clean
+  plan.
+
+### Pod-Aware Claude Resume-Selection Menu (slice 05 rev1 BLOCKING)
+
+`ClaudeCodeAdapter.verifyResumeLaunch` now treats a Claude
+resume-selection menu the same way it treats the Codex
+unresolved-gate case (the 0.3.3 slice 21 FR-2 pattern):
+
+- Returns immediately with `recovery: attention_required` and
+  last-12-line pane evidence on BOTH the inner poll loop and the
+  final-probe exit path.
+- ZERO numeric selection keystrokes are ever sent.
+- Routes into the existing `HarnessLaunchResult` ->
+  startup-orchestrator `startupStatus: attention_required` ->
+  `ps` / `status` projection — same path the Codex case uses.
+
+### Five-Term Restore Status Vocabulary (slice 06)
+
+The seat-level status on `rig up`, `rig restore`, and `rig ps` is
+now ONE of:
+
+- **`resumed`** — original session continuity proven by the
+  native-resume probe.
+- **`fresh-primed`** — operator opted into deliberate fresh-prime
+  (operation B); a brand new session started instead of resumed.
+- **`awaiting-decision`** — daemon could not resume and operator
+  has not opted into fresh. ZERO session started. The honest
+  zero-session state.
+- **`attention_required`** — seat is live or parked but needs
+  operator action (auth gate, model-selection menu, trust prompt,
+  stuck recovery). NEVER reported as `failed`.
+- **`failed`** — the launch transport itself failed.
+
+Replaces the prior 2-3 term collapsed model that hid edge cases.
+`awaiting-decision` is new and replaces the prior pattern where
+zero-session outcomes were either misreported as success or as
+failure.
+
+### Codex Profile-V2 Preflight (slice 07 rev1 BLOCKING)
+
+Profile-load check on profile-bearing launch and restore
+surfaces, with narrowed legacy-profile detection:
+
+- **Legacy detection requires legacy-specific patterns only**:
+  `contains legacy`, `[profiles.<name>]`, `cannot be used while.*
+  legacy`, `legacy profile selector`. The prior generic match
+  against `failed to load configuration` was also catching
+  invalid-TOML stderr and giving the wrong migration hint.
+- **Invalid TOML surfaces the parse reason**: up to 3 stderr
+  lines (e.g. `expected newline`) with a generic TOML-validity
+  hint instead of a wrong hint pointing at
+  `[profiles.<profile>]`.
+- **Stale comment in `codex-runtime-adapter.ts` corrected**:
+  absent `.config.toml` passes (Option B), not fails.
+
+### cmux Launch Readiness (slice 08)
+
+Launch path no longer silently produces a partial cmux workspace:
+
+- **Honest partial-workspace state**: when cmux comes up with a
+  subset of expected windows / panes, the seat surfaces an honest
+  partial state instead of being projected as launched-clean.
+- **One-click open-missing affordance**: UI surfaces the one-click
+  path to open the missing workspace pieces.
+
+### Periodic Snapshots (slice 09)
+
+`PeriodicSnapshotScheduler` ships as the crash-insurance floor
+under event-driven and teardown snapshots:
+
+- **`snapshots.periodic.enabled`** (default `true`): master
+  switch.
+- **`snapshots.periodic.interval_seconds`** (default `300`):
+  per-rig snapshot interval.
+- **`snapshots.periodic.retention_keep`** (default `10`):
+  per-rig `auto-periodic` retention count.
+- **`auto-periodic` snapshot kind**: captured per enabled rig on
+  interval; pruned by `retention_keep`.
+- **Restore selector**: treats `auto-periodic` and `auto-pre-down`
+  symmetrically — the newer wins. A daemon crash between teardown
+  snapshots no longer loses arbitrary lifecycle state.
+- **`rig ps` / status**: surfaces last-snapshot / floor so the
+  operator can see the crash-insurance floor at a glance.
+
+### `rig seat clear-attention` (slice 10)
+
+New subcommand on `rig seat`. Evidence-gated, operator-attested,
+audited reconcile of a stuck `attention_required` seat back to
+`ready`:
+
+```
+rig seat clear-attention <session>
+rig seat clear-attention <session> --reason "<operator attestation>"
+rig seat clear-attention <session> --json
+```
+
+- **Without `--reason`**: clear requires daemon-side evidence the
+  seat is back to a clean state.
+- **`--reason <text>`**: operator-attestation override of the
+  evidence gate; the attestation string lands in the audit row
+  verbatim.
+- **Daemon route**: `POST /api/sessions/:session/clear-attention`.
+- **Output**: `Cleared <session>: <from> -> ready (<clearedBy>)`.
+- **Replaces** the hand-edit-SQLite / fake-clear pattern. Node id
+  is unchanged.
+
+### Node-Granular Managed Partial Restore (slice 11)
+
+`rig launch` relaunches a seat or subset by logical id through
+orchestration:
+
+```
+rig launch <rigId> <nodeRef>                  Single seat
+rig launch <rigId> --seats <a,b,c>            Subset (comma-separated)
+rig launch <rigId> --seats <a,b> --hold-reason "<text>"
+rig launch <rigId> --seats <a,b> --json
+```
+
+- **Single target**:
+  `POST /api/rigs/:rigId/nodes/:nodeRef/launch`.
+- **Subset**: `POST /api/rigs/:rigId/nodes/launch-subset`.
+- **Partial outcomes never collapsed**: `launched`, `held` (with
+  reason), `alreadyRunning`, and `failedTargets` (liveness
+  unknown) reported separately.
+- **Retires** the v0.3.x-era `pod_aware_launch_unsupported`
+  dead-end and the "use `rig up` instead" workaround that lost
+  per-seat control.
+
+### Slow Codex Resume Classification (slice 13)
+
+Internal classification tweak in `verifyResumeLaunch` for slow
+but genuinely-resuming Codex sessions:
+
+- Previously the slow path mis-categorized through the
+  unresolved-gate branch.
+- Now correctly classifies through the five-term vocabulary and
+  reaches `resumed` when the readiness probe confirms.
+
+### What to STOP Using
+
+- `rig up <existing-rig>` is no longer fresh-by-default. Use
+  `--fresh <seats...>` for deliberate fresh-prime.
+- A live or parked seat is NEVER `failed`. Use
+  `attention_required`. The honest zero-session state is
+  `awaiting-decision`.
+- `pod_aware_launch_unsupported` / "use `rig up` instead" for
+  per-seat relaunch is RETIRED. Use `rig launch <rigId> <nodeRef>`
+  or `rig launch <rigId> --seats <a,b>`.
+- Hand-editing SQLite or fake-clearing a stuck
+  `attention_required` seat is RETIRED. Use
+  `rig seat clear-attention <session>` (evidence-gated) or
+  `rig seat clear-attention <session> --reason "<attestation>"`
+  (operator-attested, audited).
+- Relying only on event-driven or teardown snapshots for crash
+  safety is RETIRED. The periodic snapshot scheduler is the
+  floor; tune `snapshots.periodic.*` to taste.
+- Classifying invalid TOML as a legacy-profile problem is
+  RETIRED. The Codex profile-v2 preflight surfaces the actual
+  parse reason.
+- Restoring a hand-resumed session by relaunching the whole rig
+  is RETIRED. Use `rig reconcile-session <session> --no-launch`.
+
+### Known Limitations / 0.3.4 Carry-forwards
+
+- **`rig view list/show --json` flag inconsistency** —
+  wrapper-layer routing path remains; the daemon's
+  `view show <name>` route returns JSON correctly when invoked
+  directly. Workaround: human-readable output for now.
+- **`docs/DESIGN.md` docs-guard ledger** — design-doc update
+  ledger carries forward; no runtime impact.
+- **Slice-21 FR-1 (native Codex session-id hook)**: scope-tipped
+  to 0.4.0 after build-time forensic. Carried forward from 0.3.3.
+- **Slice-13 component 3 (auto-rollout dispatcher)**: skill-layer
+  landing remains; product-code dispatcher / invocation is
+  intentionally out of the shipped runtime bundle. Carried
+  forward from 0.3.3.
+- **Slice-05 sub-scopes carried forward**: agent / port /
+  managed-app collision detection (Item 4.3); broader
+  install-into-existing-rig pathway acceptance (Item 4.4);
+  `--target-name` CLI flag for install-time rig-name overrides.
+- **Slice-21 FR-4(d) accepted-queue-state schema**: deferred from
+  0.3.2; carried forward.
+- **Onboarding journey + battle-hardening**: slices 04
+  (new-user-journey), 08 (hooks-elite), 10 (rig-self), 11
+  (personal-rig) carried forward to a later release.
+- **Workspace symlink alignment**: daemon-side workspace-resolver
+  alignment with operator symlinked workspace roots remains a
+  follow-up; non-blocking for 0.3.4.
+- **Slice-13 permission-block-routing-architecture remains held**:
+  big-green-light gated by operator review; `rigx-experimental`
+  only; not split-deferred (stays held).
+- **0.3.4 host-upgrade flow held**: operators installing v0.3.4
+  fresh from npm have full access immediately; existing-host
+  upgrade follows the standard daemon-restart flow. The named
+  host-upgrade flow is held for separate sequencing.
+
+### Quick Verification Commands
+
+```bash
+# Confirm CLI version after the release-manager version bump
+rig --version
+
+# Confirm daemon starts cleanly (no new migrations to apply in 0.3.4)
+rig daemon start
+
+# Confirm rig start surface is wired
+rig start --help
+
+# Confirm rig up --plan + --fresh are wired
+rig up --help | grep -E "(plan|fresh)"
+
+# Confirm rig reconcile-session is wired
+rig reconcile-session --help
+
+# Confirm rig seat clear-attention is wired
+rig seat clear-attention --help
+
+# Confirm rig launch supports single-seat + subset relaunch
+rig launch --help
+
+# Confirm five-term vocabulary on rig ps
+rig ps --help | grep -i attention
+```
+
+---
+
 ## [0.3.3] - 2026-06-11
 
 **Status**: released. npm `@openrig/cli@0.3.3` (latest); GitHub Release
