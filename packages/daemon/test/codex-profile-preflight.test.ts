@@ -15,14 +15,14 @@ describe("verifyCodexProfileLoads", () => {
     expect(exec).toHaveBeenCalledWith("codex -p openrig_pm mcp list");
   });
 
-  it("FAIL: missing profile file", async () => {
-    const exec = vi.fn(async () => { throw new Error("Error: config file not found: /Users/x/.codex/missing.config.toml"); });
+  it("PASS: missing profile file (Codex treats absent .config.toml as valid default-config layering)", async () => {
+    // Advisor ruling Option B: Codex 0.139+ exits 0 for an absent profile file
+    // (default-config layering). Failing preflight on this would be a false
+    // negative — preflight rejecting a config that launch ACCEPTS.
+    const exec = vi.fn(async () => "");
     const result = await verifyCodexProfileLoads("missing", exec);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
     expect(result.profile).toBe("missing");
-    expect(result.error).toContain("missing");
-    expect(result.error).toContain("failed to load");
-    expect(result.migrationHint).toContain("missing.config.toml");
   });
 
   it("FAIL: legacy [profiles.<name>] table blocks loading (the headline discriminator)", async () => {

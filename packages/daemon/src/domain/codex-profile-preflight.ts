@@ -37,7 +37,7 @@ export async function verifyCodexProfileLoads(
       /failed to load configuration/i.test(stderr);
     const migrationHint = isLegacyTable
       ? `Move the profile settings into ~/.codex/${profile}.config.toml and remove the legacy [profiles.${profile}] table/selector from config.toml.`
-      : `Ensure ~/.codex/${profile}.config.toml exists and is valid TOML. Run 'codex -p ${profile} mcp list' manually to diagnose.`;
+      : `Check ~/.codex/${profile}.config.toml is valid TOML (an absent file is OK — Codex default-layers it). Run 'codex -p ${profile} mcp list' manually to diagnose.`;
     return {
       ok: false,
       profile,
