@@ -150,7 +150,7 @@ export class SeatAttentionReconciler {
         if (sendResult.ok && sendResult.outcome === "rendered-unconfirmed" && this.deps.capture) {
           try {
             const captureResult = await this.deps.capture(sessionName, { lines: 50 });
-            if (captureResult.ok && captureResult.content && captureResult.content.includes("# OpenRig attention-clear liveness probe")) {
+            if (captureResult.ok && captureResult.content && captureResult.content.includes(probeText)) {
               sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
               eventBus.emit({
                 type: "seat.attention_cleared",

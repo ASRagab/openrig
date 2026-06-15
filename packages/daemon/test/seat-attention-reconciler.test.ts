@@ -235,12 +235,16 @@ describe("SeatAttentionReconciler", () => {
     expect(payload.evidence.kind).toBe("send_verify_roundtrip");
   });
 
-  // Capture-confirmed branch: rendered-unconfirmed + capture confirms probe text → clears
-  it("clears on rendered-unconfirmed when capture confirms probe text", async () => {
+  // Capture-confirmed branch: rendered-unconfirmed + capture confirms exact probe text → clears
+  it("clears on rendered-unconfirmed when capture confirms exact probe text", async () => {
     seedAttentionSeat("r-cap-ok", "worker@r-cap-ok");
-    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    let sentProbe = "";
+    const sendVerify = vi.fn(async (_session: string, text: string) => {
+      sentProbe = text;
+      return { ok: true, outcome: "rendered-unconfirmed" as const, verified: false };
+    });
     const capture = vi.fn(async (session: string) => ({
-      ok: true, sessionName: session, content: "some pane output\n# OpenRig attention-clear liveness probe 1234567890\nmore output",
+      ok: true, sessionName: session, content: `some pane output\n${sentProbe}\nmore output`,
     }));
     const capReconciler = new SeatAttentionReconciler({
       sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
@@ -288,12 +292,35 @@ describe("SeatAttentionReconciler", () => {
     expect(result.code).toBe("not_demonstrably_responsive");
   });
 
+  // Discriminator: stale probe in capture from a prior attempt does NOT clear
+  it("does NOT clear when capture contains a stale probe from a prior attempt", async () => {
+    seedAttentionSeat("r-cap-stale", "worker@r-cap-stale");
+    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    const capture = vi.fn(async (session: string) => ({
+      ok: true, sessionName: session, content: "# OpenRig attention-clear liveness probe 1111111111\nold scrollback",
+    }));
+    const capReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
+    });
+
+    const result = await capReconciler.clearAttention("worker@r-cap-stale");
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("not_demonstrably_responsive");
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'seat.attention_cleared'").all();
+    expect(events).toHaveLength(0);
+  });
+
   // Capture-confirmed audit event has distinct evidence kind
   it("capture-confirmed audit event has kind send_verify_capture_confirmed", async () => {
     seedAttentionSeat("r-cap-audit", "worker@r-cap-audit");
-    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    let sentProbe = "";
+    const sendVerify = vi.fn(async (_session: string, text: string) => {
+      sentProbe = text;
+      return { ok: true, outcome: "rendered-unconfirmed" as const, verified: false };
+    });
     const capture = vi.fn(async (session: string) => ({
-      ok: true, sessionName: session, content: "# OpenRig attention-clear liveness probe 9999999999\noutput",
+      ok: true, sessionName: session, content: `${sentProbe}\noutput`,
     }));
     const capReconciler = new SeatAttentionReconciler({
       sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
