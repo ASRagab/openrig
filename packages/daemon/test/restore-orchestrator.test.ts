@@ -21,7 +21,7 @@ import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
-import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
+import { RestoreOrchestrator, rollupRestoreRigResult } from "../src/domain/restore-orchestrator.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
 import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
@@ -2539,7 +2539,7 @@ describe("RestoreOrchestrator", () => {
   // roll to partially_restored, never failed. Only all-failed rolls to failed.
   describe("OPR.0.3.4.6 honest-restore-status rollup guard", () => {
     it("attention_required + awaiting-decision + mixed -> partially_restored, never failed", () => {
-      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+
       const nodes = [
         { nodeId: "n1", logicalId: "a", status: "resumed" as const },
         { nodeId: "n2", logicalId: "b", status: "fresh-primed" as const },
@@ -2553,7 +2553,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("attention_required alone -> partially_restored (NEVER collapsed to failed)", () => {
-      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "attention_required" },
       ]);
@@ -2562,7 +2562,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("awaiting-decision alone -> partially_restored (NEVER collapsed to failed)", () => {
-      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "awaiting-decision" },
       ]);
@@ -2571,7 +2571,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("all-failed -> failed (reserved for genuine all-failure only)", () => {
-      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "failed" },
         { nodeId: "n2", logicalId: "b", status: "failed" },
@@ -2580,7 +2580,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     it("all-resumed -> fully_restored", () => {
-      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+
       const result = rollupRestoreRigResult([
         { nodeId: "n1", logicalId: "a", status: "resumed" },
         { nodeId: "n2", logicalId: "b", status: "resumed" },
