@@ -120,22 +120,58 @@ function makeMockAdapter(opts: {
   return adapter as unknown as CmuxAdapter;
 }
 
+function makeTmuxAdapterStub(liveSessions?: Set<string>): import("../src/adapters/tmux.js").TmuxAdapter {
+  const live = liveSessions ?? new Set<string>();
+  return {
+    hasSession: async (name: string) => live.has(name),
+    createSession: async () => ({ ok: true as const }),
+    killSession: async () => ({ ok: true as const }),
+    sendText: async () => ({ ok: true as const }),
+    sendKeys: async () => ({ ok: true as const }),
+    getPaneCommand: async () => null,
+    capturePaneContent: async () => null,
+    listSessions: async () => [],
+    listWindows: async () => [],
+    listPanes: async () => [],
+  } as unknown as import("../src/adapters/tmux.js").TmuxAdapter;
+}
+
 function buildApp(opts: {
   rigs: Record<string, FakeRigOpts>;
   adapter: CmuxAdapter;
+  liveSessions?: Set<string>;
+  readinessTimeoutMs?: number;
+  readinessPollMs?: number;
 }): Hono {
   const app = new Hono();
   const rigRepo = makeRigRepoStub(opts.rigs);
   const nodeInventoryFn = makeNodeInventoryStub(opts.rigs);
   // No-op sleep so tests don't actually wait
   const layoutService = new CmuxLayoutService(opts.adapter, { sleep: async () => {} });
+  // OPR.0.3.4.8: default live sessions = sessions whose effective sessionStatus
+  // is "running" (mirrors makeNodeInventoryStub's default: canonicalSessionName
+  // present + no explicit non-running sessionStatus = "running").
+  const defaultLive = new Set<string>();
+  for (const rig of Object.values(opts.rigs)) {
+    for (const node of rig.nodes ?? []) {
+      if (!node.canonicalSessionName) continue;
+      const effectiveStatus = node.sessionStatus ?? "running";
+      if (effectiveStatus === "running") {
+        defaultLive.add(node.canonicalSessionName);
+      }
+    }
+  }
+  const tmuxAdapter = makeTmuxAdapterStub(opts.liveSessions ?? defaultLive);
 
   app.use("*", async (c, next) => {
     c.set("rigRepo" as never, rigRepo);
     c.set("cmuxAdapter" as never, opts.adapter);
     c.set("cmuxLayoutService" as never, layoutService);
     c.set("nodeInventoryFn" as never, nodeInventoryFn);
-    c.set("db" as never, {} as Database.Database); // not used in tests via injected fn
+    c.set("tmuxAdapter" as never, tmuxAdapter);
+    c.set("readinessTimeoutMs" as never, opts.readinessTimeoutMs);
+    c.set("readinessPollMs" as never, opts.readinessPollMs);
+    c.set("db" as never, {} as Database.Database);
     await next();
   });
   app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
@@ -187,6 +223,8 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
         },
       },
       adapter: makeMockAdapter({ available: true }),
+      readinessTimeoutMs: 100,
+      readinessPollMs: 10,
     });
     const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
     expect(res.status).toBe(412);
@@ -438,6 +476,221 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
     });
     const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
     expect(res.status).toBe(412);
+  });
+
+  // OPR.0.3.4.8 — cmux launch readiness: tmux-liveness discriminator + honest partial.
+
+  it("OPR.0.3.4.8: live detached session (hasSession true) is INCLUDED as a pane", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "live-detached-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@live-detached-rig", sessionStatus: "detached" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+      liveSessions: new Set(["a@live-detached-rig"]),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { workspaces: Array<{ agents: string[] }>; missing?: Array<{ logicalId: string }> };
+    expect(body.workspaces[0]!.agents).toEqual(["a@live-detached-rig"]);
+    expect(body.missing).toBeUndefined();
+  });
+
+  it("OPR.0.3.4.8: mixed live + stale -> response includes missing with reasons", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "partial-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@partial-rig", sessionStatus: "running" },
+            { logicalId: "b", podId: "p1", canonicalSessionName: "b@partial-rig", sessionStatus: "exited" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+      liveSessions: new Set(["a@partial-rig"]),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; workspaces: Array<{ agents: string[] }>; missing: Array<{ logicalId: string; reason: string }> };
+    expect(body.ok).toBe(true);
+    expect(body.workspaces[0]!.agents).toEqual(["a@partial-rig"]);
+    expect(body.missing).toBeDefined();
+    expect(body.missing).toHaveLength(1);
+    expect(body.missing[0]!.logicalId).toBe("b");
+    expect(body.missing[0]!.reason).toBe("session-missing");
+  });
+
+  it("OPR.0.3.4.8: stale dead session (hasSession false) is NOT attached, listed as missing", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "dead-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@dead-rig", sessionStatus: "exited" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+      liveSessions: new Set(),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(412);
+    const body = (await res.json()) as { error: string; missing: Array<{ logicalId: string; reason: string }> };
+    expect(body.error).toBe("rig_not_running");
+    expect(body.missing).toBeDefined();
+    expect(body.missing.some((m) => m.logicalId === "a")).toBe(true);
+  });
+
+  it("OPR.0.3.4.8: fully-ready rig opens all seats with no missing", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "full-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@full-rig" },
+            { logicalId: "b", podId: "p1", canonicalSessionName: "b@full-rig" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; workspaces: Array<{ agents: string[] }>; missing?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.workspaces[0]!.agents).toEqual(["a@full-rig", "b@full-rig"]);
+    expect(body.missing).toBeUndefined();
+  });
+
+  it("OPR.0.3.4.8: no code branches on sessionStatus === attention_required", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "attn-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@attn-rig", sessionStatus: "running" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+      liveSessions: new Set(["a@attn-rig"]),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { workspaces: Array<{ agents: string[] }> };
+    expect(body.workspaces[0]!.agents).toContain("a@attn-rig");
+  });
+
+  it("OPR.0.3.4.8: candidate hasSession false,false,true before timeout -> included", async () => {
+    let callCount = 0;
+    const dynamicTmux = {
+      ...makeTmuxAdapterStub(new Set()),
+      hasSession: async (name: string) => {
+        callCount++;
+        return callCount >= 3;
+      },
+    } as unknown as import("../src/adapters/tmux.js").TmuxAdapter;
+    const app = new Hono();
+    const rigs = {
+      "rig-1": {
+        id: "rig-1",
+        name: "late-live-rig",
+        nodes: [{ logicalId: "a", podId: "p1", canonicalSessionName: "a@late-live-rig", sessionStatus: "running" as string | undefined }],
+      },
+    };
+    const rigRepo = makeRigRepoStub(rigs);
+    const nodeInventoryFn = makeNodeInventoryStub(rigs);
+    const layoutService = new CmuxLayoutService(makeMockAdapter({ available: true }), { sleep: async () => {} });
+    app.use("*", async (c, next) => {
+      c.set("rigRepo" as never, rigRepo);
+      c.set("cmuxAdapter" as never, makeMockAdapter({ available: true }));
+      c.set("cmuxLayoutService" as never, layoutService);
+      c.set("nodeInventoryFn" as never, nodeInventoryFn);
+      c.set("tmuxAdapter" as never, dynamicTmux);
+      c.set("readinessTimeoutMs" as never, 500);
+      c.set("readinessPollMs" as never, 10);
+      c.set("db" as never, {} as Database.Database);
+      await next();
+    });
+    app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
+
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; workspaces: Array<{ agents: string[] }>; missing?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.workspaces[0]!.agents).toContain("a@late-live-rig");
+    expect(body.missing).toBeUndefined();
+  });
+
+  it("OPR.0.3.4.8: no-session at first snapshot -> discovers canonical/live before timeout -> included (multiple null re-reads)", async () => {
+    let inventoryCallCount = 0;
+    const dynamicInventoryFn = () => {
+      inventoryCallCount++;
+      if (inventoryCallCount <= 3) {
+        return [{ logicalId: "a", canonicalSessionName: null, sessionStatus: null, attachmentType: "tmux", podId: "p1" }] as never;
+      }
+      return [{ logicalId: "a", canonicalSessionName: "a@late-start-rig", sessionStatus: "running", attachmentType: "tmux", podId: "p1" }] as never;
+    };
+    const app = new Hono();
+    const rigs = {
+      "rig-1": {
+        id: "rig-1",
+        name: "late-start-rig",
+        nodes: [{ logicalId: "a", podId: "p1", canonicalSessionName: null as string | null }],
+      },
+    };
+    const rigRepo = makeRigRepoStub(rigs);
+    const layoutService = new CmuxLayoutService(makeMockAdapter({ available: true }), { sleep: async () => {} });
+    const tmux = makeTmuxAdapterStub(new Set(["a@late-start-rig"]));
+    app.use("*", async (c, next) => {
+      c.set("rigRepo" as never, rigRepo);
+      c.set("cmuxAdapter" as never, makeMockAdapter({ available: true }));
+      c.set("cmuxLayoutService" as never, layoutService);
+      c.set("nodeInventoryFn" as never, dynamicInventoryFn);
+      c.set("tmuxAdapter" as never, tmux);
+      c.set("readinessTimeoutMs" as never, 500);
+      c.set("readinessPollMs" as never, 10);
+      c.set("db" as never, {} as Database.Database);
+      await next();
+    });
+    app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
+
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; workspaces: Array<{ agents: string[] }>; missing?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.workspaces[0]!.agents).toContain("a@late-start-rig");
+    expect(body.missing).toBeUndefined();
+  });
+
+  it("OPR.0.3.4.8: stale/exited session remains session-missing (never attached even after polling)", async () => {
+    const app = buildApp({
+      rigs: {
+        "rig-1": {
+          id: "rig-1",
+          name: "stale-poll-rig",
+          nodes: [
+            { logicalId: "a", podId: "p1", canonicalSessionName: "a@stale-poll-rig", sessionStatus: "exited" },
+          ],
+        },
+      },
+      adapter: makeMockAdapter({ available: true }),
+      liveSessions: new Set(),
+    });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(412);
+    const body = (await res.json()) as { missing: Array<{ logicalId: string; reason: string }> };
+    expect(body.missing[0]!.reason).toBe("session-missing");
   });
 
   it("rig.nodes order (DB ORDER BY created_at = pod-then-member) is preserved in agents array", async () => {

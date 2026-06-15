@@ -18,9 +18,15 @@ export interface CmuxLaunchedWorkspace {
   blanks: number;
 }
 
+export interface MissingSeat {
+  logicalId: string;
+  reason: string;
+}
+
 export interface RigCmuxLaunchSuccess {
   ok: true;
   workspaces: CmuxLaunchedWorkspace[];
+  missing?: MissingSeat[];
 }
 
 interface RigCmuxLaunchErrorBody {
