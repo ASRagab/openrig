@@ -187,6 +187,21 @@ function createMockDaemon() {
         }));
         return;
       }
+      // OPR.0.3.4.6 — five-term cross-surface guard for the rig restore CLI surface.
+      if (snapshotId === "five-term") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          rigResult: "partially_restored",
+          nodes: [
+            { nodeId: "n1", logicalId: "a", status: "resumed" },
+            { nodeId: "n2", logicalId: "b", status: "fresh-primed" },
+            { nodeId: "n3", logicalId: "c", status: "awaiting-decision", error: "no token" },
+            { nodeId: "n4", logicalId: "d", status: "attention_required" },
+            { nodeId: "n5", logicalId: "e", status: "failed" },
+          ],
+        }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         rigResult: "fully_restored",
@@ -330,6 +345,29 @@ describe("rig snapshot + restore", () => {
     expect(output).toContain("Required startup file is missing");
     expect(output).toContain("/workspace/app/STARTUP.md");
     expect(output).toContain("Restore the missing startup file");
+    expect(process.exitCode).toBe(1);
+
+    process.exitCode = savedExitCode;
+  });
+
+  // OPR.0.3.4.6 — cross-surface regression guard: rig restore CLI surface.
+  // All five terms render distinctly and attention_required/awaiting-decision
+  // with partially_restored -> exit 1, never exit 0.
+  it("OPR.0.3.4.6 guard: rig restore renders all five terms distinctly + exit 1 for partially_restored", async () => {
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
+
+    const program = new Command();
+    program.addCommand(restoreCommand(runningDeps(port)));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "restore", "five-term", "--rig", "rig-1"]));
+
+    const output = logs.join("\n");
+    expect(output).toContain("a: resumed");
+    expect(output).toContain("b: fresh-primed");
+    expect(output).toContain("c: awaiting-decision");
+    expect(output).toContain("d: attention_required");
+    expect(output).toContain("e: failed");
+    expect(output).toContain("partially_restored");
     expect(process.exitCode).toBe(1);
 
     process.exitCode = savedExitCode;

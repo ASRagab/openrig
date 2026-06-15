@@ -247,6 +247,31 @@ describe("Node Inventory Projection", () => {
     expect(infra?.restoreOutcome).toBe("failed");
   });
 
+  // OPR.0.3.4.6 — cross-surface regression guard: restoreOutcome attention_required
+  // projects to both restoreOutcome=attention_required AND lifecycleState=attention_required.
+  it("OPR.0.3.4.6 guard: restoreOutcome attention_required projects to node lifecycleState attention_required (never failed)", () => {
+    seedPodAwareRig(db);
+    seedSession(db, "node-1", "dev-impl@test-rig");
+    seedEvent(db, "rig-1", "node-1", "restore.completed", {
+      rigId: "rig-1",
+      snapshotId: "snap-1",
+      result: {
+        snapshotId: "snap-1",
+        preRestoreSnapshotId: "snap-0",
+        nodes: [
+          { nodeId: "node-1", logicalId: "dev.impl", status: "attention_required" },
+        ],
+        warnings: [],
+      },
+    });
+
+    const entries = getNodeInventory(db, "rig-1");
+    const node = entries.find((e) => e.logicalId === "dev.impl");
+    expect(node?.restoreOutcome).toBe("attention_required");
+    expect(node?.lifecycleState).toBe("attention_required");
+    expect(node?.lifecycleState).not.toBe("failed");
+  });
+
   // Resume state naming: rebuilt and fresh outcomes from inventory
   it("restoreOutcome maps checkpoint_written to 'rebuilt' and fresh_no_checkpoint to 'fresh'", () => {
     seedPodAwareRig(db);
