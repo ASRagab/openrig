@@ -652,6 +652,20 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
   const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmuxAdapter, tmuxAdapter);
   const agentActivityStore = new AgentActivityStore({ db, eventBus });
+  const { SeatAttentionReconciler } = await import("./domain/seat-attention-reconciler.js");
+  const seatAttentionReconciler = new SeatAttentionReconciler({
+    sessionRegistry, eventBus, agentActivityStore,
+    sendVerify: async (session, text, opts) => {
+      const transport = deps.sessionTransport;
+      if (!transport) return { ok: false, outcome: "failed" };
+      return transport.send(session, text, { verify: opts?.verify });
+    },
+    capture: async (session, opts) => {
+      const transport = deps.sessionTransport;
+      if (!transport) return { ok: false, sessionName: session, error: "transport_unavailable" };
+      return transport.capture(session, opts);
+    },
+  });
 
   const deps: AppDeps = {
     rigRepo,
@@ -770,6 +784,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     whoamiService,
     nodeCmuxService,
     agentActivityStore,
+    seatAttentionReconciler,
     activityHookToken,
     contextUsageStore,
     serviceOrchestrator,
