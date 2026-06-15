@@ -1,23 +1,13 @@
-// Slice 24 — POST /api/rigs/:rigId/cmux/launch.
-//
-// Per-rig "Launch in CMUX" endpoint. Coordination:
-//   1. rigRepo.getRig(rigId)         → 404 if missing
-//   2. cmuxAdapter.isAvailable()     → 503 if cmux not connected
-//   3. nodeInventoryFn(rigId)        → map logicalId → canonicalSessionName
-//   4. order agents by rig.nodes DB order (ORDER BY created_at = pod-then-member from spec)
-//   5. filter to running (has canonicalSessionName)  → 412 if none running
-//   6. chunkAgents into MAX_PER_WORKSPACE-sized chunks
-//   7. pick non-colliding workspace name per chunk
-//      (auto-append -2/-3/... per README R2 + multi-workspace handling)
-//   8. cmuxLayoutService.buildWorkspace per chunk (sequential)
-//      → 500 with partial info if any buildWorkspace fails mid-flight
-//   9. 200 with { ok, workspaces[] }
-//
-// Deps wired via Hono context (see server.ts deps wiring block).
+// OPR.0.3.4.8 — POST /api/rigs/:rigId/cmux/launch.
+// Replaces the sessionStatus=running label filter with actual tmux
+// liveness via tmuxAdapter.hasSession. Adds bounded readiness wait
+// for still-booting seats and honest partial response (opened vs
+// missing with per-seat reasons).
 
 import { Hono } from "hono";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { CmuxAdapter } from "../adapters/cmux.js";
+import type { TmuxAdapter } from "../adapters/tmux.js";
 import { CmuxLayoutService } from "../domain/cmux-layout-service.js";
 
 export const rigCmuxRoutes = new Hono();
@@ -36,6 +26,7 @@ interface RigCmuxDeps {
   cmuxAdapter: CmuxAdapter;
   cmuxLayoutService: CmuxLayoutService;
   nodeInventoryFn: NodeInventoryFn;
+  tmuxAdapter: TmuxAdapter;
 }
 
 function getDeps(c: { get: (key: string) => unknown }): RigCmuxDeps {
@@ -44,6 +35,7 @@ function getDeps(c: { get: (key: string) => unknown }): RigCmuxDeps {
     cmuxAdapter: c.get("cmuxAdapter" as never) as CmuxAdapter,
     cmuxLayoutService: c.get("cmuxLayoutService" as never) as CmuxLayoutService,
     nodeInventoryFn: c.get("nodeInventoryFn" as never) as NodeInventoryFn,
+    tmuxAdapter: c.get("tmuxAdapter" as never) as TmuxAdapter,
   };
 }
 
@@ -54,9 +46,17 @@ function pickNonCollidingName(baseName: string, existing: Set<string>): string {
   return `${baseName}-${suffix}`;
 }
 
+const READINESS_POLL_MS = 500;
+const READINESS_TIMEOUT_MS = 5_000;
+
+interface MissingSeat {
+  logicalId: string;
+  reason: string;
+}
+
 rigCmuxRoutes.post("/launch", async (c) => {
   const rigId = c.req.param("rigId")!;
-  const { rigRepo, cmuxAdapter, cmuxLayoutService, nodeInventoryFn } = getDeps(c);
+  const { rigRepo, cmuxAdapter, cmuxLayoutService, nodeInventoryFn, tmuxAdapter } = getDeps(c);
 
   const rigWithRelations = rigRepo.getRig(rigId);
   if (!rigWithRelations) {
@@ -83,26 +83,68 @@ rigCmuxRoutes.post("/launch", async (c) => {
   }
 
   const inventory = nodeInventoryFn(rigId);
-  // Filter inventory: a node is launchable for cmux attach only if
-  // (a) it has a canonicalSessionName recorded AND (b) sessionStatus
-  // is "running" AND (c) the attachment is tmux-compatible (default
-  // when attachmentType is null/undefined; falsey-strict reject only
-  // when an explicit non-tmux value is present). Stale entries with
-  // a recorded session name but sessionStatus="exited"/"detached"/
-  // null would attach-to-a-dead-tmux-session inside the cmux panel
-  // and fail silently — violates README HG-6 / R5 honest-failure.
+
+  // OPR.0.3.4.8: discriminate on ACTUAL tmux liveness, not the status label.
+  // A seat is attachable iff it has a canonicalSessionName, is tmux-compatible,
+  // and tmuxAdapter.hasSession(name) is true (the session is actually alive).
+  // Dead/stale names (hasSession false) are NEVER attached — preserving the
+  // safety invariant from the original running-only filter.
   const launchableByLogical = new Map<string, string>();
+  const missing: MissingSeat[] = [];
+
+  // Collect candidates: seats with a tmux-compatible canonical name.
+  const candidates: Array<{ logicalId: string; sessionName: string }> = [];
   for (const entry of inventory) {
-    if (!entry.canonicalSessionName) continue;
-    if (entry.sessionStatus !== "running") continue;
-    if (entry.attachmentType != null && entry.attachmentType !== "tmux") continue;
-    launchableByLogical.set(entry.logicalId, entry.canonicalSessionName);
+    if (!entry.canonicalSessionName) {
+      missing.push({ logicalId: entry.logicalId, reason: "no-session" });
+      continue;
+    }
+    if (entry.attachmentType != null && entry.attachmentType !== "tmux") {
+      missing.push({ logicalId: entry.logicalId, reason: "non-tmux" });
+      continue;
+    }
+    candidates.push({ logicalId: entry.logicalId, sessionName: entry.canonicalSessionName });
   }
 
-  // rig.nodes is in DB ORDER BY created_at, which corresponds to spec
-  // pod-then-member declaration order (pods created first, members
-  // within each pod in spec order). Use that as the deterministic
-  // agent ordering — no name-based sorting per README §52.
+  // Bounded readiness wait: for each candidate, check tmux liveness.
+  // Poll still-booting seats until live or timeout. If a full poll
+  // cycle finds zero new live sessions, stop early (no point waiting
+  // for sessions that are consistently dead).
+  const deadline = Date.now() + READINESS_TIMEOUT_MS;
+  const pending = new Map(candidates.map((c) => [c.logicalId, c.sessionName]));
+  let firstPass = true;
+
+  while (pending.size > 0 && Date.now() < deadline) {
+    let foundThisCycle = 0;
+    for (const [logicalId, sessionName] of [...pending]) {
+      try {
+        const alive = await tmuxAdapter.hasSession(sessionName);
+        if (alive) {
+          launchableByLogical.set(logicalId, sessionName);
+          pending.delete(logicalId);
+          foundThisCycle++;
+        }
+      } catch {
+        // Probe failed — treat as not-yet-live this cycle.
+      }
+    }
+    if (pending.size === 0) break;
+    // After the first pass, if no NEW sessions became live this cycle,
+    // the remaining pending are consistently dead — stop early instead
+    // of polling dead sessions for the full timeout.
+    if (!firstPass && foundThisCycle === 0) break;
+    firstPass = false;
+    if (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, READINESS_POLL_MS));
+    }
+  }
+
+  // Any still-pending after timeout -> missing with reason.
+  for (const [logicalId] of pending) {
+    missing.push({ logicalId, reason: "still-booting" });
+  }
+
+  // rig.nodes is in DB ORDER BY created_at — deterministic agent ordering.
   const orderedSessions: string[] = [];
   for (const node of rigWithRelations.nodes) {
     const session = launchableByLogical.get(node.logicalId);
@@ -115,16 +157,13 @@ rigCmuxRoutes.post("/launch", async (c) => {
       {
         ok: false,
         error: "rig_not_running",
-        message: `Rig "${rigName}" has no running tmux sessions — can't attach to anything — run: rig up ${rigName}`,
+        message: `Rig "${rigName}" has no live tmux sessions — can't attach to anything — run: rig up ${rigName}`,
+        missing,
       },
       412,
     );
   }
 
-  // Discover existing workspaces for collision-avoidance. If
-  // listWorkspaces fails, treat the existing set as empty — the
-  // operator can rename the resulting workspace if needed; better to
-  // ship cleanly than block on an enumeration failure.
   const listResult = await cmuxAdapter.listWorkspaces();
   const existingNames = new Set<string>(
     listResult.ok ? listResult.data.map((w) => w.name) : [],
@@ -158,5 +197,9 @@ rigCmuxRoutes.post("/launch", async (c) => {
     });
   }
 
-  return c.json({ ok: true, workspaces });
+  return c.json({
+    ok: true,
+    workspaces,
+    ...(missing.length > 0 ? { missing } : {}),
+  });
 });

@@ -82,12 +82,21 @@ export function LaunchCmuxButton({ rigId }: LaunchCmuxButtonProps) {
         const workspaceCount = result.workspaces.length;
         const agentCount = result.workspaces.reduce((sum, w) => sum + w.agents.length, 0);
         const names = result.workspaces.map((w) => w.name).join(", ");
-        showStatus(
-          "success",
-          workspaceCount === 1
-            ? `Launched cmux workspace "${names}" with ${agentCount} agent${agentCount === 1 ? "" : "s"}.`
-            : `Launched ${workspaceCount} cmux workspaces (${names}) with ${agentCount} agents total.`,
-        );
+        const missing = result.missing ?? [];
+        if (missing.length > 0) {
+          const missingNames = missing.map((m) => `${m.logicalId} (${m.reason})`).join(", ");
+          showStatus(
+            "error",
+            `Opened ${agentCount} of ${agentCount + missing.length} seats. Missing: ${missingNames}`,
+          );
+        } else {
+          showStatus(
+            "success",
+            workspaceCount === 1
+              ? `Launched cmux workspace "${names}" with ${agentCount} agent${agentCount === 1 ? "" : "s"}.`
+              : `Launched ${workspaceCount} cmux workspaces (${names}) with ${agentCount} agents total.`,
+          );
+        }
       })
       .catch((err: Error) => {
         showStatus("error", err.message);
