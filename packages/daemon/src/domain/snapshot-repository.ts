@@ -44,15 +44,19 @@ export class SnapshotRepository {
   }
 
   /**
-   * L3b: returns the latest snapshot whose persisted `data` carries the minimum
+   * Returns the latest snapshot whose persisted `data` carries the minimum
    * structural metadata `RestoreOrchestrator.restore`'s pre-validation requires.
-   * Prefers `auto-pre-down` over other kinds when both are present.
    *
-   * The single SQL query orders snapshots by `(kind = 'auto-pre-down') DESC,
-   * created_at DESC, id DESC` so an auto-pre-down candidate always comes first
-   * if any exists. The in-memory loop then validates each candidate and skips
-   * snapshots with corrupted JSON or missing topology metadata, returning the
-   * first usable row. Returns null when no usable snapshot exists.
+   * OPR.0.3.4.9 Option Y: prefers the most-recent of the crash-insurance tier
+   * {auto-pre-down, auto-periodic} -- the freshest of the two wins. A newer
+   * auto-periodic beats a stale auto-pre-down (the crash fix); a genuinely-
+   * fresher auto-pre-down still wins (graceful-cycle preserved). Manual,
+   * pre_restore, and auto-rehydrate remain below the tier (unchanged).
+   *
+   * The SQL query orders by `(kind IN ('auto-pre-down','auto-periodic')) DESC,
+   * created_at DESC, id DESC`. The in-memory loop validates each candidate and
+   * skips snapshots with corrupted JSON or missing topology metadata, returning
+   * the first usable row. Returns null when no usable snapshot exists.
    *
    * Distinct from `findLatestUsableSnapshot` (rig-repository.ts, L2): that
    * helper requires at least one persisted resume token and is consumed by
