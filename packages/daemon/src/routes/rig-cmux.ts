@@ -27,6 +27,8 @@ interface RigCmuxDeps {
   cmuxLayoutService: CmuxLayoutService;
   nodeInventoryFn: NodeInventoryFn;
   tmuxAdapter: TmuxAdapter;
+  readinessTimeoutMs?: number;
+  readinessPollMs?: number;
 }
 
 function getDeps(c: { get: (key: string) => unknown }): RigCmuxDeps {
@@ -36,6 +38,8 @@ function getDeps(c: { get: (key: string) => unknown }): RigCmuxDeps {
     cmuxLayoutService: c.get("cmuxLayoutService" as never) as CmuxLayoutService,
     nodeInventoryFn: c.get("nodeInventoryFn" as never) as NodeInventoryFn,
     tmuxAdapter: c.get("tmuxAdapter" as never) as TmuxAdapter,
+    readinessTimeoutMs: c.get("readinessTimeoutMs" as never) as number | undefined,
+    readinessPollMs: c.get("readinessPollMs" as never) as number | undefined,
   };
 }
 
@@ -56,7 +60,10 @@ interface MissingSeat {
 
 rigCmuxRoutes.post("/launch", async (c) => {
   const rigId = c.req.param("rigId")!;
-  const { rigRepo, cmuxAdapter, cmuxLayoutService, nodeInventoryFn, tmuxAdapter } = getDeps(c);
+  const deps = getDeps(c);
+  const { rigRepo, cmuxAdapter, cmuxLayoutService, nodeInventoryFn, tmuxAdapter } = deps;
+  const effectiveTimeoutMs = deps.readinessTimeoutMs ?? READINESS_TIMEOUT_MS;
+  const effectivePollMs = deps.readinessPollMs ?? READINESS_POLL_MS;
 
   const rigWithRelations = rigRepo.getRig(rigId);
   if (!rigWithRelations) {
@@ -116,10 +123,9 @@ rigCmuxRoutes.post("/launch", async (c) => {
   // Bounded readiness wait with re-read for no-session seats.
   // Poll candidates for tmux liveness AND re-read inventory to discover
   // newly-appeared sessions for no-session seats.
-  const deadline = Date.now() + READINESS_TIMEOUT_MS;
+  const deadline = Date.now() + effectiveTimeoutMs;
   const pending = new Map(candidates.map((c) => [c.logicalId, c]));
   let firstPass = true;
-  let noSessionStableRounds = 0;
 
   while ((pending.size > 0 || noSessionIds.size > 0) && Date.now() < deadline) {
     let foundThisCycle = 0;
@@ -155,20 +161,13 @@ rigCmuxRoutes.post("/launch", async (c) => {
     // Early-exit when no progress was made this cycle (no new live sessions
     // AND no new sessions discovered from no-session seats) and all remaining
     // pending are known-stale.
-    if (noSessionDiscovered === 0 && noSessionIds.size > 0) {
-      noSessionStableRounds++;
-    } else {
-      noSessionStableRounds = 0;
-    }
-    if (!firstPass && foundThisCycle === 0 && noSessionDiscovered === 0) {
+    if (!firstPass && foundThisCycle === 0 && noSessionDiscovered === 0 && noSessionIds.size === 0) {
       const allPendingStale = pending.size === 0 || [...pending.values()].every((c) => STALE_STATUSES.has(c.sessionStatus ?? ""));
-      // Break if: no pending or all pending are stale, AND no-session seats
-      // have been stable for 2+ consecutive rounds (they won't appear).
-      if (allPendingStale && (noSessionIds.size === 0 || noSessionStableRounds >= 2)) break;
+      if (allPendingStale) break;
     }
     firstPass = false;
     if (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, READINESS_POLL_MS));
+      await new Promise((r) => setTimeout(r, effectivePollMs));
     }
   }
 

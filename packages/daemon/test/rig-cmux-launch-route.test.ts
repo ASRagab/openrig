@@ -140,6 +140,8 @@ function buildApp(opts: {
   rigs: Record<string, FakeRigOpts>;
   adapter: CmuxAdapter;
   liveSessions?: Set<string>;
+  readinessTimeoutMs?: number;
+  readinessPollMs?: number;
 }): Hono {
   const app = new Hono();
   const rigRepo = makeRigRepoStub(opts.rigs);
@@ -167,6 +169,8 @@ function buildApp(opts: {
     c.set("cmuxLayoutService" as never, layoutService);
     c.set("nodeInventoryFn" as never, nodeInventoryFn);
     c.set("tmuxAdapter" as never, tmuxAdapter);
+    c.set("readinessTimeoutMs" as never, opts.readinessTimeoutMs);
+    c.set("readinessPollMs" as never, opts.readinessPollMs);
     c.set("db" as never, {} as Database.Database);
     await next();
   });
@@ -219,6 +223,8 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
         },
       },
       adapter: makeMockAdapter({ available: true }),
+      readinessTimeoutMs: 100,
+      readinessPollMs: 10,
     });
     const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
     expect(res.status).toBe(412);
@@ -611,6 +617,8 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
       c.set("cmuxLayoutService" as never, layoutService);
       c.set("nodeInventoryFn" as never, nodeInventoryFn);
       c.set("tmuxAdapter" as never, dynamicTmux);
+      c.set("readinessTimeoutMs" as never, 500);
+      c.set("readinessPollMs" as never, 10);
       c.set("db" as never, {} as Database.Database);
       await next();
     });
@@ -624,11 +632,11 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
     expect(body.missing).toBeUndefined();
   });
 
-  it("OPR.0.3.4.8: no-session at first snapshot -> discovers canonical/live before timeout -> included", async () => {
+  it("OPR.0.3.4.8: no-session at first snapshot -> discovers canonical/live before timeout -> included (multiple null re-reads)", async () => {
     let inventoryCallCount = 0;
     const dynamicInventoryFn = () => {
       inventoryCallCount++;
-      if (inventoryCallCount <= 1) {
+      if (inventoryCallCount <= 3) {
         return [{ logicalId: "a", canonicalSessionName: null, sessionStatus: null, attachmentType: "tmux", podId: "p1" }] as never;
       }
       return [{ logicalId: "a", canonicalSessionName: "a@late-start-rig", sessionStatus: "running", attachmentType: "tmux", podId: "p1" }] as never;
@@ -650,6 +658,8 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
       c.set("cmuxLayoutService" as never, layoutService);
       c.set("nodeInventoryFn" as never, dynamicInventoryFn);
       c.set("tmuxAdapter" as never, tmux);
+      c.set("readinessTimeoutMs" as never, 500);
+      c.set("readinessPollMs" as never, 10);
       c.set("db" as never, {} as Database.Database);
       await next();
     });
