@@ -277,3 +277,32 @@ export function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: Prefli
 
   return { ready: errors.length === 0, errors, warnings };
 }
+
+/**
+ * OPR.0.3.4.7 — async post-preflight probe: verify Codex profile-v2 LOADS
+ * for all Codex nodes with a non-empty codex_config_profile. Called AFTER
+ * the synchronous preflight passes (codex --version already verified).
+ * Returns errors to append to the preflight result; empty = all profiles load.
+ */
+export async function verifyCodexProfiles(
+  rigSpec: PodRigSpec,
+  exec: (cmd: string) => Promise<string>,
+): Promise<string[]> {
+  const { verifyCodexProfileLoads } = await import("./codex-profile-preflight.js");
+  const errors: string[] = [];
+  const checkedProfiles = new Set<string>();
+  for (const pod of rigSpec.pods) {
+    for (const member of pod.members) {
+      if (member.runtime !== "codex") continue;
+      const profile = member.codexConfigProfile?.trim();
+      if (!profile) continue;
+      if (checkedProfiles.has(profile)) continue;
+      checkedProfiles.add(profile);
+      const result = await verifyCodexProfileLoads(profile, exec);
+      if (!result.ok) {
+        errors.push(`${pod.id}.${member.id}: ${result.error}${result.migrationHint ? ` Fix: ${result.migrationHint}` : ""}`);
+      }
+    }
+  }
+  return errors;
+}
