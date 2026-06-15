@@ -144,19 +144,20 @@ describe("rig start (OPR.0.3.4.1)", () => {
       { id: "rig-1", name, nodeCount: 2, lifecycleState },
     ];
     routes["/api/rigs/:id"] = () => ({ sessions: [{ lastSeenAt: "2026-06-14T12:00:00Z" }] });
-    // Plan preview via id-based route (candidate discovery uses POST /api/rigs/:id/up).
-    routes["/api/rigs/:id/up"] = () => ({
-      status: "plan", mode: "restore", rigId: "rig-1", rigName: name,
-      snapshot: { id: "snap-1", kind: "auto-pre-down", createdAt: "2026-06-14T11:00:00Z" },
-      wouldCaptureCurrentState: false,
-      nodes: [
-        { logicalId: "dev.impl", intendedAction: hasToken ? "resume-original" : "awaiting-decision", ...(hasToken ? {} : { reason: "no token available" }) },
-        { logicalId: "dev.qa", intendedAction: "resume-original" },
-      ],
-      mutated: false,
-    });
-    // Apply via name-based route (restore uses POST /api/up).
-    routes["/api/up"] = () => {
+    // Both plan preview AND apply go through the id-based route.
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body.plan === true) {
+        return {
+          status: "plan", mode: "restore", rigId: "rig-1", rigName: name,
+          snapshot: { id: "snap-1", kind: "auto-pre-down", createdAt: "2026-06-14T11:00:00Z" },
+          wouldCaptureCurrentState: false,
+          nodes: [
+            { logicalId: "dev.impl", intendedAction: hasToken ? "resume-original" : "awaiting-decision", ...(hasToken ? {} : { reason: "no token available" }) },
+            { logicalId: "dev.qa", intendedAction: "resume-original" },
+          ],
+          mutated: false,
+        };
+      }
       return {
         status: "restored", rigId: "rig-1", rigName: name,
         rigResult: "fully_restored",
@@ -178,9 +179,9 @@ describe("rig start (OPR.0.3.4.1)", () => {
       await makeCmd(prompt).parseAsync(["node", "rig", "start", "--last"]);
     });
     expect(prompt).not.toHaveBeenCalled();
-    const applyBodies = upBodies.filter((b) => b.plan !== true);
+    const applyBodies = upBodies.filter((b) => b.plan !== true && b._rigIdRoute);
     expect(applyBodies.length).toBeGreaterThanOrEqual(1);
-    expect(applyBodies[0]!.sourceRef).toBe("my-rig");
+    expect(applyBodies[0]!._rigIdRoute).toBe("rig-1");
     const output = logs.join("\n");
     expect(output).toContain("my-rig");
   });
@@ -202,33 +203,37 @@ describe("rig start (OPR.0.3.4.1)", () => {
       { id: "rig-2", name: "beta", nodeCount: 1, lifecycleState: "recoverable" },
     ];
     routes["/api/rigs/:id"] = () => ({ sessions: [] });
-    routes["/api/rigs/:id/up"] = () => ({
-      status: "plan", mode: "restore", rigId: "rig-x", rigName: "rig",
-      snapshot: { id: "snap-1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
-      wouldCaptureCurrentState: false,
-      nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
-      mutated: false,
-    });
-    routes["/api/up"] = () => ({ status: "restored", rigResult: "fully_restored", nodes: [{ logicalId: "w", status: "resumed" }], warnings: [] });
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body.plan === true) {
+        return {
+          status: "plan", mode: "restore", rigId: body._rigId ?? "rig-x", rigName: "rig",
+          snapshot: { id: "snap-1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+          wouldCaptureCurrentState: false,
+          nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
+          mutated: false,
+        };
+      }
+      return { status: "restored", rigResult: "fully_restored", nodes: [{ logicalId: "w", status: "resumed" }], warnings: [] };
+    };
 
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "start", "--rigs", "alpha"]);
     });
-    const applyBodies = upBodies.filter((b) => b.plan !== true);
+    const applyBodies = upBodies.filter((b) => b.plan !== true && b._rigIdRoute);
     expect(applyBodies).toHaveLength(1);
-    expect(applyBodies[0]!.sourceRef).toBe("alpha");
+    expect(applyBodies[0]!._rigIdRoute).toBe("rig-1");
   });
 
   // ---- COMPOSE, NOT REIMPLEMENT ----
 
-  it("restore goes through /api/up (slice-02 path), not a private implementation", async () => {
+  it("restore goes through /api/rigs/:id/up (id-based route), not a private implementation", async () => {
     setupCandidateRig("my-rig");
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "start", "--last"]);
     });
-    const applyBodies = upBodies.filter((b) => b.plan !== true);
+    const applyBodies = upBodies.filter((b) => b.plan !== true && b._rigIdRoute);
     expect(applyBodies.length).toBeGreaterThanOrEqual(1);
-    expect(applyBodies.some((b) => b.sourceRef === "my-rig")).toBe(true);
+    expect(applyBodies.some((b) => b._rigIdRoute === "rig-1")).toBe(true);
   });
 
   // ---- TOKENLESS INCLUSION (guard rev1 discriminator) ----
@@ -296,7 +301,8 @@ describe("rig start (OPR.0.3.4.1)", () => {
     let planCallCount = 0;
     throwClient.post = async (path: string, body?: unknown, opts?: unknown) => {
       const b = body as Record<string, unknown> | undefined;
-      if (path === "/api/up" && b?.plan !== true) {
+      // Apply now uses the id-based route; throw on any non-plan POST to /api/rigs/:id/up.
+      if (path.match(/^\/api\/rigs\/[^/]+\/up$/) && b?.plan !== true) {
         throw new (await import("../src/client.js")).DaemonConnectionError("request timed out");
       }
       return origPost(path, body, opts);
@@ -321,26 +327,30 @@ describe("rig start (OPR.0.3.4.1)", () => {
     const validTerms = ["resumed", "fresh-primed", "awaiting-decision", "attention_required", "failed"];
     routes["/api/rigs/summary"] = () => [{ id: "r1", name: "term-rig", nodeCount: 3, lifecycleState: "recoverable" }];
     routes["/api/rigs/:id"] = () => ({ sessions: [] });
-    routes["/api/rigs/:id/up"] = () => ({
-      status: "plan", mode: "restore", rigId: "r1", rigName: "term-rig",
-      snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
-      wouldCaptureCurrentState: false,
-      nodes: [
-        { logicalId: "a", intendedAction: "resume-original" },
-        { logicalId: "b", intendedAction: "awaiting-decision", reason: "no token" },
-        { logicalId: "c", intendedAction: "fresh-primed" },
-      ],
-      mutated: false,
-    });
-    routes["/api/up"] = () => ({
-      status: "restored", rigResult: "partially_restored",
-      nodes: [
-        { logicalId: "a", status: "resumed" },
-        { logicalId: "b", status: "awaiting-decision", error: "no token" },
-        { logicalId: "c", status: "fresh-primed" },
-      ],
-      warnings: [],
-    });
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body.plan === true) {
+        return {
+          status: "plan", mode: "restore", rigId: "r1", rigName: "term-rig",
+          snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+          wouldCaptureCurrentState: false,
+          nodes: [
+            { logicalId: "a", intendedAction: "resume-original" },
+            { logicalId: "b", intendedAction: "awaiting-decision", reason: "no token" },
+            { logicalId: "c", intendedAction: "fresh-primed" },
+          ],
+          mutated: false,
+        };
+      }
+      return {
+        status: "restored", rigResult: "partially_restored",
+        nodes: [
+          { logicalId: "a", status: "resumed" },
+          { logicalId: "b", status: "awaiting-decision", error: "no token" },
+          { logicalId: "c", status: "fresh-primed" },
+        ],
+        warnings: [],
+      };
+    };
 
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "start", "--last"]);
@@ -360,19 +370,37 @@ describe("rig start (OPR.0.3.4.1)", () => {
       { id: "rig-2", name: "foo", nodeCount: 1, lifecycleState: "detached" },
     ];
     routes["/api/rigs/:id"] = () => ({ sessions: [] });
-    routes["/api/rigs/:id/up"] = (_req, body) => ({
-      status: "plan", mode: "restore",
-      rigId: body._rigId ?? "unknown", rigName: "foo",
-      snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
-      wouldCaptureCurrentState: false,
-      nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
-      mutated: false,
-    });
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body.plan === true || body._rigId) {
+        if (body.plan === true) {
+          return {
+            status: "plan", mode: "restore",
+            rigId: body._rigId ?? "unknown", rigName: "foo",
+            snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+            wouldCaptureCurrentState: false,
+            nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
+            mutated: false,
+          };
+        }
+        return {
+          status: "restored", rigResult: "fully_restored",
+          nodes: [{ logicalId: "w", status: "resumed" }],
+          warnings: [],
+        };
+      }
+      return {
+        status: "restored", rigResult: "fully_restored",
+        nodes: [{ logicalId: "w", status: "resumed" }],
+        warnings: [],
+      };
+    };
+    // Name-based /api/up would return ambiguous_name 409 for same-name rigs;
+    // rig start should never reach this path for restore since it uses id-based route.
     routes["/api/up"] = () => ({
-      status: "restored", rigResult: "fully_restored",
-      nodes: [{ logicalId: "w", status: "resumed" }],
-      warnings: [],
-    });
+      _httpStatus: 409,
+      error: 'Multiple rigs named "foo" found',
+      code: "ambiguous_name",
+    } as never);
 
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "start", "--all"]);
@@ -380,11 +408,15 @@ describe("rig start (OPR.0.3.4.1)", () => {
     const output = logs.join("\n");
     // Both should appear — never "No rigs to restore".
     expect(output).not.toContain("No rigs to restore");
-    // The id-based preview route was used (verify via upBodies).
-    const planBodies = upBodies.filter((b) => b.plan === true);
-    expect(planBodies.length).toBe(2);
-    expect(planBodies.some((b) => b._rigIdRoute === "rig-1")).toBe(true);
-    expect(planBodies.some((b) => b._rigIdRoute === "rig-2")).toBe(true);
+    expect(output).not.toContain("ambiguous_name");
+    // The id-based route was used for both preview AND apply.
+    const idBodies = upBodies.filter((b) => b._rigIdRoute);
+    expect(idBodies.length).toBeGreaterThanOrEqual(4); // 2 plan + 2 apply
+    expect(idBodies.some((b) => b._rigIdRoute === "rig-1")).toBe(true);
+    expect(idBodies.some((b) => b._rigIdRoute === "rig-2")).toBe(true);
+    // Name-based /api/up was NOT called for restore.
+    const nameBodies = upBodies.filter((b) => !b._rigIdRoute);
+    expect(nameBodies).toHaveLength(0);
   });
 
   // ---- PREVIEW ERROR STATE (guard BLOCKING bfed4ce3) ----
@@ -489,20 +521,19 @@ describe("rig start (OPR.0.3.4.1)", () => {
         const rigUpMatch2 = method === "POST" && url.match(/^\/api\/rigs\/([^/]+)\/up$/);
         if (rigUpMatch2) {
           upBodies.push({ ...body, _rigIdRoute: rigUpMatch2[1] });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            status: "plan", mode: "restore", rigId: rigUpMatch2[1], rigName: "live-rig",
-            snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
-            wouldCaptureCurrentState: false,
-            nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
-            mutated: false,
-          }));
-          return;
-        }
-        if (method === "POST" && url === "/api/up") {
-          upBodies.push(body);
-          res.writeHead(409, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Rig r1 has live sessions", code: "rig_not_stopped" }));
+          if (body.plan === true) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              status: "plan", mode: "restore", rigId: rigUpMatch2[1], rigName: "live-rig",
+              snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+              wouldCaptureCurrentState: false,
+              nodes: [{ logicalId: "w", intendedAction: "resume-original" }],
+              mutated: false,
+            }));
+          } else {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Rig r1 has live sessions", code: "rig_not_stopped" }));
+          }
           return;
         }
         res.writeHead(404).end();
@@ -541,12 +572,23 @@ describe("rig start (OPR.0.3.4.1)", () => {
 
   it("partially_restored rigResult -> nonzero exit (not treated as clean)", async () => {
     setupCandidateRig("partial-rig");
-    // Override apply response only; the id-based plan preview from setupCandidateRig is fine.
-    routes["/api/up"] = () => ({
-      status: "restored", rigResult: "partially_restored",
-      nodes: [{ logicalId: "dev.impl", status: "fresh-primed" }],
-      warnings: [],
-    });
+    // Override both plan and apply to return partially_restored on apply.
+    routes["/api/rigs/:id/up"] = (_req, body) => {
+      if (body.plan === true) {
+        return {
+          status: "plan", mode: "restore", rigId: "rig-1", rigName: "partial-rig",
+          snapshot: { id: "s1", kind: "auto-pre-down", createdAt: "2026-06-14T00:00:00Z" },
+          wouldCaptureCurrentState: false,
+          nodes: [{ logicalId: "dev.impl", intendedAction: "resume-original" }],
+          mutated: false,
+        };
+      }
+      return {
+        status: "restored", rigResult: "partially_restored",
+        nodes: [{ logicalId: "dev.impl", status: "fresh-primed" }],
+        warnings: [],
+      };
+    };
 
     const { exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "start", "--last"]);

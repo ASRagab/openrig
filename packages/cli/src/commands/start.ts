@@ -325,15 +325,13 @@ Examples:
         return;
       }
 
-      // ---- PHASE 4: selection ----
-      let selectedNames: string[];
-      if (opts.all) {
-        selectedNames = candidates.map((c) => c.rigName);
-      } else if (opts.last) {
-        selectedNames = candidates.map((c) => c.rigName);
+      // ---- PHASE 4: selection (id-grounded, rev1 BLOCKING b4c6ada4) ----
+      let selectedCandidates: StartCandidate[];
+      if (opts.all || opts.last) {
+        selectedCandidates = [...candidates];
       } else if (opts.rigs) {
-        selectedNames = opts.rigs;
-        const missing = selectedNames.filter((n) => !candidates.some((c) => c.rigName === n));
+        selectedCandidates = candidates.filter((c) => opts.rigs!.includes(c.rigName));
+        const missing = opts.rigs.filter((n) => !candidates.some((c) => c.rigName === n));
         if (missing.length > 0) {
           console.error(`Rig(s) not found in candidate set: ${missing.join(", ")}`);
           console.error(`Available candidates: ${candidates.map((c) => c.rigName).join(", ")}`);
@@ -364,42 +362,37 @@ Examples:
         const restoreAll = await ask(`Restore all ${candidates.length} rig(s)? [Y/pick] `);
 
         if (restoreAll) {
-          selectedNames = candidates.map((c) => c.rigName);
+          selectedCandidates = [...candidates];
         } else {
-          const picked = await multiSelectPicker(
+          const pickedIds = await multiSelectPicker(
             candidates.map((c) => ({
               label: `${c.rigName}  (${c.nodeCount} seats, ${c.lifecycleState})  ${summarizeReadiness(c)}`,
-              value: c.rigName,
+              value: c.rigId,
               checked: true,
             })),
           );
-          selectedNames = picked;
+          selectedCandidates = candidates.filter((c) => pickedIds.includes(c.rigId));
         }
       }
 
-      if (selectedNames.length === 0) {
+      if (selectedCandidates.length === 0) {
         if (!opts.json) console.log("No rigs selected for restore.");
         return;
       }
 
-      // ---- PHASE 5: restore each selected rig via /api/up (slice-02 path) ----
-      if (!opts.json) console.log(`\nRestoring ${selectedNames.length} rig(s)...\n`);
+      // ---- PHASE 5: restore each selected rig via id-based route (compose slice-02 path) ----
+      if (!opts.json) console.log(`\nRestoring ${selectedCandidates.length} rig(s)...\n`);
 
       const results: Array<{ rigName: string; status: string; nodes: Array<{ logicalId: string; status: string; error?: string }> }> = [];
 
-      for (const rigName of selectedNames) {
-        const candidate = candidates.find((c) => c.rigName === rigName);
-        if (!candidate) {
-          console.error(`  ${rigName}: not found in candidates (skipping)`);
-          results.push({ rigName, status: "skipped", nodes: [] });
-          continue;
-        }
+      for (const candidate of selectedCandidates) {
+        const rigName = candidate.rigName;
+        const rigId = candidate.rigId;
 
         // Check if the rig is already running (idempotent rerun: reconcile, don't relaunch).
-        // Re-fetch status since we may have restored other rigs in the loop.
         try {
           const freshSummary = await client.get<RigSummary[]>("/api/rigs/summary");
-          const current = (freshSummary.data ?? []).find((r) => r.name === rigName);
+          const current = (freshSummary.data ?? []).find((r) => r.id === rigId);
           if (current?.lifecycleState === "running") {
             if (!opts.json) console.log(`  ${rigName}: already running (skipping)`);
             results.push({ rigName, status: "already_running", nodes: [] });
@@ -408,10 +401,13 @@ Examples:
         } catch { /* proceed with restore attempt */ }
 
         try {
-          const res = await client.post<Record<string, unknown>>("/api/up", {
-            sourceRef: rigName,
-            plan: false,
-          }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+          // Rev1 BLOCKING b4c6ada4: use id-based route for restore too (not
+          // name-based /api/up which 409s on same-name rigs).
+          const res = await client.post<Record<string, unknown>>(
+            `/api/rigs/${encodeURIComponent(rigId)}/up`,
+            { plan: false },
+            { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS },
+          );
 
           // Guard BLOCKING 25661f72: check HTTP status before treating the response
           // as a success. The daemon returns non-2xx JSON payloads (rig_not_stopped,
@@ -462,11 +458,11 @@ Examples:
               }
               if (accepted.length > 0) {
                 try {
-                  const freshRes = await client.post<Record<string, unknown>>("/api/up", {
-                    sourceRef: rigName,
-                    plan: false,
-                    freshLogicalIds: accepted,
-                  }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+                  const freshRes = await client.post<Record<string, unknown>>(
+                    `/api/rigs/${encodeURIComponent(rigId)}/up`,
+                    { plan: false, freshLogicalIds: accepted },
+                    { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS },
+                  );
                   if (freshRes.status >= 400) {
                     const freshError = String(freshRes.data["error"] ?? "fresh-prime failed");
                     console.error(`    Fresh-prime for ${rigName}: ${freshError} (HTTP ${freshRes.status})`);
