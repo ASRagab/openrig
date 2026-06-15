@@ -64,6 +64,7 @@ export async function startServer(port?: number) {
             const intervalS = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.interval_seconds").value as number) : 300;
             const retentionKeep = settingsStore ? (settingsStore.resolveOne("snapshots.periodic.retention_keep").value as number) : 10;
             deps.periodicSnapshotScheduler.start(intervalS * 1000, retentionKeep);
+            deps.psProjectionService.setPeriodicSnapshotState(true, intervalS);
           }
         }
       }
