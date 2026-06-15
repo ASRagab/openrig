@@ -73,24 +73,31 @@ export class NodeCmuxService {
 
     const newSurfaceId = createResult.data;
 
-    // Persist binding
-    this.sessionRegistry.updateBinding(nodeId, {
-      cmuxWorkspace: wsResult.data,
-      cmuxSurface: newSurfaceId,
-    });
-
     // Session name from binding or logical id
     const sessionName = binding?.tmuxSession ?? binding?.externalSessionName ?? logicalId;
 
-    // tmux-backed: attach into tmux (liveness already checked in openOrFocusNodeSurface)
+    // tmux-backed: attach into tmux (liveness already checked in openOrFocusNodeSurface).
+    // Defer binding persistence until AFTER attach + focus succeed so a failed
+    // attach never leaves a stale cmuxSurface that a retry would focus as
+    // focused_existing without re-attaching.
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux) {
       const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `tmux attach -t ${binding.tmuxSession}\n`, wsResult.data);
       if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
       const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);
       if (!focusResult.ok) return { ok: false, error: focusResult.message, code: focusResult.code };
+      this.sessionRegistry.updateBinding(nodeId, {
+        cmuxWorkspace: wsResult.data,
+        cmuxSurface: newSurfaceId,
+      });
       return { ok: true, action: "created_new" };
     }
+
+    // Non-tmux: persist binding immediately (helper console, no attach to fail).
+    this.sessionRegistry.updateBinding(nodeId, {
+      cmuxWorkspace: wsResult.data,
+      cmuxSurface: newSurfaceId,
+    });
 
     // External-cli / no tmux: honest helper console
     const helperText = [

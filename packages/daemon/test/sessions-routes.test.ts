@@ -378,7 +378,7 @@ describe("Session routes", () => {
     expect(text).toContain("--verify");
   });
 
-  it("POST .../open-cmux sendText failure -> does not report ok:true, binding still persisted", async () => {
+  it("POST .../open-cmux sendText failure -> does not report ok:true, cmuxSurface NOT persisted for tmux-backed (deferred until attach succeeds)", async () => {
     const { adapter: cmux } = failingCmux("surface.sendText");
     await cmux.connect();
     const { app, rigRepo, sessionRegistry } = createTestApp(db, { cmux });
@@ -393,9 +393,10 @@ describe("Session routes", () => {
     expect(body["ok"]).toBe(false);
     expect(body["error"]).toContain("connection lost");
 
-    // Binding should still be persisted (surface was created before sendText failed)
+    // OPR.0.3.4.8: cmuxSurface NOT persisted for tmux-backed nodes when attach
+    // failed — deferred persistence prevents stale focused_existing on retry.
     const binding = sessionRegistry.getBindingForNode(node.id);
-    expect(binding?.cmuxSurface).toBe("surface:99");
+    expect(binding?.cmuxSurface).toBeNull();
   });
 
   it("POST .../open-cmux focusSurface failure after creation -> does not report ok:true", async () => {
