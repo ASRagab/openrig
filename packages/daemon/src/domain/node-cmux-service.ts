@@ -32,6 +32,15 @@ export class NodeCmuxService {
 
     const binding = node.binding;
 
+    // For tmux-backed nodes, check liveness BEFORE any surface creation or focus.
+    const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
+    if (isTmux && this.tmuxAdapter) {
+      const alive = await this.tmuxAdapter.hasSession(binding.tmuxSession!);
+      if (!alive) {
+        return { ok: false, error: `tmux session '${binding.tmuxSession}' is not alive — cannot attach`, code: "session_not_found" };
+      }
+    }
+
     // Focus existing surface if already bound
     if (binding?.cmuxSurface) {
       const result = await this.cmuxAdapter.focusSurface(binding.cmuxSurface, binding.cmuxWorkspace ?? undefined);
@@ -73,15 +82,9 @@ export class NodeCmuxService {
     // Session name from binding or logical id
     const sessionName = binding?.tmuxSession ?? binding?.externalSessionName ?? logicalId;
 
-    // tmux-backed: attach into tmux (gate on liveness if tmuxAdapter available)
+    // tmux-backed: attach into tmux (liveness already checked in openOrFocusNodeSurface)
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux) {
-      if (this.tmuxAdapter) {
-        const alive = await this.tmuxAdapter.hasSession(binding.tmuxSession!);
-        if (!alive) {
-          return { ok: false, error: `tmux session '${binding.tmuxSession}' is not alive — cannot attach`, code: "session_not_found" };
-        }
-      }
       const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `tmux attach -t ${binding.tmuxSession}\n`, wsResult.data);
       if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
       const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);
