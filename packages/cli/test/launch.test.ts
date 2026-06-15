@@ -106,4 +106,50 @@ describe("rig launch --seats", () => {
     expect(errors.some((l) => l.includes("--seats"))).toBe(true);
     expect(process.exitCode).toBe(1);
   });
+
+  it("single-target already_running prints honest message, not Launched", async () => {
+    const deps = makeDeps({
+      "/launch": {
+        status: 200,
+        data: {
+          ok: true,
+          rigId: "rig-1",
+          nodeId: "n1",
+          logicalId: "dev.driver",
+          code: "already_running",
+          alreadyRunning: [{ nodeId: "n1", logicalId: "dev.driver" }],
+          launched: [],
+          held: [],
+        },
+      },
+    });
+
+    const cmd = launchCommand(deps);
+    await cmd.parseAsync(["node", "rig", "rig-1", "dev.driver"]);
+
+    expect(logs.some((l) => l.includes("already running"))).toBe(true);
+    expect(logs.some((l) => l.includes("Launched"))).toBe(false);
+  });
+
+  it("reports unmatchedIds in --seats mode", async () => {
+    const deps = makeDeps({
+      "launch-subset": {
+        status: 201,
+        data: {
+          ok: true,
+          launched: [{ nodeId: "n1", logicalId: "dev.driver", status: "fresh" }],
+          held: [],
+          alreadyRunning: [],
+          failedTargets: [],
+          unmatchedIds: ["typo.seat"],
+        },
+      },
+    });
+
+    const cmd = launchCommand(deps);
+    await cmd.parseAsync(["node", "rig", "rig-1", "--seats", "dev.driver,typo.seat"]);
+
+    expect(errors.some((l) => l.includes("Unmatched") && l.includes("typo.seat"))).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
 });

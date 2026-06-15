@@ -70,6 +70,10 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
           console.error(`Failed (liveness unknown): ${res.data.failedTargets.map((n) => n.logicalId).join(", ")}`);
           process.exitCode = 1;
         }
+        if ((res.data as Record<string, unknown>).unmatchedIds && ((res.data as Record<string, unknown>).unmatchedIds as string[]).length > 0) {
+          console.error(`Unmatched seats (not found): ${((res.data as Record<string, unknown>).unmatchedIds as string[]).join(", ")}`);
+          process.exitCode = 1;
+        }
         return;
       }
 
@@ -96,6 +100,10 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
       }
 
       const logicalId = res.data.logicalId ?? nodeRef;
+      if (res.data.code === "already_running" || (res.data.alreadyRunning && res.data.alreadyRunning.length > 0)) {
+        console.log(`Node ${logicalId} is already running in rig ${rigId} (not relaunched)`);
+        return;
+      }
       const sessionSuffix = res.data.sessionName ? ` (${res.data.sessionName})` : "";
       console.log(`Launched node ${logicalId} in rig ${rigId}${sessionSuffix}`);
     });

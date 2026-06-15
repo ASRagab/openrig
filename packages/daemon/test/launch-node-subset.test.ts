@@ -260,4 +260,37 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     const events = db.prepare("SELECT payload FROM events WHERE type = 'node.held'").all();
     expect(events).toHaveLength(0);
   });
+
+  // B1 regression: mixed valid/invalid seats reports unmatchedIds
+  it("reports unmatchedIds for seats that do not match any node", async () => {
+    const { rigId, nodeIds } = seedPodAwareRig();
+    seedSnapshot(rigId, nodeIds);
+
+    const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver", "typo.seat"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.launched).toHaveLength(1);
+    expect(result.launched![0].logicalId).toBe("dev.driver");
+    expect(result.unmatchedIds).toEqual(["typo.seat"]);
+  });
+
+  // B4 regression: stale non-target DB-running sessions marked detached so inventory projects heldReason
+  it("marks stale non-target DB-running sessions detached before emitting node.held", async () => {
+    const { rigId, nodeIds } = seedPodAwareRig();
+    seedSnapshot(rigId, nodeIds);
+    const session = sessionRegistry.registerSession(nodeIds[1]!, "dev-guard@test-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    // tmux says guard is dead
+    tmux.hasSession.mockResolvedValue(false);
+
+    await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+
+    // Session should now be detached, not running
+    const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
+    expect(row.status).toBe("detached");
+    // And node.held should be emitted
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'node.held'").all() as { payload: string }[];
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.payload).logicalId).toBe("dev.guard");
+  });
 });

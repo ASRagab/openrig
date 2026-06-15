@@ -173,19 +173,19 @@ nodesRoutes.post("/:logicalId/launch", async (c) => {
       return c.json({ ok: false, code: "internal_error", error: "Restore orchestrator not available" }, 500);
     }
     const body = await c.req.json().catch(() => ({})) as { holdReason?: string };
-    const result = await restoreOrchestrator.launchNodeSubset(rigId, [logicalId], { holdReason: body.holdReason });
+    const result = await restoreOrchestrator.launchNodeSubset(rigId, [node.logicalId], { holdReason: body.holdReason });
     if (!result.ok) {
       return c.json(result, result.code === "rig_not_found" ? 404 : result.code === "no_matching_nodes" ? 404 : 500);
     }
-    const failedTarget = result.failedTargets?.find((n) => n.logicalId === logicalId);
+    const failedTarget = result.failedTargets?.find((n) => n.logicalId === node.logicalId);
     if (failedTarget) {
-      return c.json({ ok: false, code: "target_liveness_unknown", error: `Target '${logicalId}' tmux probe failed (fail-closed). Cannot determine if seat is live.`, failedTargets: result.failedTargets }, 503);
+      return c.json({ ok: false, code: "target_liveness_unknown", error: `Target '${node.logicalId}' tmux probe failed (fail-closed). Cannot determine if seat is live.`, failedTargets: result.failedTargets }, 503);
     }
     const launchedNode = result.launched?.[0];
     if (launchedNode) {
       return c.json({ ok: true, rigId, nodeId: launchedNode.nodeId, logicalId: launchedNode.logicalId, launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning }, 201);
     }
-    const alreadyRunningNode = result.alreadyRunning?.find((n) => n.logicalId === logicalId);
+    const alreadyRunningNode = result.alreadyRunning?.find((n) => n.logicalId === node.logicalId);
     if (alreadyRunningNode) {
       return c.json({ ok: true, rigId, nodeId: alreadyRunningNode.nodeId, logicalId: alreadyRunningNode.logicalId, code: "already_running", launched: result.launched, held: result.held, alreadyRunning: result.alreadyRunning });
     }

@@ -283,6 +283,7 @@ export class RestoreOrchestrator {
     held?: Array<{ nodeId: string; logicalId: string; reason: string }>;
     alreadyRunning?: Array<{ nodeId: string; logicalId: string }>;
     failedTargets?: Array<{ nodeId: string; logicalId: string; reason: string }>;
+    unmatchedIds?: string[];
   }> {
     const rig = this.rigRepo.getRig(rigId);
     if (!rig) return { ok: false, code: "rig_not_found", message: `Rig ${rigId} not found` };
@@ -292,6 +293,8 @@ export class RestoreOrchestrator {
 
     const allNodes = rig.nodes;
     const targetNodes = allNodes.filter((n) => logicalIds.includes(n.logicalId));
+    const matchedIds = new Set(targetNodes.map((n) => n.logicalId));
+    const unmatchedIds = logicalIds.filter((id) => !matchedIds.has(id));
     if (targetNodes.length === 0) return { ok: false, code: "no_matching_nodes", message: `No nodes match logical ids: ${logicalIds.join(", ")}` };
 
     const nonTargetNodes = allNodes.filter((n) => !logicalIds.includes(n.logicalId));
@@ -366,6 +369,12 @@ export class RestoreOrchestrator {
 
       if (running || unknown) continue;
 
+      // Clear stale DB-running rows for non-targets proven tmux-dead so
+      // inventory projects heldReason honestly (not masked by stale running status).
+      for (const session of sessions) {
+        this.sessionRegistry.markDetached(session.id);
+      }
+
       this.eventBus.emit({
         type: "node.held",
         rigId,
@@ -376,7 +385,7 @@ export class RestoreOrchestrator {
       held.push({ nodeId: node.id, logicalId: node.logicalId, reason: holdReasonText });
     }
 
-    return { ok: true, launched, held, alreadyRunning, failedTargets };
+    return { ok: true, launched, held, alreadyRunning, failedTargets, unmatchedIds: unmatchedIds.length > 0 ? unmatchedIds : undefined };
   }
 
   private validatePreRestore(
