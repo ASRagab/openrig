@@ -185,6 +185,23 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const modelArg = model ? ` -m ${shellQuote(model)}` : "";
     const profile = binding.codexConfigProfile?.trim();
     const profileArg = profile ? ` -p ${shellQuote(profile)}` : "";
+
+    // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
+    // [profiles.<name>] table or invalid TOML must fail BEFORE the opaque
+    // `codex -p <profile> resume` failure. An absent .config.toml passes
+    // (Codex default-layers it; advisor Option B).
+    if (profile) {
+      const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
+      const { execSync } = await import("node:child_process");
+      const execFn = async (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
+      const probeResult = await verifyCodexProfileLoads(profile, execFn);
+      if (!probeResult.ok) {
+        return {
+          ok: false,
+          error: `${probeResult.error}${probeResult.migrationHint ? `\n  Fix: ${probeResult.migrationHint}` : ""}`,
+        };
+      }
+    }
     const gitDirArg = ` --add-dir ${shellQuote(nodePath.join(binding.cwd, ".git"))}`;
     const queueStateDirArg = this.buildQueueStateAddDirArg(opts.name);
 

@@ -558,6 +558,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     tmuxAdapter,
     contextPackLibrary,
     agentImageLibrary,
+    exec,
   });
 
   const podBundleSourceResolver = new PodBundleSourceResolver();
