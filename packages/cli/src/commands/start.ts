@@ -260,6 +260,9 @@ Examples:
       // preview (POST /api/rigs/:id/up with plan:true) instead of the name-based
       // POST /api/up which 409s on same-name rigs and silently drops them.
       const candidates: StartCandidate[] = [];
+      // Guard BLOCKING bfed4ce3: track preview errors so they are not collapsed
+      // into a clean empty-candidate result.
+      const previewErrors: Array<{ rigId: string; rigName: string; code: string; message: string }> = [];
       for (const rig of allSummaries) {
         if (rig.name === "kernel") continue;
         if (rig.lifecycleState === "running") continue;
@@ -291,23 +294,34 @@ Examples:
           } else if (planRes.status === 404) {
             // no_snapshot or not found — this rig is not a candidate (expected exclusion).
           } else {
-            // Unexpected non-2xx: surface honestly, do not silently omit.
-            const code = planRes.data["code"] as string | undefined;
+            const code = String(planRes.data["code"] ?? `http_${planRes.status}`);
             const errorText = String(planRes.data["error"] ?? "preview failed");
-            if (!opts.json) console.error(`  ${rig.name}: candidate preview failed — ${errorText} (${code ?? `HTTP ${planRes.status}`})`);
+            previewErrors.push({ rigId: rig.id, rigName: rig.name, code, message: errorText });
+            if (!opts.json) console.error(`  ${rig.name}: candidate preview failed -- ${errorText} (${code})`);
           }
-        } catch {
-          // Transport error — degrade: skip this candidate with a warning.
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          previewErrors.push({ rigId: rig.id, rigName: rig.name, code: "transport_error", message: msg });
           if (!opts.json) console.error(`  ${rig.name}: candidate preview unavailable (transport error)`);
         }
       }
 
       if (candidates.length === 0) {
         if (opts.json) {
-          console.log(JSON.stringify({ status: "started", candidates: [], restoredRigs: [] }));
+          console.log(JSON.stringify({
+            status: previewErrors.length > 0 ? "started_with_errors" : "started",
+            candidates: [],
+            restoredRigs: [],
+            previewErrors: previewErrors.length > 0 ? previewErrors : undefined,
+          }));
         } else {
-          console.log("Daemon and kernel are up. No rigs to restore.");
+          if (previewErrors.length > 0) {
+            console.error(`${previewErrors.length} rig(s) failed preview (see errors above). Some candidates may be missing.`);
+          } else {
+            console.log("Daemon and kernel are up. No rigs to restore.");
+          }
         }
+        if (previewErrors.length > 0) process.exitCode = 1;
         return;
       }
 
@@ -495,10 +509,11 @@ Examples:
 
       if (opts.json) {
         console.log(JSON.stringify({
-          status: "started",
+          status: previewErrors.length > 0 ? "started_with_errors" : "started",
           uiUrl,
           candidates: candidates.map((c) => ({ rigName: c.rigName, lifecycleState: c.lifecycleState })),
           restoredRigs: results,
+          previewErrors: previewErrors.length > 0 ? previewErrors : undefined,
         }));
       }
 

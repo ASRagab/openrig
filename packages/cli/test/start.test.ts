@@ -95,8 +95,10 @@ describe("rig start (OPR.0.3.4.1)", () => {
           upBodies.push({ ...body, _rigIdRoute: rigUpMatch[1] });
           const handler = routes["/api/rigs/:id/up"] ?? routes["/api/up"];
           const data = handler ? handler(req, { ...body, _rigId: rigUpMatch[1] }) : {};
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(data));
+          const httpStatus = (data as Record<string, unknown>)?._httpStatus as number | undefined;
+          res.writeHead(httpStatus ?? 200, { "Content-Type": "application/json" });
+          const { _httpStatus: _, ...cleanData } = data as Record<string, unknown>;
+          res.end(JSON.stringify(httpStatus ? cleanData : data));
           return;
         }
         res.writeHead(404).end();
@@ -383,6 +385,34 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(planBodies.length).toBe(2);
     expect(planBodies.some((b) => b._rigIdRoute === "rig-1")).toBe(true);
     expect(planBodies.some((b) => b._rigIdRoute === "rig-2")).toBe(true);
+  });
+
+  // ---- PREVIEW ERROR STATE (guard BLOCKING bfed4ce3) ----
+
+  it("preview 500 error under --json -> JSON contains previewErrors + exit 1, not clean empty candidates", async () => {
+    routes["/api/rigs/summary"] = () => [
+      { id: "err-rig-1", name: "broken-rig", nodeCount: 1, lifecycleState: "detached" },
+    ];
+    routes["/api/rigs/:id"] = () => ({ sessions: [] });
+    routes["/api/rigs/:id/up"] = () => ({
+      _httpStatus: 500,
+      error: "internal server error",
+      code: "restore_error",
+    });
+
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "start", "--all", "--json"]);
+    });
+    const jsonLine = logs.find((l) => l.startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    const parsed = JSON.parse(jsonLine!);
+    expect(parsed.status).toBe("started_with_errors");
+    expect(parsed.previewErrors).toBeDefined();
+    expect(parsed.previewErrors.length).toBe(1);
+    expect(parsed.previewErrors[0].rigName).toBe("broken-rig");
+    expect(parsed.previewErrors[0].code).toBe("restore_error");
+    expect(parsed.candidates).toHaveLength(0);
+    expect(exitCode).toBe(1);
   });
 
   // ---- NON-2XX ERROR HANDLING (guard BLOCKING 25661f72) ----
