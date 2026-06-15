@@ -294,6 +294,15 @@ describe("PsProjectionService", () => {
       expect(deriveRigLifecycleState(["attention_required", "running"])).toBe("attention_required");
       expect(deriveRigLifecycleState(["attention_required", "detached"])).toBe("attention_required");
     });
+
+    // OPR.0.3.4.6 — cross-surface regression guard: projection never collapses
+    // attention_required to failed at the rig level.
+    it("OPR.0.3.4.6 guard: attention_required node NEVER maps to rig-level 'failed' (always 'attention_required')", () => {
+      expect(deriveRigLifecycleState(["attention_required"])).toBe("attention_required");
+      expect(deriveRigLifecycleState(["attention_required"])).not.toBe("failed");
+      expect(deriveRigLifecycleState(["attention_required", "running", "detached"])).toBe("attention_required");
+      expect(deriveRigLifecycleState(["attention_required", "running", "detached"])).not.toBe("failed");
+    });
   });
 
   // Slice 15 — `terminal-active` count + `has-work` count are PARALLEL

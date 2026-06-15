@@ -21,7 +21,7 @@ import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
-import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
+import { RestoreOrchestrator, rollupRestoreRigResult } from "../src/domain/restore-orchestrator.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
 import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
@@ -2531,6 +2531,61 @@ describe("RestoreOrchestrator", () => {
     it("five-term vocabulary: all five terms are distinct strings", () => {
       const terms = ["resumed", "fresh-primed", "awaiting-decision", "attention_required", "failed"];
       expect(new Set(terms).size).toBe(5);
+    });
+  });
+
+  // OPR.0.3.4.6 — cross-surface regression guard: producer rollup.
+  // A mixed restore with attention_required and/or awaiting-decision must
+  // roll to partially_restored, never failed. Only all-failed rolls to failed.
+  describe("OPR.0.3.4.6 honest-restore-status rollup guard", () => {
+    it("attention_required + awaiting-decision + mixed -> partially_restored, never failed", () => {
+
+      const nodes = [
+        { nodeId: "n1", logicalId: "a", status: "resumed" as const },
+        { nodeId: "n2", logicalId: "b", status: "fresh-primed" as const },
+        { nodeId: "n3", logicalId: "c", status: "awaiting-decision" as const },
+        { nodeId: "n4", logicalId: "d", status: "attention_required" as const },
+        { nodeId: "n5", logicalId: "e", status: "failed" as const },
+      ];
+      const result = rollupRestoreRigResult(nodes);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("attention_required alone -> partially_restored (NEVER collapsed to failed)", () => {
+
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "attention_required" },
+      ]);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("awaiting-decision alone -> partially_restored (NEVER collapsed to failed)", () => {
+
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "awaiting-decision" },
+      ]);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("all-failed -> failed (reserved for genuine all-failure only)", () => {
+
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "failed" },
+        { nodeId: "n2", logicalId: "b", status: "failed" },
+      ]);
+      expect(result).toBe("failed");
+    });
+
+    it("all-resumed -> fully_restored", () => {
+
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "resumed" },
+        { nodeId: "n2", logicalId: "b", status: "resumed" },
+      ]);
+      expect(result).toBe("fully_restored");
     });
   });
 

@@ -246,6 +246,49 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(exitCode).toBe(1);
   });
 
+  // OPR.0.3.4.6 — cross-surface regression guard: CLI exit-code + JSON.
+  it("OPR.0.3.4.6 guard: attention_required/awaiting-decision -> partially_restored -> exit 1, never exit 0", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "a", status: "resumed" },
+        { logicalId: "b", status: "attention_required" },
+        { logicalId: "c", status: "awaiting-decision", error: "no token" },
+      ],
+      warnings: [],
+    });
+    const { exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(exitCode).toBe(1);
+  });
+
+  it("OPR.0.3.4.6 guard: JSON passes raw per-node status for all five terms (never collapsed)", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "a", status: "resumed" },
+        { logicalId: "b", status: "fresh-primed" },
+        { logicalId: "c", status: "awaiting-decision", error: "no token" },
+        { logicalId: "d", status: "attention_required" },
+        { logicalId: "e", status: "failed" },
+      ],
+      warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--json"]);
+    });
+    const jsonLine = logs.find((l) => l.startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    const parsed = JSON.parse(jsonLine!);
+    const statuses = (parsed.nodes as Array<{ status: string }>).map((n) => n.status);
+    expect(statuses).toContain("resumed");
+    expect(statuses).toContain("fresh-primed");
+    expect(statuses).toContain("awaiting-decision");
+    expect(statuses).toContain("attention_required");
+    expect(statuses).toContain("failed");
+  });
+
   it("distinct naming: all five vocabulary terms render distinctly per seat", async () => {
     respond = () => ({
       status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
