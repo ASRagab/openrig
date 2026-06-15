@@ -122,6 +122,7 @@ rigCmuxRoutes.post("/launch", async (c) => {
 
   while ((pending.size > 0 || noSessionIds.size > 0) && Date.now() < deadline) {
     let foundThisCycle = 0;
+    let noSessionDiscovered = 0;
 
     // Re-read inventory for no-session seats to discover newly-appeared sessions.
     if (noSessionIds.size > 0) {
@@ -131,6 +132,7 @@ rigCmuxRoutes.post("/launch", async (c) => {
         if (entry.canonicalSessionName && (entry.attachmentType == null || entry.attachmentType === "tmux")) {
           noSessionIds.delete(entry.logicalId);
           pending.set(entry.logicalId, { logicalId: entry.logicalId, sessionName: entry.canonicalSessionName, sessionStatus: entry.sessionStatus });
+          noSessionDiscovered++;
         }
       }
     }
@@ -149,7 +151,13 @@ rigCmuxRoutes.post("/launch", async (c) => {
       }
     }
     if (pending.size === 0 && noSessionIds.size === 0) break;
-    if (!firstPass && foundThisCycle === 0) break;
+    // Early-exit when no progress was made this cycle (no new live sessions
+    // AND no new sessions discovered from no-session seats) and all remaining
+    // pending are known-stale.
+    if (!firstPass && foundThisCycle === 0 && noSessionDiscovered === 0) {
+      const allPendingStale = pending.size === 0 || [...pending.values()].every((c) => STALE_STATUSES.has(c.sessionStatus ?? ""));
+      if (allPendingStale) break;
+    }
     firstPass = false;
     if (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, READINESS_POLL_MS));
