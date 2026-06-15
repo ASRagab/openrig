@@ -2534,6 +2534,61 @@ describe("RestoreOrchestrator", () => {
     });
   });
 
+  // OPR.0.3.4.6 — cross-surface regression guard: producer rollup.
+  // A mixed restore with attention_required and/or awaiting-decision must
+  // roll to partially_restored, never failed. Only all-failed rolls to failed.
+  describe("OPR.0.3.4.6 honest-restore-status rollup guard", () => {
+    it("attention_required + awaiting-decision + mixed -> partially_restored, never failed", () => {
+      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+      const nodes = [
+        { nodeId: "n1", logicalId: "a", status: "resumed" as const },
+        { nodeId: "n2", logicalId: "b", status: "fresh-primed" as const },
+        { nodeId: "n3", logicalId: "c", status: "awaiting-decision" as const },
+        { nodeId: "n4", logicalId: "d", status: "attention_required" as const },
+        { nodeId: "n5", logicalId: "e", status: "failed" as const },
+      ];
+      const result = rollupRestoreRigResult(nodes);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("attention_required alone -> partially_restored (NEVER collapsed to failed)", () => {
+      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "attention_required" },
+      ]);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("awaiting-decision alone -> partially_restored (NEVER collapsed to failed)", () => {
+      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "awaiting-decision" },
+      ]);
+      expect(result).toBe("partially_restored");
+      expect(result).not.toBe("failed");
+    });
+
+    it("all-failed -> failed (reserved for genuine all-failure only)", () => {
+      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "failed" },
+        { nodeId: "n2", logicalId: "b", status: "failed" },
+      ]);
+      expect(result).toBe("failed");
+    });
+
+    it("all-resumed -> fully_restored", () => {
+      const { rollupRestoreRigResult } = await import("../src/domain/restore-orchestrator.js");
+      const result = rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "resumed" },
+        { nodeId: "n2", logicalId: "b", status: "resumed" },
+      ]);
+      expect(result).toBe("fully_restored");
+    });
+  });
+
   function createOrchestrator2(tmux: TmuxAdapter, claude: ClaudeResumeAdapter) {
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     return new RestoreOrchestrator({
