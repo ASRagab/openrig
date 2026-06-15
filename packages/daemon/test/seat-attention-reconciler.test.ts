@@ -235,6 +235,79 @@ describe("SeatAttentionReconciler", () => {
     expect(payload.evidence.kind).toBe("send_verify_roundtrip");
   });
 
+  // Capture-confirmed branch: rendered-unconfirmed + capture confirms probe text → clears
+  it("clears on rendered-unconfirmed when capture confirms probe text", async () => {
+    seedAttentionSeat("r-cap-ok", "worker@r-cap-ok");
+    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    const capture = vi.fn(async (session: string) => ({
+      ok: true, sessionName: session, content: "some pane output\n# OpenRig attention-clear liveness probe 1234567890\nmore output",
+    }));
+    const capReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
+    });
+
+    const result = await capReconciler.clearAttention("worker@r-cap-ok");
+
+    expect(result.ok).toBe(true);
+    expect(result.clearedBy).toBe("evidence");
+    expect(result.evidence?.kind).toBe("send_verify_capture_confirmed");
+    expect(capture).toHaveBeenCalledWith("worker@r-cap-ok", expect.objectContaining({ lines: expect.any(Number) }));
+  });
+
+  // Capture-confirmed branch: rendered-unconfirmed + capture does NOT contain probe text → does not clear
+  it("does NOT clear on rendered-unconfirmed when capture lacks probe text", async () => {
+    seedAttentionSeat("r-cap-miss", "worker@r-cap-miss");
+    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    const capture = vi.fn(async (session: string) => ({
+      ok: true, sessionName: session, content: "some unrelated pane output\nno probe here",
+    }));
+    const capReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
+    });
+
+    const result = await capReconciler.clearAttention("worker@r-cap-miss");
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("not_demonstrably_responsive");
+  });
+
+  // Capture-confirmed branch: rendered-unconfirmed + capture fails → does not clear
+  it("does NOT clear on rendered-unconfirmed when capture fails", async () => {
+    seedAttentionSeat("r-cap-fail", "worker@r-cap-fail");
+    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    const capture = vi.fn(async (session: string) => ({
+      ok: false, sessionName: session, error: "capture_failed",
+    }));
+    const capReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
+    });
+
+    const result = await capReconciler.clearAttention("worker@r-cap-fail");
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("not_demonstrably_responsive");
+  });
+
+  // Capture-confirmed audit event has distinct evidence kind
+  it("capture-confirmed audit event has kind send_verify_capture_confirmed", async () => {
+    seedAttentionSeat("r-cap-audit", "worker@r-cap-audit");
+    const sendVerify = vi.fn(async () => ({ ok: true, outcome: "rendered-unconfirmed" as const, verified: false }));
+    const capture = vi.fn(async (session: string) => ({
+      ok: true, sessionName: session, content: "# OpenRig attention-clear liveness probe 9999999999\noutput",
+    }));
+    const capReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, sendVerify, capture,
+    });
+
+    await capReconciler.clearAttention("worker@r-cap-audit");
+
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'seat.attention_cleared'").all() as { payload: string }[];
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]!.payload);
+    expect(payload.clearedBy).toBe("evidence");
+    expect(payload.evidence.kind).toBe("send_verify_capture_confirmed");
+  });
+
   // No event on no-op
   it("does NOT emit event when not clearing", async () => {
     seedAttentionSeat("r11", "worker@r11");

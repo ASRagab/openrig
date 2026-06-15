@@ -22,11 +22,16 @@ export interface SendVerifyFn {
   (sessionName: string, text: string, opts?: { verify?: boolean }): Promise<{ ok: boolean; outcome?: string; verified?: boolean }>;
 }
 
+export interface CaptureFn {
+  (sessionName: string, opts?: { lines?: number }): Promise<{ ok: boolean; sessionName: string; content?: string; error?: string }>;
+}
+
 interface ClearAttentionDeps {
   sessionRegistry: SessionRegistry;
   eventBus: EventBus;
   agentActivityStore: AgentActivityStore;
   sendVerify?: SendVerifyFn;
+  capture?: CaptureFn;
 }
 
 const POSITIVE_STATES = new Set(["running", "idle"]);
@@ -139,7 +144,40 @@ export class SeatAttentionReconciler {
             previousError,
           };
         }
-        // rendered-unconfirmed without capture confirmation: could-not-confirm, NOT dead.
+
+        // rendered-unconfirmed: text landed but verify raced a TUI redraw.
+        // Attempt capture-confirmation if capture dep is available.
+        if (sendResult.ok && sendResult.outcome === "rendered-unconfirmed" && this.deps.capture) {
+          try {
+            const captureResult = await this.deps.capture(sessionName, { lines: 50 });
+            if (captureResult.ok && captureResult.content && captureResult.content.includes("# OpenRig attention-clear liveness probe")) {
+              sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
+              eventBus.emit({
+                type: "seat.attention_cleared",
+                rigId: session.rigId,
+                nodeId: session.nodeId,
+                sessionName,
+                from: session.startupStatus,
+                to: "ready",
+                clearedBy: "evidence",
+                evidence: { kind: "send_verify_capture_confirmed", state: "rendered-unconfirmed" },
+                previousError,
+              });
+              return {
+                ok: true,
+                code: "cleared",
+                from: session.startupStatus,
+                to: "ready",
+                clearedBy: "evidence",
+                evidence: { kind: "send_verify_capture_confirmed", state: "rendered-unconfirmed" },
+                previousError,
+              };
+            }
+          } catch {
+            // Capture failed — transport error. Do not clear on capture failure.
+          }
+        }
+        // No capture dep, or capture didn't confirm: could-not-confirm, NOT dead.
         // failed: transport did not land. Neither clears.
       } catch {
         // Send failed — transport error. Do not clear.
