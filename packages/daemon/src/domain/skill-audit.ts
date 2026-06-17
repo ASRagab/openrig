@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { sha256Hex } from "./files/file-write-service.js";
 import type { SkillProvenanceEntry } from "./skill-discovery.js";
 
@@ -58,6 +58,11 @@ function isSelfReferential(source: string, skillPath: string): boolean {
   try {
     const resolvedFromSkill = resolve(skillPath, trimmed);
     if (resolvedFromSkill === normalizedSkillPath || resolvedFromSkill === normalizedSkillMd) return true;
+  } catch { /* not a valid path */ }
+
+  try {
+    const resolvedFromParent = resolve(dirname(skillPath), trimmed);
+    if (resolvedFromParent === normalizedSkillPath || resolvedFromParent === normalizedSkillMd) return true;
   } catch { /* not a valid path */ }
 
   if (trimmed.endsWith("/SKILL.md") && normalizedSkillMd.endsWith(trimmed)) return true;
