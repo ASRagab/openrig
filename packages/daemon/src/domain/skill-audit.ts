@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { sha256Hex } from "./files/file-write-service.js";
 import type { SkillProvenanceEntry } from "./skill-discovery.js";
 
@@ -40,11 +40,27 @@ function isExempt(frontmatter: Record<string, unknown>, body: string): boolean {
 }
 
 function isSelfReferential(source: string, skillPath: string): boolean {
-  const normalized = source.trim();
+  const trimmed = source.trim().replace(/\/+$/, "");
+  if (trimmed === "SKILL.md" || trimmed === "./SKILL.md") return true;
+
   const skillMd = join(skillPath, "SKILL.md");
-  if (normalized === skillMd || normalized === skillPath) return true;
-  if (normalized === "SKILL.md" || normalized === "./SKILL.md") return true;
-  if (normalized.endsWith("/SKILL.md") && skillMd.endsWith(normalized)) return true;
+  const normalizedSkillPath = resolve(skillPath);
+  const normalizedSkillMd = resolve(skillMd);
+
+  if (trimmed === normalizedSkillPath || trimmed === normalizedSkillMd) return true;
+  if (trimmed === skillPath || trimmed === skillMd) return true;
+
+  try {
+    const resolved = resolve(trimmed);
+    if (resolved === normalizedSkillPath || resolved === normalizedSkillMd) return true;
+  } catch { /* not a valid path */ }
+
+  try {
+    const resolvedFromSkill = resolve(skillPath, trimmed);
+    if (resolvedFromSkill === normalizedSkillPath || resolvedFromSkill === normalizedSkillMd) return true;
+  } catch { /* not a valid path */ }
+
+  if (trimmed.endsWith("/SKILL.md") && normalizedSkillMd.endsWith(trimmed)) return true;
   return false;
 }
 

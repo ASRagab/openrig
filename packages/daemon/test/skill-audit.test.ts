@@ -100,6 +100,55 @@ describe("skill-audit", () => {
     expect(result!.findings.some((f) => f.class === "bare_verified")).toBe(true);
   });
 
+  it("(b) source_evidence with .. normalization to own path fails as bare_verified", () => {
+    const entry = makeEntry({
+      path: "/tmp/skills/test-skill",
+      fmOverrides: {
+        metadata: {
+          openrig: {
+            stage: "factory-approved",
+            last_verified: "2026-06-15",
+            source_evidence: "/tmp/skills/test-skill/../test-skill/SKILL.md",
+          },
+        },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("bare_verified");
+  });
+
+  it("(b) source_evidence = skill directory with trailing slash fails as bare_verified", () => {
+    const entry = makeEntry({
+      path: "/tmp/skills/test-skill",
+      fmOverrides: {
+        metadata: {
+          openrig: {
+            stage: "factory-approved",
+            last_verified: "2026-06-15",
+            source_evidence: "/tmp/skills/test-skill/",
+          },
+        },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("bare_verified");
+  });
+
+  it("(b) top-level verified against normalized self path fails as bare_verified", () => {
+    const entry = makeEntry({
+      path: "/tmp/skills/test-skill",
+      fmOverrides: {
+        verified: "2026-06-15 against /tmp/skills/test-skill/../test-skill/SKILL.md",
+        metadata: { openrig: { owner: "test", source_ref: "v1" } },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("bare_verified");
+  });
+
   it("(b) source_evidence 'SKILL.md' (bare filename) fails as bare_verified", () => {
     const entry = makeEntry({
       fmOverrides: {
