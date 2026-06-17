@@ -73,7 +73,7 @@ function extractVerified(frontmatter: Record<string, unknown>, skillPath: string
   const topVerified = frontmatter.verified;
   if (typeof topVerified === "string") {
     const match = /^(\d{4}-\d{2}-\d{2})\s+against\s+(.+)$/i.exec(topVerified.trim());
-    if (match && !isSelfReferential(match[2]!, skillPath)) {
+    if (match && isValidDate(match[1]!) && !isSelfReferential(match[2]!, skillPath)) {
       return checkStaleness(match[1]!, match[2]!.trim());
     }
     if (match) {
@@ -87,16 +87,39 @@ function extractVerified(frontmatter: Record<string, unknown>, skillPath: string
   if (!lastVerified) return { status: "missing_verified" };
 
   const dateStr = String(lastVerified).trim();
-  const source = openrig?.source_evidence ?? openrig?.sourced_from;
-  if (!source || String(source).trim().length === 0 || isSelfReferential(String(source), skillPath)) {
+  if (!isValidDate(dateStr)) {
     return { status: "bare_verified", date: dateStr };
   }
 
-  return checkStaleness(dateStr, String(source).trim());
+  const rawSource = openrig?.source_evidence ?? openrig?.sourced_from;
+  const realSource = extractRealSource(rawSource, skillPath);
+  if (!realSource) {
+    return { status: "bare_verified", date: dateStr };
+  }
+
+  return checkStaleness(dateStr, realSource);
+}
+
+function extractRealSource(rawSource: unknown, skillPath: string): string | null {
+  if (!rawSource) return null;
+  const candidates = Array.isArray(rawSource)
+    ? rawSource.map((s) => String(s).trim()).filter(Boolean)
+    : [String(rawSource).trim()];
+  const real = candidates.filter((c) => c.length > 0 && !isSelfReferential(c, skillPath));
+  return real.length > 0 ? real.join("; ") : null;
+}
+
+function isValidDate(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const d = new Date(dateStr);
+  return !isNaN(d.getTime());
 }
 
 function checkStaleness(dateStr: string, source: string): VerifiedStatus {
   const verifiedDate = new Date(dateStr);
+  if (isNaN(verifiedDate.getTime())) {
+    return { status: "bare_verified", date: dateStr };
+  }
   const now = new Date();
   const daysDiff = (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
   if (daysDiff > FRESHNESS_WINDOW_DAYS) {

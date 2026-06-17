@@ -371,4 +371,67 @@ describe("skill-audit", () => {
     expect(result!.state).toBe("exempt");
     expect(result!.findings).toHaveLength(0);
   });
+
+  // REV1 REGRESSION: invalid last_verified date with real source -> bare_verified, not verified
+  it("invalid last_verified date (non-date string) fails as bare_verified", () => {
+    const entry = makeEntry({
+      fmOverrides: {
+        metadata: {
+          openrig: {
+            stage: "factory-approved",
+            last_verified: "not-a-date",
+            source_evidence: "runtime integration tests",
+            owner: "test",
+            source_ref: "v1",
+          },
+        },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("bare_verified");
+    expect(result!.findings.some((f) => f.class === "bare_verified")).toBe(true);
+  });
+
+  // REV1 REGRESSION: array-valued sourced_from with only self paths -> bare_verified
+  it("array sourced_from with only self-referential paths fails as bare_verified", () => {
+    const entry = makeEntry({
+      path: "/tmp/skills/test-skill",
+      fmOverrides: {
+        metadata: {
+          openrig: {
+            stage: "factory-approved",
+            last_verified: "2026-06-15",
+            sourced_from: ["/tmp/skills/test-skill/SKILL.md", "./test-skill/SKILL.md"],
+            owner: "test",
+            source_ref: "v1",
+          },
+        },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("bare_verified");
+  });
+
+  // REV1: array sourced_from with at least one real non-self source -> verified
+  it("array sourced_from with one real source passes as verified", () => {
+    const entry = makeEntry({
+      path: "/tmp/skills/test-skill",
+      fmOverrides: {
+        metadata: {
+          openrig: {
+            stage: "factory-approved",
+            last_verified: "2026-06-15",
+            sourced_from: ["/tmp/skills/test-skill/SKILL.md", "runtime integration tests"],
+            owner: "test",
+            source_ref: "v1",
+          },
+        },
+      },
+    });
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.verified.status).toBe("verified");
+  });
 });
