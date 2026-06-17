@@ -62,6 +62,7 @@ export interface SkillProvenanceEntry {
   sourceRoot: string;
   sourceKind: SourceKind;
   frontmatter: SkillFrontmatter;
+  body: string;
   shadowed: boolean;
 }
 
@@ -259,6 +260,7 @@ export function discoverSkillsWithProvenance(paths: SkillDiscoveryPaths): SkillP
         sourceRoot: root,
         sourceKind,
         frontmatter: parsed.frontmatter,
+        body: parsed.body,
         shadowed: seenIds.has(id),
       });
       seenIds.add(id);

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { sha256Hex } from "./files/file-write-service.js";
 import type { SkillProvenanceEntry } from "./skill-discovery.js";
 
 export interface SkillAuditEntry {
@@ -33,10 +33,9 @@ export interface AuditFinding {
 
 const FRESHNESS_WINDOW_DAYS = 90;
 
-function isExempt(frontmatter: Record<string, unknown>): boolean {
+function isExempt(frontmatter: Record<string, unknown>, body: string): boolean {
   if (frontmatter.status === "historical-reference") return true;
-  const body = (frontmatter as { _body?: string })._body;
-  if (typeof body === "string" && /^\s*>\s*\*?\*?legacy/im.test(body)) return true;
+  if (/^\s*>\s*\*?\*?legacy/im.test(body)) return true;
   return false;
 }
 
@@ -74,9 +73,9 @@ function checkStaleness(dateStr: string, source: string): VerifiedStatus {
 }
 
 function hashSkillFolder(skillPath: string): string {
-  const hash = createHash("sha256");
   let entries: string[];
   try { entries = readdirSync(skillPath).sort(); } catch { return ""; }
+  const parts: string[] = [];
   for (const entry of entries) {
     const fullPath = join(skillPath, entry);
     let stat;
@@ -84,15 +83,35 @@ function hashSkillFolder(skillPath: string): string {
     if (!stat.isFile()) continue;
     try {
       const content = readFileSync(fullPath);
-      hash.update(entry);
-      hash.update(content);
+      parts.push(`${entry}:${sha256Hex(content)}`);
     } catch { continue; }
   }
-  return hash.digest("hex");
+  return sha256Hex(parts.join("\n"));
 }
 
-export function auditSkills(entries: SkillProvenanceEntry[]): SkillAuditEntry[] {
-  return entries.map((entry) => {
+export interface MirrorDriftResult {
+  stale: boolean;
+  changes: string[];
+}
+
+export interface SkillAuditResult {
+  entries: SkillAuditEntry[];
+  mirrorDriftFindings: AuditFinding[];
+}
+
+export function auditSkills(entries: SkillProvenanceEntry[], opts?: { mirrorDrift?: MirrorDriftResult }): SkillAuditResult {
+  const mirrorDriftFindings: AuditFinding[] = [];
+  if (opts?.mirrorDrift?.stale) {
+    for (const change of opts.mirrorDrift.changes) {
+      mirrorDriftFindings.push({
+        class: "mirror_drift",
+        file: change,
+        reason: "Product source differs from canonical mirror",
+        remediation: "Run scripts/mirror-skills.mjs to sync the canonical mirror",
+      });
+    }
+  }
+  const results = entries.map((entry) => {
     const fm = entry.frontmatter as Record<string, unknown>;
     const meta = fm.metadata as Record<string, unknown> | undefined;
     const openrig = meta?.openrig as Record<string, unknown> | undefined;
@@ -102,7 +121,7 @@ export function auditSkills(entries: SkillProvenanceEntry[]): SkillAuditEntry[] 
     const sourceRef = openrig?.source_ref ?? openrig?.version ? String(openrig.source_ref ?? openrig?.version) : null;
     const verified = extractVerified(fm);
     const contentHash = hashSkillFolder(entry.path);
-    const exempt = isExempt(fm);
+    const exempt = isExempt(fm, entry.body);
 
     const findings: AuditFinding[] = [];
 
@@ -171,4 +190,6 @@ export function auditSkills(entries: SkillProvenanceEntry[]): SkillAuditEntry[] 
       findings,
     };
   });
+
+  return { entries: results, mirrorDriftFindings };
 }

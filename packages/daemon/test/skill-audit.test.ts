@@ -15,6 +15,7 @@ function makeEntry(overrides: Partial<SkillProvenanceEntry> & { fmOverrides?: Re
     sourceRoot: "/tmp/skills",
     sourceKind: "rig_bundled",
     frontmatter: baseFm as SkillFrontmatter,
+    body: "",
     shadowed: false,
     ...rest,
   };
@@ -38,7 +39,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("verified");
     expect(result!.findings.filter((f) => f.class.includes("verified"))).toHaveLength(0);
     expect(result!.state).toBe("active");
@@ -56,7 +57,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("bare_verified");
     expect(result!.findings.some((f) => f.class === "bare_verified")).toBe(true);
     expect(result!.state).toBe("stale");
@@ -75,7 +76,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("bare_verified");
     expect(result!.findings.some((f) => f.class === "bare_verified")).toBe(true);
   });
@@ -91,7 +92,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("missing_verified");
     expect(result!.findings.some((f) => f.class === "missing_verified")).toBe(true);
   });
@@ -111,7 +112,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("stale_verified");
     expect(result!.findings.some((f) => f.class === "stale_verified")).toBe(true);
     expect(result!.state).toBe("stale");
@@ -125,7 +126,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.state).toBe("exempt");
     expect(result!.findings).toHaveLength(0);
   });
@@ -139,7 +140,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.findings).toHaveLength(0);
   });
 
@@ -157,7 +158,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     const provFindings = result!.findings.filter((f) => f.class === "missing_provenance");
     expect(provFindings.length).toBeGreaterThanOrEqual(2);
   });
@@ -176,7 +177,7 @@ describe("skill-audit", () => {
       },
     });
 
-    const [result] = auditSkills([entry]);
+    const { entries: [result] } = auditSkills([entry]);
     expect(result!.verified.status).toBe("verified");
     if (result!.verified.status === "verified") {
       expect(result!.verified.date).toBe("2026-06-10");
@@ -191,9 +192,49 @@ describe("skill-audit", () => {
       makeEntry({ id: "skill-b", fmOverrides: { metadata: { openrig: { stage: "factory-approved", last_verified: "2026-06-15", source_evidence: "test" } } } }),
     ];
 
-    const results = auditSkills(entries);
+    const { entries: results } = auditSkills(entries);
     expect(results).toHaveLength(2);
     expect(results[0]!.id).toBe("skill-a");
     expect(results[1]!.id).toBe("skill-b");
+  });
+
+  // B1 REGRESSION: mirror drift findings emitted from checkMode result
+  it("mirror drift findings emitted when mirrorDrift.stale is true", () => {
+    const entry = makeEntry({
+      fmOverrides: {
+        metadata: { openrig: { stage: "factory-approved", last_verified: "2026-06-15", source_evidence: "test", owner: "test", source_ref: "v1" } },
+      },
+    });
+
+    const { mirrorDriftFindings } = auditSkills([entry], {
+      mirrorDrift: { stale: true, changes: ["skills/_canonical/openrig-user/SKILL.md", "skills/_canonical/openrig-builder/SKILL.md"] },
+    });
+
+    expect(mirrorDriftFindings).toHaveLength(2);
+    expect(mirrorDriftFindings[0]!.class).toBe("mirror_drift");
+    expect(mirrorDriftFindings[0]!.file).toContain("openrig-user");
+  });
+
+  it("no mirror drift findings when mirrorDrift.stale is false", () => {
+    const entry = makeEntry({
+      fmOverrides: {
+        metadata: { openrig: { stage: "factory-approved", last_verified: "2026-06-15", source_evidence: "test", owner: "test", source_ref: "v1" } },
+      },
+    });
+
+    const { mirrorDriftFindings } = auditSkills([entry], { mirrorDrift: { stale: false, changes: [] } });
+    expect(mirrorDriftFindings).toHaveLength(0);
+  });
+
+  // B3 REGRESSION: legacy banner in body (not frontmatter) exempts the skill
+  it("legacy banner in body exempts the skill", () => {
+    const entry = makeEntry({
+      fmOverrides: {},
+    });
+    (entry as { body: string }).body = "> **legacy** — this skill is historical.\n\nSome content.";
+
+    const { entries: [result] } = auditSkills([entry]);
+    expect(result!.state).toBe("exempt");
+    expect(result!.findings).toHaveLength(0);
   });
 });

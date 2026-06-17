@@ -158,11 +158,25 @@ export function skillsRoutes(): Hono {
     const homedir = c.get("homedir" as never) as string | undefined ?? process.env.HOME ?? "/tmp";
     const cwd = c.get("cwd" as never) as string | undefined ?? process.cwd();
 
-    const provenance = discoverSkillsWithProvenance({ runtime: "claude-code", homedir, cwd });
-    const entries = auditSkills(provenance.skills);
-    const totalFindings = entries.filter((e) => !e.shadowed).reduce((sum, e) => sum + e.findings.length, 0);
+    const claudeResult = discoverSkillsWithProvenance({ runtime: "claude-code", homedir, cwd });
+    const codexResult = discoverSkillsWithProvenance({ runtime: "codex", homedir, cwd });
 
-    return c.json({ ok: true, entries, totalFindings, rejected: provenance.rejected });
+    const seenPaths = new Set<string>();
+    const allSkills = [...claudeResult.skills];
+    for (const s of codexResult.skills) {
+      if (!seenPaths.has(s.path)) {
+        seenPaths.add(s.path);
+        allSkills.push(s);
+      }
+    }
+    for (const s of claudeResult.skills) seenPaths.add(s.path);
+
+    const auditResult = auditSkills(allSkills);
+    const totalFindings = auditResult.entries.filter((e) => !e.shadowed).reduce((sum, e) => sum + e.findings.length, 0)
+      + auditResult.mirrorDriftFindings.length;
+    const rejected = [...claudeResult.rejected, ...codexResult.rejected];
+
+    return c.json({ ok: true, entries: auditResult.entries, mirrorDriftFindings: auditResult.mirrorDriftFindings, totalFindings, rejected });
   });
 
   return router;
