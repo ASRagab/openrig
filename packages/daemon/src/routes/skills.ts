@@ -178,7 +178,7 @@ export function skillsRoutes(): Hono {
     let mirrorDriftError: string | undefined;
     try {
       const { checkMirrorDriftSafe } = await import("../domain/skill-mirror-drift.js");
-      const driftResult = checkMirrorDriftSafe();
+      const driftResult = await checkMirrorDriftSafe();
       if (driftResult.ok) {
         mirrorDrift = { stale: driftResult.stale, changes: driftResult.changes };
       } else {
