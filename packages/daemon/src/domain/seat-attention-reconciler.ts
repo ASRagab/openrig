@@ -254,7 +254,6 @@ export class SeatAttentionReconciler {
 
   private getDerivedAttentionOutcome(session: { nodeId: string; rigId: string; sessionStatus: string }): "failed" | "attention_required" | null {
     if (!this.deps.db) return null;
-    if (session.sessionStatus !== "running") return null;
 
     const rows = this.deps.db.prepare(
       "SELECT type, payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed', 'restore.outcome_reconciled') ORDER BY seq DESC"
@@ -270,8 +269,10 @@ export class SeatAttentionReconciler {
         const ev = JSON.parse(row.payload) as { result: { nodes: Array<{ nodeId: string; status: string }> } };
         const n = ev.result.nodes.find((nd) => nd.nodeId === session.nodeId);
         if (!n) continue;
-        if (n.status === "failed") return "failed";
+        // Mirror deriveNodeLifecycleState: attention_required regardless of
+        // sessionStatus; failed only when sessionStatus=running.
         if (n.status === "attention_required") return "attention_required";
+        if (n.status === "failed" && session.sessionStatus === "running") return "failed";
         return null;
       } catch { continue; }
     }

@@ -468,4 +468,55 @@ describe("SeatAttentionReconciler", () => {
     expect(result.derivedEvidence!.runtimeCwdVerified).toBe(false);
     expect(result.derivedEvidence!.source).toBe("operator_attestation");
   });
+
+  // REV1 REGRESSION: non-running restoreOutcome=attention_required still clears
+  it("OPR.0.4.0.16: clears derived attention_required class even when sessionStatus is not running", async () => {
+    const rig = rigRepo.createRig("r-nonrun-attn");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "worker@r-nonrun-attn");
+    sessionRegistry.updateStartupStatus(session.id, "ready");
+    // Session is exited, not running
+    sessionRegistry.updateStatus(session.id, "exited");
+    // Seed restoreOutcome=attention_required
+    eventBus.emit({
+      type: "restore.completed",
+      rigId: rig.id, snapshotId: "snap-1",
+      result: { snapshotId: "snap-1", preRestoreSnapshotId: "snap-0", rigResult: "failed",
+        nodes: [{ nodeId: node.id, logicalId: "worker", status: "attention_required" }], warnings: [] },
+    } as any);
+    const nonrunReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, db,
+    });
+
+    const result = await nonrunReconciler.clearAttention("worker@r-nonrun-attn", { reason: "manually verified" });
+
+    expect(result.ok).toBe(true);
+    expect(result.clearedClasses).toContain("restore_outcome");
+    const events = db.prepare("SELECT payload FROM events WHERE type = 'restore.outcome_reconciled'").all() as { payload: string }[];
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.payload).from).toBe("attention_required");
+  });
+
+  // REV1 REGRESSION: non-running restoreOutcome=failed does NOT trigger derived class
+  it("OPR.0.4.0.16: non-running restoreOutcome=failed does NOT clear derived class (mirrors deriveNodeLifecycleState)", async () => {
+    const rig = rigRepo.createRig("r-nonrun-failed");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "worker@r-nonrun-failed");
+    sessionRegistry.updateStartupStatus(session.id, "ready");
+    sessionRegistry.updateStatus(session.id, "exited");
+    eventBus.emit({
+      type: "restore.completed",
+      rigId: rig.id, snapshotId: "snap-1",
+      result: { snapshotId: "snap-1", preRestoreSnapshotId: "snap-0", rigResult: "failed",
+        nodes: [{ nodeId: node.id, logicalId: "worker", status: "failed" }], warnings: [] },
+    } as any);
+    const nonrunReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, db,
+    });
+
+    const result = await nonrunReconciler.clearAttention("worker@r-nonrun-failed", { reason: "test" });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("not_in_attention");
+  });
 });
