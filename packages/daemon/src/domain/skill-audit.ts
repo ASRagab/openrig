@@ -1,0 +1,174 @@
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import type { SkillProvenanceEntry } from "./skill-discovery.js";
+
+export interface SkillAuditEntry {
+  id: string;
+  path: string;
+  sourceKind: string;
+  sourceRoot: string;
+  shadowed: boolean;
+  stage: string | null;
+  verified: VerifiedStatus;
+  contentHash: string;
+  state: "active" | "stale" | "legacy" | "exempt";
+  owner: string | null;
+  sourceRef: string | null;
+  findings: AuditFinding[];
+}
+
+export type VerifiedStatus =
+  | { status: "verified"; date: string; source: string }
+  | { status: "bare_verified"; date: string }
+  | { status: "missing_verified" }
+  | { status: "stale_verified"; date: string; source: string };
+
+export interface AuditFinding {
+  class: "missing_provenance" | "missing_verified" | "bare_verified" | "stale_verified" | "mirror_drift";
+  file: string;
+  reason: string;
+  remediation: string;
+}
+
+const FRESHNESS_WINDOW_DAYS = 90;
+
+function isExempt(frontmatter: Record<string, unknown>): boolean {
+  if (frontmatter.status === "historical-reference") return true;
+  const body = (frontmatter as { _body?: string })._body;
+  if (typeof body === "string" && /^\s*>\s*\*?\*?legacy/im.test(body)) return true;
+  return false;
+}
+
+function extractVerified(frontmatter: Record<string, unknown>): VerifiedStatus {
+  const topVerified = frontmatter.verified;
+  if (typeof topVerified === "string") {
+    const match = /^(\d{4}-\d{2}-\d{2})\s+against\s+(.+)$/i.exec(topVerified.trim());
+    if (match) {
+      return checkStaleness(match[1]!, match[2]!.trim());
+    }
+  }
+
+  const meta = frontmatter.metadata as Record<string, unknown> | undefined;
+  const openrig = meta?.openrig as Record<string, unknown> | undefined;
+  const lastVerified = openrig?.last_verified;
+  if (!lastVerified) return { status: "missing_verified" };
+
+  const dateStr = String(lastVerified).trim();
+  const source = openrig?.source_evidence ?? openrig?.sourced_from;
+  if (!source || String(source).trim().length === 0) {
+    return { status: "bare_verified", date: dateStr };
+  }
+
+  return checkStaleness(dateStr, String(source).trim());
+}
+
+function checkStaleness(dateStr: string, source: string): VerifiedStatus {
+  const verifiedDate = new Date(dateStr);
+  const now = new Date();
+  const daysDiff = (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
+  if (daysDiff > FRESHNESS_WINDOW_DAYS) {
+    return { status: "stale_verified", date: dateStr, source };
+  }
+  return { status: "verified", date: dateStr, source };
+}
+
+function hashSkillFolder(skillPath: string): string {
+  const hash = createHash("sha256");
+  let entries: string[];
+  try { entries = readdirSync(skillPath).sort(); } catch { return ""; }
+  for (const entry of entries) {
+    const fullPath = join(skillPath, entry);
+    let stat;
+    try { stat = statSync(fullPath); } catch { continue; }
+    if (!stat.isFile()) continue;
+    try {
+      const content = readFileSync(fullPath);
+      hash.update(entry);
+      hash.update(content);
+    } catch { continue; }
+  }
+  return hash.digest("hex");
+}
+
+export function auditSkills(entries: SkillProvenanceEntry[]): SkillAuditEntry[] {
+  return entries.map((entry) => {
+    const fm = entry.frontmatter as Record<string, unknown>;
+    const meta = fm.metadata as Record<string, unknown> | undefined;
+    const openrig = meta?.openrig as Record<string, unknown> | undefined;
+
+    const stage = openrig?.stage ? String(openrig.stage) : null;
+    const owner = openrig?.owner ? String(openrig.owner) : null;
+    const sourceRef = openrig?.source_ref ?? openrig?.version ? String(openrig.source_ref ?? openrig?.version) : null;
+    const verified = extractVerified(fm);
+    const contentHash = hashSkillFolder(entry.path);
+    const exempt = isExempt(fm);
+
+    const findings: AuditFinding[] = [];
+
+    if (!exempt && !entry.shadowed) {
+      if (!sourceRef) {
+        findings.push({
+          class: "missing_provenance",
+          file: join(entry.path, "SKILL.md"),
+          reason: "No source_ref or version in frontmatter metadata",
+          remediation: "Add metadata.openrig.source_ref or metadata.openrig.version to SKILL.md frontmatter",
+        });
+      }
+      if (!owner) {
+        findings.push({
+          class: "missing_provenance",
+          file: join(entry.path, "SKILL.md"),
+          reason: "No owner in frontmatter metadata",
+          remediation: "Add metadata.openrig.owner to SKILL.md frontmatter",
+        });
+      }
+
+      if (verified.status === "missing_verified") {
+        findings.push({
+          class: "missing_verified",
+          file: join(entry.path, "SKILL.md"),
+          reason: "No verified date in frontmatter",
+          remediation: "Add metadata.openrig.last_verified with date and metadata.openrig.source_evidence with the verification source",
+        });
+      } else if (verified.status === "bare_verified") {
+        findings.push({
+          class: "bare_verified",
+          file: join(entry.path, "SKILL.md"),
+          reason: `Verified date ${verified.date} has no evidence source -- a bare date cannot prove freshness`,
+          remediation: "Add metadata.openrig.source_evidence naming the real verification source (not the SKILL.md filepath)",
+        });
+      } else if (verified.status === "stale_verified") {
+        findings.push({
+          class: "stale_verified",
+          file: join(entry.path, "SKILL.md"),
+          reason: `Verified date ${verified.date} is past the ${FRESHNESS_WINDOW_DAYS}-day freshness window`,
+          remediation: `Re-verify against ${verified.source} and update metadata.openrig.last_verified`,
+        });
+      }
+    }
+
+    const state: SkillAuditEntry["state"] = exempt
+      ? "exempt"
+      : fm.status === "legacy" || fm.status === "historical-reference"
+        ? "legacy"
+        : findings.some((f) => f.class === "stale_verified" || f.class === "bare_verified")
+          ? "stale"
+          : "active";
+
+    return {
+      id: entry.id,
+      path: entry.path,
+      sourceKind: entry.sourceKind,
+      sourceRoot: entry.sourceRoot,
+      shadowed: entry.shadowed,
+      stage,
+      verified,
+      contentHash,
+      state,
+      owner,
+      sourceRef,
+      findings,
+    };
+  });
+}

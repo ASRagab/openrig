@@ -148,5 +148,22 @@ export function skillsRoutes(): Hono {
     }
   });
 
+  router.get("/audit", async (c) => {
+    const service = getService(c);
+    if (!service) return c.json({ ok: false, error: "skill_library_unavailable" }, 503);
+
+    const { discoverSkillsWithProvenance } = await import("../domain/skill-discovery.js");
+    const { auditSkills } = await import("../domain/skill-audit.js");
+
+    const homedir = c.get("homedir" as never) as string | undefined ?? process.env.HOME ?? "/tmp";
+    const cwd = c.get("cwd" as never) as string | undefined ?? process.cwd();
+
+    const provenance = discoverSkillsWithProvenance({ runtime: "claude-code", homedir, cwd });
+    const entries = auditSkills(provenance.skills);
+    const totalFindings = entries.filter((e) => !e.shadowed).reduce((sum, e) => sum + e.findings.length, 0);
+
+    return c.json({ ok: true, entries, totalFindings, rejected: provenance.rejected });
+  });
+
   return router;
 }
