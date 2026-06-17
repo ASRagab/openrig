@@ -162,16 +162,28 @@ export function skillsRoutes(): Hono {
     const codexResult = discoverSkillsWithProvenance({ runtime: "codex", homedir, cwd });
 
     const seenPaths = new Set<string>();
-    const allSkills = [...claudeResult.skills];
+    const allSkills: typeof claudeResult.skills = [];
+    for (const s of claudeResult.skills) {
+      seenPaths.add(s.path);
+      allSkills.push(s);
+    }
     for (const s of codexResult.skills) {
       if (!seenPaths.has(s.path)) {
         seenPaths.add(s.path);
         allSkills.push(s);
       }
     }
-    for (const s of claudeResult.skills) seenPaths.add(s.path);
 
-    const auditResult = auditSkills(allSkills);
+    let mirrorDrift: { stale: boolean; changes: string[] } | undefined;
+    try {
+      const mirrorPath = new URL("../../../../scripts/mirror-skills.mjs", import.meta.url).pathname;
+      const mod = await import(/* @vite-ignore */ mirrorPath) as { checkMode: () => { stale: boolean; changes: string[] } };
+      mirrorDrift = mod.checkMode();
+    } catch {
+      // mirror-skills requires rsync; graceful no-op when unavailable
+    }
+
+    const auditResult = auditSkills(allSkills, { mirrorDrift });
     const totalFindings = auditResult.entries.filter((e) => !e.shadowed).reduce((sum, e) => sum + e.findings.length, 0)
       + auditResult.mirrorDriftFindings.length;
     const rejected = [...claudeResult.rejected, ...codexResult.rejected];
