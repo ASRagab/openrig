@@ -109,6 +109,7 @@ export interface ProgramDeps {
   specsDeps?: StatusDeps;
   contextPackDeps?: StatusDeps;
   pluginDeps?: StatusDeps;
+  skillDeps?: StatusDeps;
   agentImageDeps?: StatusDeps;
   workspaceDeps?: WorkspaceDeps;
   whoamiDeps?: StatusDeps;
@@ -179,7 +180,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(specsCommand(depsOverride?.specsDeps));
   program.addCommand(contextPackCommand(depsOverride?.contextPackDeps));
   program.addCommand(pluginCommand(depsOverride?.pluginDeps));
-  program.addCommand(skillCommand());
+  program.addCommand(skillCommand(depsOverride?.skillDeps));
   program.addCommand(agentImageCommand(depsOverride?.agentImageDeps));
   program.addCommand(workspaceCommand(depsOverride?.workspaceDeps));
   program.addCommand(rigPolicyCommand(depsOverride?.rigPolicyDeps));
