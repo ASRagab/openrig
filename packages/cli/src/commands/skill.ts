@@ -29,6 +29,7 @@ interface AuditResponse {
   ok: boolean;
   entries: AuditEntry[];
   totalFindings: number;
+  mirrorDriftError?: string;
   error?: string;
 }
 
@@ -57,11 +58,12 @@ export function skillCommand(depsOverride?: StatusDeps): Command {
         return;
       }
 
-      const { entries, totalFindings } = res.data;
+      const { entries, totalFindings, mirrorDriftError } = res.data;
+      const hasFail = totalFindings > 0 || !!mirrorDriftError;
 
       if (opts.json) {
         console.log(JSON.stringify(res.data, null, 2));
-        if (totalFindings > 0) process.exitCode = 1;
+        if (hasFail) process.exitCode = 1;
         return;
       }
 
@@ -84,6 +86,11 @@ export function skillCommand(depsOverride?: StatusDeps): Command {
         console.log("");
       }
 
+      if (mirrorDriftError) {
+        console.log(`MIRROR DRIFT CHECK UNAVAILABLE: ${mirrorDriftError}`);
+        console.log("");
+      }
+
       if (shadowed.length > 0) {
         console.log("SHADOWED:");
         for (const s of shadowed) {
@@ -92,8 +99,11 @@ export function skillCommand(depsOverride?: StatusDeps): Command {
         console.log("");
       }
 
-      if (totalFindings > 0) {
-        console.log(`FAIL: ${totalFindings} finding(s) on active skills`);
+      if (hasFail) {
+        const parts: string[] = [];
+        if (totalFindings > 0) parts.push(`${totalFindings} finding(s) on active skills`);
+        if (mirrorDriftError) parts.push("mirror drift check unavailable");
+        console.log(`FAIL: ${parts.join("; ")}`);
         process.exitCode = 1;
       } else {
         console.log("PASS: all active skills have provenance and verified freshness");
