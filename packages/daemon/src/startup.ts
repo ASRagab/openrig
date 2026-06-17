@@ -654,7 +654,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const agentActivityStore = new AgentActivityStore({ db, eventBus });
   const { SeatAttentionReconciler } = await import("./domain/seat-attention-reconciler.js");
   const seatAttentionReconciler = new SeatAttentionReconciler({
-    sessionRegistry, eventBus, agentActivityStore,
+    sessionRegistry, eventBus, agentActivityStore, db,
     sendVerify: async (session, text, opts) => {
       const transport = deps.sessionTransport;
       if (!transport) return { ok: false, outcome: "failed" };

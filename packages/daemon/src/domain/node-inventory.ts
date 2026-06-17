@@ -228,33 +228,45 @@ function deriveContinuityOutcome(
 }
 
 function deriveRestoreOutcome(db: Database.Database, rigId: string, nodeId: string): NodeRestoreOutcome {
-  // OPR.0.3.4.11: per-node-latest across restore.completed AND restore.subset_completed.
-  // Read the latest event of either type that CONTAINS this node.
+  // OPR.0.3.4.11 + 0.4.0.16: per-node-latest across restore.completed,
+  // restore.subset_completed, AND restore.outcome_reconciled.
+  // restore.outcome_reconciled has a different shape: top-level nodeId/to,
+  // not result.nodes[]. A newer reconcile overrides an older failure; an
+  // older reconcile must not override a newer failure.
   const rows = db.prepare(
-    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed') ORDER BY seq DESC"
-  ).all(rigId) as { payload: string }[];
+    "SELECT type, payload, seq FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed', 'restore.outcome_reconciled') ORDER BY seq DESC"
+  ).all(rigId) as { type: string; payload: string; seq: number }[];
 
   for (const row of rows) {
     try {
+      if (row.type === "restore.outcome_reconciled") {
+        const event = JSON.parse(row.payload) as { nodeId: string; to: string };
+        if (event.nodeId !== nodeId) continue;
+        return mapStatus(event.to);
+      }
+
       const event = JSON.parse(row.payload) as { result: RestoreResult };
       const nodeResult = event.result.nodes.find((n) => n.nodeId === nodeId);
       if (!nodeResult) continue;
-
-      if (nodeResult.status === "resumed") return "resumed";
-      if (nodeResult.status === "failed") return "failed";
-      if (nodeResult.status === "rebuilt") return "rebuilt";
-      if (nodeResult.status === "fresh") return "fresh";
-      if (nodeResult.status === "fresh-primed") return "fresh-primed";
-      if (nodeResult.status === "awaiting-decision") return "awaiting-decision";
-      if (nodeResult.status === "attention_required") return "attention_required";
-      if (nodeResult.status === "operator_recovered") return "operator_recovered";
-      if ((nodeResult.status as string) === "checkpoint_written") return "rebuilt";
-      if ((nodeResult.status as string) === "fresh_no_checkpoint") return "fresh";
-      return "n-a";
+      return mapStatus(nodeResult.status);
     } catch {
       continue;
     }
   }
+  return "n-a";
+}
+
+function mapStatus(status: string): NodeRestoreOutcome {
+  if (status === "resumed") return "resumed";
+  if (status === "failed") return "failed";
+  if (status === "rebuilt") return "rebuilt";
+  if (status === "fresh") return "fresh";
+  if (status === "fresh-primed") return "fresh-primed";
+  if (status === "awaiting-decision") return "awaiting-decision";
+  if (status === "attention_required") return "attention_required";
+  if (status === "operator_recovered") return "operator_recovered";
+  if (status === "checkpoint_written") return "rebuilt";
+  if (status === "fresh_no_checkpoint") return "fresh";
   return "n-a";
 }
 

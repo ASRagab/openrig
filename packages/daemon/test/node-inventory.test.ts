@@ -686,4 +686,73 @@ describe("Node Inventory Projection", () => {
       expect(entry?.heldReason).toBeNull();
     });
   });
+
+  describe("deriveRestoreOutcome folds restore.outcome_reconciled (OPR.0.4.0.16)", () => {
+    it("reconcile event overrides earlier failed restore outcome", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedEvent(db, "rig-1", "node-1", "restore.completed", {
+        rigId: "rig-1", snapshotId: "snap-1",
+        result: { snapshotId: "snap-1", nodes: [{ nodeId: "node-1", logicalId: "dev.impl", status: "failed" }], warnings: [] },
+      });
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(
+        "rig-1", "node-1", "restore.outcome_reconciled",
+        JSON.stringify({ type: "restore.outcome_reconciled", rigId: "rig-1", nodeId: "node-1", attemptId: 1, from: "failed", to: "operator_recovered", evidence: { source: "strict" } }),
+      );
+
+      const entries = getNodeInventory(db, "rig-1");
+      const entry = entries.find((e) => e.logicalId === "dev.impl");
+      expect(entry?.restoreOutcome).toBe("operator_recovered");
+    });
+
+    it("newer failed restore outcome is NOT overridden by older reconcile", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(
+        "rig-1", "node-1", "restore.outcome_reconciled",
+        JSON.stringify({ type: "restore.outcome_reconciled", rigId: "rig-1", nodeId: "node-1", attemptId: 1, from: "failed", to: "operator_recovered", evidence: { source: "strict" } }),
+      );
+      seedEvent(db, "rig-1", "node-1", "restore.completed", {
+        rigId: "rig-1", snapshotId: "snap-2",
+        result: { snapshotId: "snap-2", nodes: [{ nodeId: "node-1", logicalId: "dev.impl", status: "failed" }], warnings: [] },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      const entry = entries.find((e) => e.logicalId === "dev.impl");
+      expect(entry?.restoreOutcome).toBe("failed");
+    });
+
+    it("reconcile for one node does not affect another node", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedSession(db, "node-2", "infra-server@test-rig");
+      seedEvent(db, "rig-1", "node-1", "restore.completed", {
+        rigId: "rig-1", snapshotId: "snap-1",
+        result: { snapshotId: "snap-1", nodes: [
+          { nodeId: "node-1", logicalId: "dev.impl", status: "failed" },
+          { nodeId: "node-2", logicalId: "infra.server", status: "failed" },
+        ], warnings: [] },
+      });
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(
+        "rig-1", "node-1", "restore.outcome_reconciled",
+        JSON.stringify({ type: "restore.outcome_reconciled", rigId: "rig-1", nodeId: "node-1", attemptId: 1, from: "failed", to: "operator_recovered", evidence: { source: "strict" } }),
+      );
+
+      const entries = getNodeInventory(db, "rig-1");
+      expect(entries.find((e) => e.logicalId === "dev.impl")?.restoreOutcome).toBe("operator_recovered");
+      expect(entries.find((e) => e.logicalId === "infra.server")?.restoreOutcome).toBe("failed");
+    });
+
+    it("no reconcile event leaves failed restore outcome unchanged", () => {
+      seedPodAwareRig(db);
+      seedSession(db, "node-1", "dev-impl@test-rig");
+      seedEvent(db, "rig-1", "node-1", "restore.completed", {
+        rigId: "rig-1", snapshotId: "snap-1",
+        result: { snapshotId: "snap-1", nodes: [{ nodeId: "node-1", logicalId: "dev.impl", status: "failed" }], warnings: [] },
+      });
+
+      const entries = getNodeInventory(db, "rig-1");
+      expect(entries.find((e) => e.logicalId === "dev.impl")?.restoreOutcome).toBe("failed");
+    });
+  });
 });
