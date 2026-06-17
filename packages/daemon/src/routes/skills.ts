@@ -175,12 +175,17 @@ export function skillsRoutes(): Hono {
     }
 
     let mirrorDrift: { stale: boolean; changes: string[] } | undefined;
+    let mirrorDriftError: string | undefined;
     try {
-      const mirrorPath = new URL("../../../../scripts/mirror-skills.mjs", import.meta.url).pathname;
-      const mod = await import(/* @vite-ignore */ mirrorPath) as { checkMode: () => { stale: boolean; changes: string[] } };
-      mirrorDrift = mod.checkMode();
-    } catch {
-      // mirror-skills requires rsync; graceful no-op when unavailable
+      const { checkMirrorDriftSafe } = await import("../domain/skill-mirror-drift.js");
+      const driftResult = checkMirrorDriftSafe();
+      if (driftResult.ok) {
+        mirrorDrift = { stale: driftResult.stale, changes: driftResult.changes };
+      } else {
+        mirrorDriftError = driftResult.reason;
+      }
+    } catch (err) {
+      mirrorDriftError = `Mirror drift check unavailable: ${err instanceof Error ? err.message : String(err)}`;
     }
 
     const auditResult = auditSkills(allSkills, { mirrorDrift });
@@ -188,7 +193,7 @@ export function skillsRoutes(): Hono {
       + auditResult.mirrorDriftFindings.length;
     const rejected = [...claudeResult.rejected, ...codexResult.rejected];
 
-    return c.json({ ok: true, entries: auditResult.entries, mirrorDriftFindings: auditResult.mirrorDriftFindings, totalFindings, rejected });
+    return c.json({ ok: true, entries: auditResult.entries, mirrorDriftFindings: auditResult.mirrorDriftFindings, mirrorDriftError, totalFindings, rejected });
   });
 
   return router;
