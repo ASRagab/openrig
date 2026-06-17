@@ -59,9 +59,9 @@ export class SeatAttentionReconciler {
     }
 
     const startupClassActive = session.startupStatus === "attention_required" || session.startupStatus === "failed";
-    const derivedClassActive = this.isDerivedAttentionClass(session);
+    const derivedOutcome = this.getDerivedAttentionOutcome(session);
 
-    if (!startupClassActive && !derivedClassActive) {
+    if (!startupClassActive && !!!derivedOutcome) {
       return { ok: false, code: "not_in_attention", detail: `Session startup_status is '${session.startupStatus}' and restoreOutcome is not attention/failed — not in attention` };
     }
 
@@ -85,13 +85,13 @@ export class SeatAttentionReconciler {
         });
         clearedClasses.push("startup_status");
       }
-      if (derivedClassActive) {
+      if (derivedOutcome) {
         eventBus.emit({
           type: "restore.outcome_reconciled",
           rigId: session.rigId,
           nodeId: session.nodeId,
           attemptId: 0,
-          from: "attention_required" as const,
+          from: derivedOutcome!,
           to: "operator_recovered",
           evidence: { source: "operator_attestation", reason: opts.reason, runtimeCwdVerified: false },
         });
@@ -117,7 +117,7 @@ export class SeatAttentionReconciler {
 
     if (activity && activity.stale !== true && POSITIVE_STATES.has(activity.state)) {
       const evidence = { kind: "fresh_activity", state: activity.state, reason: activity.reason };
-      return this.performEvidenceClear(session, sessionName, startupClassActive, derivedClassActive, evidence, previousError);
+      return this.performEvidenceClear(session, sessionName, startupClassActive, derivedOutcome, evidence, previousError);
     }
 
     // Second evidence path: active send-verify round-trip.
@@ -127,7 +127,7 @@ export class SeatAttentionReconciler {
         const sendResult = await this.deps.sendVerify(sessionName, probeText, { verify: true });
         if (sendResult.ok && (sendResult.outcome === "delivered" || sendResult.verified === true)) {
           const evidence = { kind: "send_verify_roundtrip", state: sendResult.outcome ?? "delivered" };
-          return this.performEvidenceClear(session, sessionName, startupClassActive, derivedClassActive, evidence, previousError);
+          return this.performEvidenceClear(session, sessionName, startupClassActive, derivedOutcome, evidence, previousError);
         }
 
         if (sendResult.ok && sendResult.outcome === "rendered-unconfirmed" && this.deps.capture) {
@@ -135,7 +135,7 @@ export class SeatAttentionReconciler {
             const captureResult = await this.deps.capture(sessionName, { lines: 50 });
             if (captureResult.ok && captureResult.content && captureResult.content.includes(probeText)) {
               const evidence = { kind: "send_verify_capture_confirmed", state: "rendered-unconfirmed" };
-              return this.performEvidenceClear(session, sessionName, startupClassActive, derivedClassActive, evidence, previousError);
+              return this.performEvidenceClear(session, sessionName, startupClassActive, derivedOutcome, evidence, previousError);
             }
           } catch { /* Capture failed */ }
         }
@@ -155,7 +155,7 @@ export class SeatAttentionReconciler {
     session: { id: string; nodeId: string; rigId: string; startupStatus: string },
     sessionName: string,
     startupClassActive: boolean,
-    derivedClassActive: boolean,
+    derivedOutcome: "failed" | "attention_required" | null,
     evidence: { kind: string; state?: string; reason?: string },
     previousError: string | null,
   ): ClearAttentionResult {
@@ -178,13 +178,13 @@ export class SeatAttentionReconciler {
       clearedClasses.push("startup_status");
     }
 
-    if (derivedClassActive) {
+    if (derivedOutcome) {
       eventBus.emit({
         type: "restore.outcome_reconciled",
         rigId: session.rigId,
         nodeId: session.nodeId,
         attemptId: 0,
-        from: "attention_required" as const,
+        from: derivedOutcome!,
         to: "operator_recovered",
         evidence: { source: "clear_attention_evidence", kind: evidence.kind, state: evidence.state, runtimeCwdVerified: false },
       });
@@ -249,9 +249,9 @@ export class SeatAttentionReconciler {
     };
   }
 
-  private isDerivedAttentionClass(session: { nodeId: string; rigId: string; sessionStatus: string }): boolean {
-    if (!this.deps.db) return false;
-    if (session.sessionStatus !== "running") return false;
+  private getDerivedAttentionOutcome(session: { nodeId: string; rigId: string; sessionStatus: string }): "failed" | "attention_required" | null {
+    if (!this.deps.db) return null;
+    if (session.sessionStatus !== "running") return null;
 
     const rows = this.deps.db.prepare(
       "SELECT type, payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed', 'restore.outcome_reconciled') ORDER BY seq DESC"
@@ -262,14 +262,16 @@ export class SeatAttentionReconciler {
         if (row.type === "restore.outcome_reconciled") {
           const ev = JSON.parse(row.payload) as { nodeId: string; to: string };
           if (ev.nodeId !== session.nodeId) continue;
-          return ev.to !== "operator_recovered";
+          return ev.to === "operator_recovered" ? null : "attention_required";
         }
         const ev = JSON.parse(row.payload) as { result: { nodes: Array<{ nodeId: string; status: string }> } };
         const n = ev.result.nodes.find((nd) => nd.nodeId === session.nodeId);
         if (!n) continue;
-        return n.status === "failed" || n.status === "attention_required";
+        if (n.status === "failed") return "failed";
+        if (n.status === "attention_required") return "attention_required";
+        return null;
       } catch { continue; }
     }
-    return false;
+    return null;
   }
 }

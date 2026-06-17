@@ -379,6 +379,7 @@ describe("SeatAttentionReconciler", () => {
     expect(reconcileEvents).toHaveLength(1);
     const payload = JSON.parse(reconcileEvents[0]!.payload);
     expect(payload.to).toBe("operator_recovered");
+    expect(payload.from).toBe("failed");
     expect(payload.nodeId).toBe(nodeId);
   });
 
@@ -432,6 +433,7 @@ describe("SeatAttentionReconciler", () => {
     const events = db.prepare("SELECT payload FROM events WHERE type = 'restore.outcome_reconciled'").all() as { payload: string }[];
     expect(events).toHaveLength(1);
     const payload = JSON.parse(events[0]!.payload);
+    expect(payload.from).toBe("failed");
     expect(payload.evidence.runtimeCwdVerified).toBe(false);
     expect(payload.evidence.source).toBe("operator_attestation");
   });
