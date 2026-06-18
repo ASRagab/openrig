@@ -1,6 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
 
 interface FocusedTerminalProps {
@@ -8,27 +6,12 @@ interface FocusedTerminalProps {
   daemonBaseUrl?: string;
 }
 
-const XTERM_KEY_MAP: Record<string, string> = {
-  Enter: "C-m",
-  Backspace: "BSpace",
-  Tab: "Tab",
-  Escape: "Escape",
-  ArrowUp: "Up",
-  ArrowDown: "Down",
-  ArrowLeft: "Left",
-  ArrowRight: "Right",
-  Home: "Home",
-  End: "End",
-  PageUp: "PgUp",
-  PageDown: "PgDn",
-  Delete: "DC",
-};
-
 export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
+  const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+  const fitAddonRef = useRef<unknown>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const connect = useCallback(() => {
     const base = daemonBaseUrl ?? window.location.origin;
@@ -38,22 +21,25 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     const ws = new WebSocket(`${wsUrl}/api/terminal/${encodeURIComponent(sessionName)}${tokenParam}`);
 
     ws.onopen = () => {
-      if (fitAddonRef.current && termRef.current) {
-        fitAddonRef.current.fit();
-        const { cols, rows } = termRef.current;
-        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      const fitAddon = fitAddonRef.current as { fit(): void } | null;
+      const term = termRef.current as { cols: number; rows: number } | null;
+      if (fitAddon && term) {
+        fitAddon.fit();
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       }
     };
 
     ws.onmessage = (evt) => {
-      if (typeof evt.data === "string" && termRef.current) {
-        termRef.current.write(evt.data);
+      const term = termRef.current as { write(data: string): void } | null;
+      if (typeof evt.data === "string" && term) {
+        term.write(evt.data);
       }
     };
 
     ws.onclose = () => {
-      if (termRef.current) {
-        termRef.current.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n");
+      const term = termRef.current as { write(data: string): void } | null;
+      if (term) {
+        term.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n");
       }
     };
 
@@ -63,54 +49,75 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
   useEffect(() => {
     if (!containerRef.current) return;
+    let cleanedUp = false;
+    let ws: WebSocket | undefined;
+    let resizeObs: ResizeObserver | undefined;
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 12,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      theme: {
-        background: "#1a1a1a",
-        foreground: "#e0e0e0",
-        cursor: "#e0e0e0",
-      },
-      allowProposedApi: true,
-    });
+    (async () => {
+      try {
+        const { Terminal } = await import("@xterm/xterm");
+        const { FitAddon } = await import("@xterm/addon-fit");
 
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(containerRef.current);
-    fitAddon.fit();
-    termRef.current = term;
-    fitAddonRef.current = fitAddon;
+        if (cleanedUp) return;
 
-    term.onData((data) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "text", text: data }));
-    });
+        const term = new Terminal({
+          cursorBlink: true,
+          fontSize: 12,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          theme: { background: "#1a1a1a", foreground: "#e0e0e0", cursor: "#e0e0e0" },
+          allowProposedApi: true,
+        });
 
-    term.onResize(({ cols, rows }) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    });
+        const fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(containerRef.current!);
+        fitAddon.fit();
+        termRef.current = term;
+        fitAddonRef.current = fitAddon;
 
-    const ws = connect();
+        term.onData((data: string) => {
+          const wsc = wsRef.current;
+          if (!wsc || wsc.readyState !== WebSocket.OPEN) return;
+          wsc.send(JSON.stringify({ type: "text", text: data }));
+        });
 
-    const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
-    });
-    resizeObserver.observe(containerRef.current);
+        term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+          const wsc = wsRef.current;
+          if (!wsc || wsc.readyState !== WebSocket.OPEN) return;
+          wsc.send(JSON.stringify({ type: "resize", cols, rows }));
+        });
+
+        ws = connect();
+
+        resizeObs = new ResizeObserver(() => { fitAddon.fit(); });
+        resizeObs.observe(containerRef.current!);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Terminal initialization failed");
+      }
+    })();
 
     return () => {
-      resizeObserver.disconnect();
-      ws.close();
-      term.dispose();
+      cleanedUp = true;
+      resizeObs?.disconnect();
+      ws?.close();
+      const term = termRef.current as { dispose(): void } | null;
+      term?.dispose();
       termRef.current = null;
       wsRef.current = null;
       fitAddonRef.current = null;
     };
   }, [connect]);
+
+  if (error) {
+    return (
+      <div
+        data-testid={`focused-terminal-${sessionName}`}
+        className="h-full w-full min-h-[200px] bg-[#1a1a1a] flex items-center justify-center text-stone-400 font-mono text-xs"
+      >
+        Terminal unavailable: {error}
+      </div>
+    );
+  }
 
   return (
     <div
