@@ -105,8 +105,18 @@ export function downCommand(depsOverride?: StatusDeps): Command {
     .option("--force", "Kill sessions immediately")
     .option("--snapshot", "Take snapshot before teardown")
     .option("--json", "JSON output for agents")
-    .action(async (rigHandle: string, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean }) => {
+    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
+    .action(async (rigHandle: string, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean; host?: string }) => {
       const deps = getDepsF();
+
+      if (opts.host) {
+        const { runRemoteHttpOp } = await import("../remote-host-ops.js");
+        const result = await runRemoteHttpOp(opts.host, "POST", `/api/down`, { rigId: rigHandle, delete: opts.delete, force: opts.force, snapshot: opts.snapshot }, deps, opts);
+        if (opts.json) console.log(JSON.stringify(result));
+        else if (result.ok) console.log(JSON.stringify(result.data, null, 2));
+        else { console.error(`Error on host ${opts.host}: ${result.error}`); process.exitCode = 1; }
+        return;
+      }
 
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (status.state !== "running" || status.healthy === false) {

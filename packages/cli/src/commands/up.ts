@@ -56,8 +56,18 @@ Examples:
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
     .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
     .option("--json", "JSON output for agents")
-    .action(async (source: string, opts: { plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean }) => {
+    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
+    .action(async (source: string, opts: { plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string }) => {
       const deps = getDepsF();
+
+      if (opts.host) {
+        const { runRemoteHttpOp } = await import("../remote-host-ops.js");
+        const result = await runRemoteHttpOp(opts.host, "POST", "/api/up", { source, plan: opts.plan, cwd: opts.cwd, target: opts.target, existing: opts.existing, fresh: opts.fresh }, deps, opts);
+        if (opts.json) console.log(JSON.stringify(result));
+        else if (result.ok) console.log(JSON.stringify(result.data, null, 2));
+        else { console.error(`Error on host ${opts.host}: ${result.error}`); process.exitCode = 1; }
+        return;
+      }
 
       // Run preflight before auto-start
       let status = await getDaemonStatus(deps.lifecycleDeps);

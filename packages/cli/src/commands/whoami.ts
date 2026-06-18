@@ -5,7 +5,7 @@ import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost, hostDisplayTarget } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -304,9 +304,12 @@ async function runCrossHostWhoami(
   }
   const host = resolved.host;
 
-  // Reconstruct argv. `rig whoami` has no positional args; just the resolution
-  // flags. Identity resolution happens on the REMOTE rig (each host has its
-  // own daemon + tmux + identity context); we don't pre-resolve locally.
+  if (host.transport === "http") {
+    await runHttpWhoami(host as import("../host-registry.js").HttpHostEntry, opts, deps);
+    return;
+  }
+
+  // SSH path: reconstruct argv.
   const argv: string[] = ["rig", "whoami"];
   if (opts.nodeId !== undefined) argv.push("--node-id", opts.nodeId);
   if (opts.session !== undefined) argv.push("--session", opts.session);
@@ -333,4 +336,46 @@ async function runCrossHostWhoami(
     return;
   }
   emitCrossHostFailure(host.id, hostDisplayTarget(host), result, false);
+}
+
+async function runHttpWhoami(
+  host: HttpHostEntry,
+  opts: WhoamiCliOptions,
+  deps: WhoamiDeps,
+): Promise<void> {
+  const bearerResult = resolveRemoteBearer(host);
+  if (!bearerResult.ok) {
+    emitCrossHostError(host.id, bearerResult.failedStep, bearerResult.error, opts.json);
+    process.exitCode = 1;
+    return;
+  }
+
+  const client = new (await import("../client.js")).DaemonClient(host.url);
+  const headers = { Authorization: `Bearer ${bearerResult.token}` };
+
+  try {
+    const infoRes = await client.get<{ version?: string; hostname?: string }>("/api/info", { headers });
+    const psRes = await client.get<Array<{ rigId: string; name: string }>>("/api/ps", { headers });
+
+    const identity = {
+      host: host.id,
+      url: host.url,
+      daemonVersion: infoRes.data?.version ?? "unknown",
+      hostname: infoRes.data?.hostname ?? "unknown",
+      rigs: Array.isArray(psRes.data) ? psRes.data.map((r) => ({ id: r.rigId, name: r.name })) : [],
+    };
+
+    if (opts.json) {
+      console.log(JSON.stringify(identity));
+    } else {
+      console.log(`Host:     ${identity.host} (${identity.url})`);
+      console.log(`Daemon:   ${identity.daemonVersion}`);
+      console.log(`Hostname: ${identity.hostname}`);
+      console.log(`Rigs:     ${identity.rigs.length > 0 ? identity.rigs.map((r) => r.name).join(", ") : "(none)"}`);
+    }
+  } catch (err) {
+    const failedStep = classifyHttpError(err);
+    emitCrossHostError(host.id, failedStep, (err as Error).message, opts.json);
+    process.exitCode = 1;
+  }
 }
