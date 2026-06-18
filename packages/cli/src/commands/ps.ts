@@ -974,21 +974,52 @@ async function runHttpPs(
       return;
     }
 
-    let data: unknown = res.data;
+    let entries = (Array.isArray(res.data) ? res.data : []) as PsEntry[];
 
-    if (opts.nodes && Array.isArray(res.data)) {
-      const rigsWithNodes = await Promise.all(
-        (res.data as Array<{ id?: string }>).map(async (rig) => {
-          if (!rig.id) return rig;
-          try {
-            const nodesRes = await client.get<unknown[]>(`/api/rigs/${encodeURIComponent(rig.id)}/nodes`, { headers });
-            return { ...rig, nodes: nodesRes.data };
-          } catch {
-            return { ...rig, nodes: [] };
+    if (opts.filter) {
+      const parsed = parseFilter(opts.filter);
+      if ("error" in parsed) {
+        console.error(`Error: ${parsed.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      entries = applyRigFilter(entries, parsed);
+    }
+
+    if (opts.nodes) {
+      for (const rig of entries) {
+        if (!rig.rigId) continue;
+        try {
+          const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, { headers });
+          if (nodesRes.status < 400) {
+            (rig as PsEntry & { nodes?: NodeEntry[] }).nodes = nodesRes.data;
           }
-        }),
-      );
-      data = rigsWithNodes;
+        } catch { /* best effort */ }
+      }
+      if (opts.filter) {
+        const parsed = parseFilter(opts.filter);
+        if (!("error" in parsed)) {
+          for (const rig of entries) {
+            const nodes = (rig as PsEntry & { nodes?: NodeEntry[] }).nodes;
+            if (nodes) {
+              (rig as PsEntry & { nodes?: NodeEntry[] }).nodes = applyNodeFilter(nodes, parsed);
+            }
+          }
+        }
+      }
+    }
+
+    const limit = opts.limit ? parseInt(opts.limit, 10) : undefined;
+    if (limit && limit > 0) entries = entries.slice(0, limit);
+
+    let data: unknown = entries;
+    if (opts.fields) {
+      const fields = opts.fields.split(",").map((f) => f.trim());
+      data = entries.map((e) => {
+        const obj: Record<string, unknown> = {};
+        for (const f of fields) if (f in e) obj[f] = (e as unknown as Record<string, unknown>)[f];
+        return obj;
+      });
     }
 
     if (opts.json) {
