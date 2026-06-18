@@ -5,7 +5,7 @@ import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -13,6 +13,8 @@ interface WhoamiCliOptions {
   nodeId?: string;
   session?: string;
   host?: string;
+  allHosts?: boolean;
+  hosts?: string;
   json?: boolean;
 }
 
@@ -163,14 +165,18 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
   cmd
     .option("--node-id <id>", "Resolve by node ID")
     .option("--session <name>", "Resolve by session name")
-    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml (CLI-side ssh shell-out)")
+    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
+    .option("--all-hosts", "Fan out to all registered HTTP hosts")
+    .option("--hosts <ids>", "Fan out to specific hosts (comma-separated)")
     .option("--json", "JSON output for agents")
     .action(async (opts: WhoamiCliOptions) => {
       const deps = getDeps();
 
-      // --- Cross-host short-circuit (CLI-side ssh shell-out; daemon untouched) ---
-      // Runs BEFORE local identity-source resolution: the remote rig has its
-      // own daemon and identity context; we just forward the raw flags.
+      if (opts.allHosts || opts.hosts) {
+        await runFanOutWhoami(opts, deps);
+        return;
+      }
+
       if (opts.host) {
         await runCrossHostWhoami(opts.host, opts, deps);
         return;
@@ -304,9 +310,12 @@ async function runCrossHostWhoami(
   }
   const host = resolved.host;
 
-  // Reconstruct argv. `rig whoami` has no positional args; just the resolution
-  // flags. Identity resolution happens on the REMOTE rig (each host has its
-  // own daemon + tmux + identity context); we don't pre-resolve locally.
+  if (host.transport === "http") {
+    await runHttpWhoami(host as import("../host-registry.js").HttpHostEntry, opts, deps);
+    return;
+  }
+
+  // SSH path: reconstruct argv.
   const argv: string[] = ["rig", "whoami"];
   if (opts.nodeId !== undefined) argv.push("--node-id", opts.nodeId);
   if (opts.session !== undefined) argv.push("--session", opts.session);
@@ -322,15 +331,159 @@ async function runCrossHostWhoami(
       if (result.stderr) process.stderr.write(result.stderr);
       return;
     }
-    emitCrossHostFailure(host.id, host.target, result, true);
+    emitCrossHostFailure(host.id, hostDisplayTarget(host), result, true);
     return;
   }
 
-  console.log(`[via host=${host.id} (${host.target})]`);
+  console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   if (result.ok) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     return;
   }
-  emitCrossHostFailure(host.id, host.target, result, false);
+  emitCrossHostFailure(host.id, hostDisplayTarget(host), result, false);
+}
+
+async function runHttpWhoami(
+  host: HttpHostEntry,
+  opts: WhoamiCliOptions,
+  deps: WhoamiDeps,
+): Promise<void> {
+  const bearerResult = resolveRemoteBearer(host);
+  if (!bearerResult.ok) {
+    emitCrossHostError(host.id, bearerResult.failedStep, bearerResult.error, opts.json);
+    process.exitCode = 1;
+    return;
+  }
+
+  const { classifyHttpFailedStep: classifyStatus } = await import("../host-registry.js");
+  const client = deps.clientFactory(host.url);
+  const headers = { Authorization: `Bearer ${bearerResult.token}` };
+
+  try {
+    const infoRes = await client.get<{ installRoot?: string }>("/api/info", { headers });
+    const infoStep = classifyStatus(infoRes.status);
+    if (infoStep !== "none") {
+      emitCrossHostError(host.id, infoStep, `Remote /api/info returned HTTP ${infoRes.status}`, opts.json);
+      process.exitCode = 1;
+      return;
+    }
+
+    const psRes = await client.get<Array<{ rigId: string; name: string }>>("/api/ps", { headers });
+    const psStep = classifyStatus(psRes.status);
+    if (psStep !== "none") {
+      emitCrossHostError(host.id, psStep, `Remote /api/ps returned HTTP ${psRes.status}`, opts.json);
+      process.exitCode = 1;
+      return;
+    }
+
+    const identity = {
+      host: host.id,
+      url: host.url,
+      installRoot: infoRes.data?.installRoot ?? "unknown",
+      rigs: Array.isArray(psRes.data) ? psRes.data.map((r) => ({ id: r.rigId, name: r.name })) : [],
+    };
+
+    if (opts.json) {
+      console.log(JSON.stringify(identity));
+    } else {
+      console.log(`Host:     ${identity.host} (${identity.url})`);
+      console.log(`Install:  ${identity.installRoot}`);
+      console.log(`Rigs:     ${identity.rigs.length > 0 ? identity.rigs.map((r) => r.name).join(", ") : "(none)"}`);
+    }
+  } catch (err) {
+    const failedStep = classifyHttpError(err);
+    emitCrossHostError(host.id, failedStep, (err as Error).message, opts.json);
+    process.exitCode = 1;
+  }
+}
+
+async function runFanOutWhoami(opts: WhoamiCliOptions, deps: WhoamiDeps): Promise<void> {
+  const loader = deps.hostRegistryLoader ?? loadHostRegistry;
+  const registry = loader();
+  if (!registry.ok) {
+    console.error(`Error: ${registry.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const allHosts = registry.registry.hosts;
+  let targetIds: string[];
+  if (opts.hosts) {
+    targetIds = opts.hosts.split(",").map((s) => s.trim()).filter(Boolean);
+    const unknown = targetIds.filter((id) => !allHosts.some((h) => h.id === id));
+    if (unknown.length > 0) {
+      console.error(`Error: unknown host ids: ${unknown.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    targetIds = allHosts.filter((h) => h.transport === "http").map((h) => h.id);
+  }
+
+  interface HostIdentityResult {
+    host: string;
+    ok: boolean;
+    failedStep: string;
+    identity?: { url: string; installRoot: string; rigs: Array<{ id: string; name: string }> };
+    error?: string;
+  }
+
+  const results: HostIdentityResult[] = await Promise.all(
+    targetIds.map(async (id): Promise<HostIdentityResult> => {
+      const host = allHosts.find((h) => h.id === id);
+      if (!host) return { host: id, ok: false, failedStep: "remote-daemon-unreachable", error: `unknown host ${id}` };
+      if (host.transport !== "http") {
+        return { host: id, ok: false, failedStep: "remote-command-failed", error: `host ${id} uses transport ${host.transport}; whoami fan-out requires http` };
+      }
+      const httpHost = host as HttpHostEntry;
+      const bearerResult = resolveRemoteBearer(httpHost);
+      if (!bearerResult.ok) {
+        return { host: id, ok: false, failedStep: bearerResult.failedStep, error: bearerResult.error };
+      }
+      const client = deps.clientFactory(httpHost.url);
+      const headers = { Authorization: `Bearer ${bearerResult.token}` };
+      try {
+        const { classifyHttpFailedStep: classifyStatus } = await import("../host-registry.js");
+        const infoRes = await client.get<{ installRoot?: string }>("/api/info", { headers });
+        if (classifyStatus(infoRes.status) !== "none") {
+          return { host: id, ok: false, failedStep: classifyStatus(infoRes.status), error: `HTTP ${infoRes.status}` };
+        }
+        const psRes = await client.get<Array<{ rigId: string; name: string }>>("/api/ps", { headers });
+        if (classifyStatus(psRes.status) !== "none") {
+          return { host: id, ok: false, failedStep: classifyStatus(psRes.status), error: `HTTP ${psRes.status}` };
+        }
+        return {
+          host: id,
+          ok: true,
+          failedStep: "none",
+          identity: {
+            url: httpHost.url,
+            installRoot: infoRes.data?.installRoot ?? "unknown",
+            rigs: Array.isArray(psRes.data) ? psRes.data.map((r) => ({ id: r.rigId, name: r.name })) : [],
+          },
+        };
+      } catch (err) {
+        return { host: id, ok: false, failedStep: classifyHttpError(err), error: (err as Error).message };
+      }
+    }),
+  );
+
+  const hasFailure = results.some((r) => !r.ok);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ hosts: results }));
+  } else {
+    for (const r of results) {
+      if (r.ok && r.identity) {
+        console.log(`\n[host=${r.host}] ${r.identity.url}`);
+        console.log(`  Install: ${r.identity.installRoot}`);
+        console.log(`  Rigs:    ${r.identity.rigs.length > 0 ? r.identity.rigs.map((g) => g.name).join(", ") : "(none)"}`);
+      } else {
+        console.log(`\n[host=${r.host}] FAILED (${r.failedStep}): ${r.error}`);
+      }
+    }
+  }
+
+  if (hasFailure) process.exitCode = 3;
 }

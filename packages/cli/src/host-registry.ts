@@ -1,18 +1,68 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { getDefaultOpenRigPath } from "./openrig-compat.js";
+import type { FailedStep } from "./cross-host-types.js";
 
-/**
- * A single declared host in `~/.openrig/hosts.yaml`. v0 supports `transport: ssh`
- * only. `target` is whatever ssh resolves (DNS, SSH config alias, IP, etc.).
- */
-export interface HostEntry {
+export type { FailedStep };
+
+export interface RemoteBearerResolution {
+  ok: true;
+  token: string;
+}
+
+export interface RemoteBearerFailure {
+  ok: false;
+  failedStep: FailedStep;
+  error: string;
+}
+
+export function resolveRemoteBearer(host: HttpHostEntry): RemoteBearerResolution | RemoteBearerFailure {
+  if (host.bearer_env) {
+    const token = process.env[host.bearer_env]?.trim();
+    if (token) return { ok: true, token };
+    return { ok: false, failedStep: "permission-gate", error: `bearer env var ${host.bearer_env} is not set or empty for host ${host.id}` };
+  }
+  if (host.bearer_file) {
+    try {
+      const token = readFileSync(host.bearer_file, "utf-8").trim();
+      if (token) return { ok: true, token };
+      return { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
+    } catch {
+      return { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} not readable for host ${host.id}` };
+    }
+  }
+  return { ok: false, failedStep: "permission-gate", error: `host ${host.id} has no bearer_env or bearer_file configured` };
+}
+
+export function classifyHttpFailedStep(status: number, body?: { error?: string }): FailedStep {
+  if (status >= 200 && status < 300) return "none";
+  if (status === 401 || status === 403) return "permission-gate";
+  if (status >= 400 && status < 600) return "remote-command-failed";
+  return "remote-daemon-unreachable";
+}
+
+export function classifyHttpError(_err: unknown): FailedStep {
+  return "remote-daemon-unreachable";
+}
+
+export interface SshHostEntry {
   id: string;
   transport: "ssh";
   target: string;
   user?: string;
   notes?: string;
 }
+
+export interface HttpHostEntry {
+  id: string;
+  transport: "http";
+  url: string;
+  bearer_env?: string;
+  bearer_file?: string;
+  notes?: string;
+}
+
+export type HostEntry = SshHostEntry | HttpHostEntry;
 
 export interface HostRegistry {
   hosts: HostEntry[];
@@ -26,7 +76,7 @@ export type HostResolution =
   | { ok: true; host: HostEntry }
   | { ok: false; error: string };
 
-const KNOWN_TRANSPORTS = new Set(["ssh"]);
+const KNOWN_TRANSPORTS = new Set(["ssh", "http"]);
 
 export function defaultHostRegistryPath(): string {
   return getDefaultOpenRigPath("hosts.yaml");
@@ -49,7 +99,7 @@ export function loadHostRegistry(path: string = defaultHostRegistryPath()): Host
   if (!existsSync(path)) {
     return {
       ok: false,
-      error: `host registry not found at ${path}. Create it with a 'hosts:' array of { id, transport, target, [user] } entries; v0 supports transport: ssh only.`,
+      error: `host registry not found at ${path}. Create it with a 'hosts:' array; transport: ssh (target + user) or http (url + bearer_env/bearer_file).`,
     };
   }
   let raw: string;
@@ -95,31 +145,63 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
     }
     seenIds.add(id);
     const transport = entry["transport"];
-    if (transport !== "ssh") {
+    if (typeof transport !== "string" || !KNOWN_TRANSPORTS.has(transport)) {
       return {
         ok: false,
-        error: `${prefix}.transport: v0 supports 'ssh' only (got ${JSON.stringify(transport)}); declared known transports: ${[...KNOWN_TRANSPORTS].sort().join(", ")}`,
+        error: `${prefix}.transport: must be one of ${[...KNOWN_TRANSPORTS].sort().join(", ")} (got ${JSON.stringify(transport)})`,
       };
-    }
-    const target = entry["target"];
-    if (typeof target !== "string" || target.trim() === "") {
-      return { ok: false, error: `${prefix}.target: required non-empty string (an ssh target — DNS name, SSH config alias, or IP)` };
-    }
-    const user = entry["user"];
-    if (user !== undefined && (typeof user !== "string" || user.trim() === "")) {
-      return { ok: false, error: `${prefix}.user: optional, but if present must be a non-empty string` };
     }
     const notes = entry["notes"];
     if (notes !== undefined && typeof notes !== "string") {
       return { ok: false, error: `${prefix}.notes: optional, but if present must be a string` };
     }
-    validated.push({
-      id,
-      transport: "ssh",
-      target,
-      ...(user !== undefined ? { user: user as string } : {}),
-      ...(notes !== undefined ? { notes: notes as string } : {}),
-    });
+
+    if (transport === "ssh") {
+      const target = entry["target"];
+      if (typeof target !== "string" || target.trim() === "") {
+        return { ok: false, error: `${prefix}.target: required non-empty string (an ssh target)` };
+      }
+      const user = entry["user"];
+      if (user !== undefined && (typeof user !== "string" || user.trim() === "")) {
+        return { ok: false, error: `${prefix}.user: optional, but if present must be a non-empty string` };
+      }
+      validated.push({
+        id,
+        transport: "ssh",
+        target,
+        ...(user !== undefined ? { user: user as string } : {}),
+        ...(notes !== undefined ? { notes: notes as string } : {}),
+      });
+    } else if (transport === "http") {
+      const url = entry["url"];
+      if (typeof url !== "string" || url.trim() === "") {
+        return { ok: false, error: `${prefix}.url: required non-empty string (the remote daemon's base URL)` };
+      }
+      const bearerEnv = entry["bearer_env"];
+      const bearerFile = entry["bearer_file"];
+      const hasEnv = bearerEnv !== undefined;
+      const hasFile = bearerFile !== undefined;
+      if (!hasEnv && !hasFile) {
+        return { ok: false, error: `${prefix}: http transport requires exactly one of bearer_env or bearer_file` };
+      }
+      if (hasEnv && hasFile) {
+        return { ok: false, error: `${prefix}: specify exactly one of bearer_env or bearer_file, not both` };
+      }
+      if (hasEnv && (typeof bearerEnv !== "string" || bearerEnv.trim() === "")) {
+        return { ok: false, error: `${prefix}.bearer_env: must be a non-empty env var name` };
+      }
+      if (hasFile && (typeof bearerFile !== "string" || bearerFile.trim() === "")) {
+        return { ok: false, error: `${prefix}.bearer_file: must be a non-empty file path` };
+      }
+      validated.push({
+        id,
+        transport: "http",
+        url: url as string,
+        ...(hasEnv ? { bearer_env: bearerEnv as string } : {}),
+        ...(hasFile ? { bearer_file: bearerFile as string } : {}),
+        ...(notes !== undefined ? { notes: notes as string } : {}),
+      });
+    }
   }
   return { ok: true, registry: { hosts: validated } };
 }
@@ -128,6 +210,10 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
  * Resolve a host id against a loaded registry. Unknown id returns an error
  * naming the requested id and listing up to 10 known ids for discoverability.
  */
+export function hostDisplayTarget(host: HostEntry): string {
+  return host.transport === "ssh" ? host.target : host.url;
+}
+
 export function resolveHost(registry: HostRegistry, id: string): HostResolution {
   const match = registry.hosts.find((h) => h.id === id);
   if (match) return { ok: true, host: match };

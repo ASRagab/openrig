@@ -3,7 +3,7 @@ import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -141,19 +141,19 @@ async function runCrossHostCapture(
 
   if (opts.json) {
     console.log(JSON.stringify({
-      cross_host: { host: host.id, target: host.target },
+      cross_host: { host: host.id, target: hostDisplayTarget(host) },
       result,
     }));
     if (!result.ok) process.exitCode = 1;
     return;
   }
 
-  console.log(`[via host=${host.id} (${host.target})]`);
+  console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   if (result.ok) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     return;
   }
-  emitCrossHostFailure(host.id, host.target, result, opts.json);
+  emitCrossHostFailure(host.id, hostDisplayTarget(host), result, opts.json);
 }
 

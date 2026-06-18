@@ -3,7 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, type LifecycleDeps } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -174,6 +174,8 @@ interface PsCliOptions {
   summary?: boolean;
   filter?: string;
   host?: string;
+  allHosts?: boolean;
+  hosts?: string;
   active?: boolean;
   /** OPR.0.3.3.19 - include archived rigs (default excludes them). Parity
    *  with `rig stream list --include-archived`. */
@@ -508,11 +510,17 @@ Exit codes:
     .option("--filter <key=value>", "Filter entries; supported keys: status, lifecycleState, name-prefix, name, agentActivity.state")
     .option("--active", "Shortcut for --filter agentActivity.state=running (PL-019)")
     .option("--include-archived", "Include archived rigs (default hides them); parity with 'rig stream list --include-archived'")
-    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml (CLI-side ssh shell-out)")
+    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
+    .option("--all-hosts", "Fan out to all registered HTTP hosts (observation-only)")
+    .option("--hosts <ids>", "Fan out to specific hosts (comma-separated)")
     .action(async (opts: PsCliOptions) => {
       const deps = getDepsF();
 
-      // --- Cross-host short-circuit (CLI-side ssh shell-out; daemon untouched) ---
+      if (opts.allHosts || opts.hosts) {
+        await runFanOutPs(opts, deps);
+        return;
+      }
+
       if (opts.host) {
         await runCrossHostPs(opts.host, opts, deps);
         return;
@@ -695,8 +703,9 @@ async function handleNodes(
   limit: number | null,
   fields: string[] | null,
   useEnvelope: boolean,
+  requestHeaders?: Record<string, string>,
 ): Promise<void> {
-  const rigRes = await client.get<PsEntry[]>(psApiPath(opts));
+  const rigRes = await client.get<PsEntry[]>(psApiPath(opts), requestHeaders ? { headers: requestHeaders } : undefined);
   if (rigRes.status >= 400) {
     console.error(`Failed to fetch rig list from daemon (HTTP ${rigRes.status}). Check daemon status with: rig status`);
     process.exitCode = 2;
@@ -705,7 +714,7 @@ async function handleNodes(
 
   const allNodes: NodeEntry[] = [];
   for (const rig of rigRes.data) {
-    const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`);
+    const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, requestHeaders ? { headers: requestHeaders } : undefined);
     if (nodesRes.status >= 400) {
       console.error(`Warning: failed to fetch nodes for rig "${rig.rigName ?? rig.name}" (HTTP ${nodesRes.status}). List rigs with: rig ps`);
       continue;
@@ -901,7 +910,12 @@ async function runCrossHostPs(
   }
   const host = resolved.host;
 
-  // Reconstruct argv. `rig ps` has no positional args; all flags propagate.
+  if (host.transport === "http") {
+    await runHttpPs(host, opts, deps);
+    return;
+  }
+
+  // SSH path — reconstruct argv
   const argv: string[] = ["rig", "ps"];
   if (opts.nodes) argv.push("--nodes");
   if (opts.full) argv.push("--full");
@@ -916,22 +930,197 @@ async function runCrossHostPs(
 
   if (opts.json) {
     if (result.ok) {
-      // Verbatim remote stdout passthrough — the remote `rig ps --json` already
-      // produced the correct JSON shape (bare array OR envelope per its own
-      // shaping flags); we do NOT double-wrap.
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       return;
     }
-    emitCrossHostFailure(host.id, host.target, result, true);
+    emitCrossHostFailure(host.id, hostDisplayTarget(host), result, true);
     return;
   }
 
-  console.log(`[via host=${host.id} (${host.target})]`);
+  console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   if (result.ok) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     return;
   }
-  emitCrossHostFailure(host.id, host.target, result, false);
+  emitCrossHostFailure(host.id, hostDisplayTarget(host), result, false);
+}
+
+function buildRemoteHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+async function runHttpPs(
+  host: HttpHostEntry,
+  opts: PsCliOptions,
+  deps: PsDeps,
+): Promise<void> {
+  const bearerResult = resolveRemoteBearer(host);
+  if (!bearerResult.ok) {
+    emitCrossHostError(host.id, bearerResult.failedStep, bearerResult.error, opts.json);
+    process.exitCode = 1;
+    return;
+  }
+
+  let effectiveFilter = opts.filter;
+  if (opts.active) {
+    if (effectiveFilter) {
+      console.error("--active and --filter cannot be combined.");
+      process.exitCode = 1;
+      return;
+    }
+    effectiveFilter = "agentActivity.state=running";
+  }
+  let parsedFilter: ParsedFilter | null = null;
+  if (effectiveFilter) {
+    const result = parseFilter(effectiveFilter);
+    if ("error" in result) { console.error(result.error); process.exitCode = 1; return; }
+    parsedFilter = result;
+  }
+  const limit = opts.limit !== undefined ? Number(opts.limit) : null;
+  if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
+    console.error(`--limit must be a non-negative integer; got '${opts.limit}'`);
+    process.exitCode = 1;
+    return;
+  }
+  let fields: string[] | null = null;
+  if (opts.fields !== undefined) {
+    const fieldsLevel: "rig" | "nodes" = opts.nodes ? "nodes" : "rig";
+    const fieldsAllowed = fieldsLevel === "nodes" ? ALLOWED_NODE_FIELDS : ALLOWED_RIG_FIELDS;
+    const fieldsResult = parseFields(opts.fields, fieldsAllowed, fieldsLevel);
+    if ("error" in fieldsResult) { console.error(fieldsResult.error); process.exitCode = 1; return; }
+    fields = fieldsResult;
+  }
+
+  const client = deps.clientFactory(host.url);
+  const headers = buildRemoteHeaders(bearerResult.token);
+  const useEnvelope = parsedFilter !== null || limit !== null || fields !== null || opts.summary === true;
+
+  try {
+    if (opts.nodes) {
+      await handleNodes(client, opts, parsedFilter, limit, fields, useEnvelope, headers);
+      return;
+    }
+
+    const res = await client.get<PsEntry[]>(psApiPath(opts), { headers });
+    const failedStep = classifyHttpFailedStep(res.status);
+    if (failedStep !== "none") {
+      emitCrossHostError(host.id, failedStep, `HTTP ${res.status}`, opts.json);
+      process.exitCode = 1;
+      return;
+    }
+
+    const all = Array.isArray(res.data) ? res.data : [];
+    const filtered = parsedFilter ? applyRigFilter(all, parsedFilter) : all;
+
+    if (opts.summary) {
+      const summary = summarizeRigs(filtered);
+      if (opts.json) {
+        console.log(JSON.stringify(summary));
+      } else {
+        console.log(`[via host=${host.id} (${host.url})]`);
+        console.log(JSON.stringify(summary, null, 2));
+      }
+      return;
+    }
+
+    const limited = limit !== null ? filtered.slice(0, limit) : filtered;
+    const truncated = limit !== null && filtered.length > limit;
+    const projected = fields ? selectFields(limited as unknown as Array<Record<string, unknown>>, fields) : limited;
+
+    if (opts.json) {
+      if (useEnvelope) {
+        const envelope: Record<string, unknown> = { entries: projected, totalRigs: filtered.length, truncated };
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.log(JSON.stringify(projected));
+      }
+    } else {
+      console.log(`[via host=${host.id} (${host.url})]`);
+      console.log(JSON.stringify(projected, null, 2));
+    }
+  } catch (err) {
+    const failedStep = classifyHttpError(err);
+    emitCrossHostError(host.id, failedStep, (err as Error).message, opts.json);
+    process.exitCode = 1;
+  }
+}
+
+interface FanOutHostResult {
+  host: string;
+  ok: boolean;
+  failedStep: import("../cross-host-types.js").FailedStep;
+  data?: unknown;
+  error?: string;
+}
+
+async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
+  const loader = deps.hostRegistryLoader ?? loadHostRegistry;
+  const registry = loader();
+  if (!registry.ok) {
+    console.error(`Error: ${registry.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const allHosts = registry.registry.hosts;
+  let targetIds: string[];
+  if (opts.hosts) {
+    targetIds = opts.hosts.split(",").map((s) => s.trim()).filter(Boolean);
+    const unknown = targetIds.filter((id) => !allHosts.some((h) => h.id === id));
+    if (unknown.length > 0) {
+      console.error(`Error: unknown host ids: ${unknown.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    targetIds = allHosts.filter((h) => h.transport === "http").map((h) => h.id);
+  }
+
+  const results: FanOutHostResult[] = await Promise.all(
+    targetIds.map(async (id): Promise<FanOutHostResult> => {
+      const host = allHosts.find((h) => h.id === id);
+      if (!host) return { host: id, ok: false, failedStep: "remote-daemon-unreachable", error: `unknown host ${id}` };
+      if (host.transport !== "http") {
+        return { host: id, ok: false, failedStep: "remote-command-failed", error: `host ${id} uses transport ${host.transport}; HTTP fan-out requires transport: http` };
+      }
+      const httpHost = host as HttpHostEntry;
+      const bearerResult = resolveRemoteBearer(httpHost);
+      if (!bearerResult.ok) {
+        return { host: id, ok: false, failedStep: bearerResult.failedStep, error: bearerResult.error };
+      }
+      const client = deps.clientFactory(httpHost.url);
+      try {
+        const psQuery = opts.includeArchived ? "?includeArchived=true" : "";
+        const res = await client.get<unknown>(`/api/ps${psQuery}`, {
+          headers: buildRemoteHeaders(bearerResult.token),
+        });
+        const failedStep = classifyHttpFailedStep(res.status);
+        if (failedStep !== "none") {
+          return { host: id, ok: false, failedStep, error: `HTTP ${res.status}` };
+        }
+        return { host: id, ok: true, failedStep: "none", data: res.data };
+      } catch (err) {
+        return { host: id, ok: false, failedStep: classifyHttpError(err), error: (err as Error).message };
+      }
+    }),
+  );
+
+  const hasFailure = results.some((r) => !r.ok);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ hosts: results }));
+  } else {
+    for (const r of results) {
+      if (r.ok) {
+        console.log(`\n[host=${r.host}]`);
+        console.log(JSON.stringify(r.data, null, 2));
+      } else {
+        console.log(`\n[host=${r.host}] FAILED (${r.failedStep}): ${r.error}`);
+      }
+    }
+  }
+
+  if (hasFailure) process.exitCode = 3;
 }
