@@ -228,7 +228,7 @@ describe("runCrossHostCommand", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok && result.failedStep === "ssh-unreachable") {
-      expect(result.sshStderr).toContain("not supported");
+      expect(result.sshStderr).toContain("not ssh");
     }
   });
 

@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { getDefaultOpenRigPath } from "./openrig-compat.js";
+import type { FailedStep } from "./cross-host-types.js";
 
-export type FailedStep = "none" | "ssh-unreachable" | "permission-gate" | "remote-daemon-unreachable" | "remote-command-failed";
+export type { FailedStep };
 
 export interface RemoteBearerResolution {
   ok: true;
@@ -178,18 +179,26 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
       }
       const bearerEnv = entry["bearer_env"];
       const bearerFile = entry["bearer_file"];
-      if (bearerEnv !== undefined && (typeof bearerEnv !== "string" || bearerEnv.trim() === "")) {
-        return { ok: false, error: `${prefix}.bearer_env: if present must be a non-empty env var name` };
+      const hasEnv = bearerEnv !== undefined;
+      const hasFile = bearerFile !== undefined;
+      if (!hasEnv && !hasFile) {
+        return { ok: false, error: `${prefix}: http transport requires exactly one of bearer_env or bearer_file` };
       }
-      if (bearerFile !== undefined && (typeof bearerFile !== "string" || bearerFile.trim() === "")) {
-        return { ok: false, error: `${prefix}.bearer_file: if present must be a non-empty file path` };
+      if (hasEnv && hasFile) {
+        return { ok: false, error: `${prefix}: specify exactly one of bearer_env or bearer_file, not both` };
+      }
+      if (hasEnv && (typeof bearerEnv !== "string" || bearerEnv.trim() === "")) {
+        return { ok: false, error: `${prefix}.bearer_env: must be a non-empty env var name` };
+      }
+      if (hasFile && (typeof bearerFile !== "string" || bearerFile.trim() === "")) {
+        return { ok: false, error: `${prefix}.bearer_file: must be a non-empty file path` };
       }
       validated.push({
         id,
         transport: "http",
         url: url as string,
-        ...(bearerEnv !== undefined ? { bearer_env: bearerEnv as string } : {}),
-        ...(bearerFile !== undefined ? { bearer_file: bearerFile as string } : {}),
+        ...(hasEnv ? { bearer_env: bearerEnv as string } : {}),
+        ...(hasFile ? { bearer_file: bearerFile as string } : {}),
         ...(notes !== undefined ? { notes: notes as string } : {}),
       });
     }

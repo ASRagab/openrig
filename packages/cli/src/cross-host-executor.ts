@@ -15,7 +15,7 @@ export type CrossHostResult =
   | { ok: false; failedStep: "remote-daemon-unreachable"; stdout: string; stderr: string; remoteExitCode: number }
   | { ok: false; failedStep: "remote-command-failed"; stdout: string; stderr: string; remoteExitCode: number };
 
-export type FailedStep = CrossHostResult["failedStep"];
+export type { FailedStep } from "./cross-host-types.js";
 
 /**
  * Pluggable spawn function for testing. The default uses Node's

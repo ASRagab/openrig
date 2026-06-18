@@ -125,7 +125,7 @@ hosts:
       const r = loadHostRegistry(path);
       expect(r.ok).toBe(false);
       if (!r.ok) {
-        expect(r.error).toContain("transport: v0 supports 'ssh' only");
+        expect(r.error).toContain("must be one of");
         expect(r.error).toContain('"tailscale"');
       }
     });
