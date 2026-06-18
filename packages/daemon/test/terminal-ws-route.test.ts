@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { serve, type ServerType } from "@hono/node-server";
@@ -96,4 +96,59 @@ describe("terminal WebSocket route (production path)", () => {
     );
     expect(result.statusCode).toBe(401);
   });
+});
+
+describe("terminal WebSocket lifecycle (session death)", () => {
+  const LIFECYCLE_PORT = 19877;
+  const LIFECYCLE_TOKEN = "lifecycle-test-token";
+  let lifecycleServer: ServerType;
+  let sessionAlive = true;
+  const stopPipePaneCalls: string[] = [];
+
+  beforeAll(async () => {
+    const app2 = new Hono();
+    app2.use("*", async (c, next) => {
+      c.set("tmuxAdapter" as never, {
+        hasSession: async () => sessionAlive,
+        setWindowOption: async () => ({ ok: true }),
+        startPipePane: async () => ({ ok: true }),
+        stopPipePane: async (name: string) => { stopPipePaneCalls.push(name); return { ok: true }; },
+        sendKeys: async () => ({ ok: true }),
+        sendText: async () => ({ ok: true }),
+        resizeWindow: async () => ({ ok: true }),
+      });
+      await next();
+    });
+    const { injectWebSocket: inject2, upgradeWebSocket: upgrade2 } = createNodeWebSocket({ app: app2 });
+    registerTerminalWs(app2, upgrade2 as never, { bearerToken: LIFECYCLE_TOKEN, livenessIntervalMs: 100 });
+    lifecycleServer = serve({ fetch: app2.fetch, port: LIFECYCLE_PORT, hostname: "127.0.0.1" });
+    inject2(lifecycleServer);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  });
+
+  afterAll(() => {
+    lifecycleServer?.close();
+  });
+
+  it("session death closes the WebSocket with code 1001", async () => {
+    sessionAlive = true;
+    stopPipePaneCalls.length = 0;
+
+    const closePromise = new Promise<{ code: number; reason: string }>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${LIFECYCLE_PORT}/api/terminal/death-test?token=${LIFECYCLE_TOKEN}`);
+      ws.onopen = () => {
+        sessionAlive = false;
+      };
+      ws.onclose = (evt) => {
+        resolve({ code: evt.code, reason: evt.reason });
+      };
+      ws.onerror = () => {
+        resolve({ code: 0, reason: "error" });
+      };
+    });
+
+    const result = await closePromise;
+    expect(result.code).toBe(1001);
+    expect(result.reason).toContain("tmux session terminated");
+  }, 10000);
 });

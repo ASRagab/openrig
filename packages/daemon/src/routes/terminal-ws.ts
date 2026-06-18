@@ -21,7 +21,7 @@ export function registerTerminalWs(
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
-  opts: { bearerToken: string | null },
+  opts: { bearerToken: string | null; livenessIntervalMs?: number },
 ): void {
   const terminalAuthMiddleware = async (c: { req: { header(name: string): string | undefined; query(name: string): string | undefined }; json(data: unknown, status: number): unknown }, next: () => Promise<void>) => {
     const upgrade = c.req.header("Upgrade");
@@ -95,12 +95,13 @@ export function registerTerminalWs(
             } catch {}
           }, PIPE_PANE_POLL_MS);
 
-          livenessInterval = setInterval(async () => {
-            const alive = await tmux.hasSession(sessionName);
-            if (!alive) {
-              ws.close(1001, "tmux session terminated");
-            }
-          }, 2000);
+          livenessInterval = setInterval(() => {
+            tmux.hasSession(sessionName).then((alive) => {
+              if (!alive) ws.close(1001, "tmux session terminated");
+            }).catch(() => {
+              ws.close(1011, "tmux session probe failed");
+            });
+          }, opts.livenessIntervalMs ?? 2000);
         },
 
         async onMessage(evt: { data: unknown }, _ws: unknown) {
