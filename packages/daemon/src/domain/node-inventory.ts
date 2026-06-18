@@ -9,6 +9,7 @@ import { probeSessionActivity } from "./session-transport.js";
 import { findLatestUsableSnapshot } from "./rig-repository.js";
 import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
+import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
 
 // -- Row types for SQL results --
 
@@ -77,10 +78,7 @@ interface BindingRow {
 // -- Helpers --
 
 function computeResumeCommand(runtime: string | null, resumeToken: string | null, codexConfigProfile?: string | null): string | null {
-  if (!resumeToken) return null;
-  if (runtime === "claude-code") return `claude --resume ${resumeToken}`;
-  if (runtime === "codex") return `codex${codexConfigProfile ? ` -p ${codexConfigProfile}` : ""} resume ${resumeToken}`;
-  return null;
+  return buildNativeResumeCommand(runtime, resumeToken, null, codexConfigProfile);
 }
 
 function computeRecoveryGuidance(input: {
@@ -97,7 +95,8 @@ function computeRecoveryGuidance(input: {
     const notes: string[] = [];
 
     if (resumeToken) {
-      commands.push(`claude --resume ${resumeToken}`);
+      const cmd = buildNativeResumeCommand(runtime, resumeToken, sessionName);
+      if (cmd) commands.push(cmd);
     }
     if (cwd) {
       commands.push(`cd ${cwd}`);
@@ -121,16 +120,19 @@ function computeRecoveryGuidance(input: {
   if (runtime === "codex") {
     const commands: string[] = [];
     const notes: string[] = [];
-    const profileArg = codexConfigProfile ? ` -p ${codexConfigProfile}` : "";
 
     if (resumeToken) {
-      commands.push(`codex${profileArg} resume ${resumeToken}`);
+      commands.push(buildCodexResumeCore(resumeToken, codexConfigProfile));
     }
     if (cwd) {
       commands.push(`cd ${cwd}`);
     }
-    commands.push(`codex${profileArg}`);
-    commands.push("resume");
+    if (!resumeToken) {
+      const postureArg = codexConfigProfile
+        ? ` -p ${codexConfigProfile}`
+        : " -a on-request -s danger-full-access";
+      commands.push(`codex${postureArg} resume --last`);
+    }
 
     notes.push("Use workspace and recent prompt text to identify the right conversation.");
     if (codexConfigProfile) {

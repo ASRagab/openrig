@@ -145,7 +145,7 @@ describe("Node Inventory Projection", () => {
 
     const entries = getNodeInventory(db, "rig-1");
     const entry = entries.find((e) => e.logicalId === "dev.impl");
-    expect(entry?.resumeCommand).toBe("claude --resume abc-123-def");
+    expect(entry?.resumeCommand).toBe("claude --resume 'abc-123-def'");
   });
 
   // Test 6: resumeCommand is null when no resume token
@@ -167,7 +167,7 @@ describe("Node Inventory Projection", () => {
     const entries = getNodeInventory(db, "rig-1");
     const entry = entries.find((e) => e.logicalId === "dev.impl");
     expect(entry?.recoveryGuidance?.summary).toContain("native Claude resume");
-    expect(entry?.recoveryGuidance?.commands).toContain("claude --resume abc-123-def");
+    expect(entry?.recoveryGuidance?.commands).toContain("claude --resume 'abc-123-def' --name 'dev-impl@test-rig'");
     expect(entry?.recoveryGuidance?.commands).toContain("cd /project");
     expect(entry?.recoveryGuidance?.commands).toContain("claude --resume");
     expect(entry?.recoveryGuidance?.notes).toContain("Look for session name: dev-impl@test-rig");
@@ -186,7 +186,7 @@ describe("Node Inventory Projection", () => {
     const entry = entries.find((e) => e.logicalId === "dev.qa");
     expect(entry?.resumeCommand).toBeNull();
     expect(entry?.recoveryGuidance?.summary).toContain("workspace-local Codex picker fallback");
-    expect(entry?.recoveryGuidance?.commands).toEqual(["cd /workspace/app", "codex", "resume"]);
+    expect(entry?.recoveryGuidance?.commands).toEqual(["cd /workspace/app", "codex -a on-request -s danger-full-access resume --last"]);
     expect(entry?.recoveryGuidance?.notes).toContain("Use workspace and recent prompt text to identify the right conversation.");
     expect(entry?.recoveryGuidance?.notes).toContain("If the identity anchor was captured, the picker may include: dev-qa@test-rig");
   });
@@ -206,9 +206,8 @@ describe("Node Inventory Projection", () => {
     const entry = entries.find((e) => e.logicalId === "platform.mac-admin");
 
     expect(entry?.codexConfigProfile).toBe("sysadmin");
-    expect(entry?.resumeCommand).toBe("codex -p sysadmin resume sess-456");
-    expect(entry?.recoveryGuidance?.commands).toContain("codex -p sysadmin resume sess-456");
-    expect(entry?.recoveryGuidance?.commands).toContain("codex -p sysadmin");
+    expect(entry?.resumeCommand).toBe("codex -p 'sysadmin' resume 'sess-456'");
+    expect(entry?.recoveryGuidance?.commands).toContain("codex -p 'sysadmin' resume 'sess-456'");
     expect(entry?.recoveryGuidance?.notes).toContain("Preserve Codex config profile: sysadmin");
   });
 

@@ -17,7 +17,7 @@ import {
   readCodexThreadIdFromCandidateHomes,
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
-import { assessNativeResumeProbe, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
+import { assessNativeResumeProbe, buildCodexResumeCore, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { shellQuote } from "./shell-quote.js";
 
@@ -242,7 +242,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
 
     const cmd = opts.resumeToken
-      ? `codex${profileArg} resume${queueStateDirArg} ${shellQuote(opts.resumeToken)}`
+      ? `${buildCodexResumeCore(opts.resumeToken, profile)}${queueStateDirArg}`
       : profile
         ? `codex${profileArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}`
         : `codex -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg} -a on-request -s danger-full-access`;

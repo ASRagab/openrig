@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assessNativeResumeProbe,
   buildNativeResumeCommand,
+  buildCodexResumeCore,
   isProbeShellReady,
 } from "../src/domain/native-resume-probe.js";
 
@@ -12,15 +13,47 @@ describe("native resume probe", () => {
     ).toBe("claude --resume 'abc-123' --name 'dev-impl@demo-rig'");
   });
 
-  it("builds a Codex resume command from the stored token", () => {
+  it("builds a Codex no-profile resume with posture flags", () => {
     expect(buildNativeResumeCommand("codex", "019d-token")).toBe(
-      "codex resume '019d-token'"
+      "codex -a on-request -s danger-full-access resume '019d-token'"
+    );
+  });
+
+  it("builds a Codex profile resume with -p flag", () => {
+    expect(buildNativeResumeCommand("codex", "019d-token", null, "my-profile")).toBe(
+      "codex -p 'my-profile' resume '019d-token'"
     );
   });
 
   it("returns null when runtime or token are missing", () => {
     expect(buildNativeResumeCommand("terminal", "x")).toBeNull();
     expect(buildNativeResumeCommand("claude-code", null)).toBeNull();
+  });
+
+  describe("buildCodexResumeCore (shared builder)", () => {
+    it("no-profile emits posture flags matching fresh launch", () => {
+      expect(buildCodexResumeCore("tok-123")).toBe(
+        "codex -a on-request -s danger-full-access resume 'tok-123'"
+      );
+    });
+
+    it("profile emits -p flag, no posture flags", () => {
+      expect(buildCodexResumeCore("tok-123", "dev-profile")).toBe(
+        "codex -p 'dev-profile' resume 'tok-123'"
+      );
+    });
+
+    it("useLast emits --last instead of token", () => {
+      expect(buildCodexResumeCore("", null, true)).toBe(
+        "codex -a on-request -s danger-full-access resume --last"
+      );
+    });
+
+    it("profile + useLast emits -p + --last", () => {
+      expect(buildCodexResumeCore("", "my-prof", true)).toBe(
+        "codex -p 'my-prof' resume --last"
+      );
+    });
   });
 
   it("classifies Claude no-conversation output as failed", () => {
