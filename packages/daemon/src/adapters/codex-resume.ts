@@ -12,6 +12,7 @@ interface CodexResumeOptions {
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  exec?: (cmd: string) => Promise<string>;
 }
 
 export class CodexResumeAdapter {
@@ -38,6 +39,22 @@ export class CodexResumeAdapter {
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Codex resume not available" };
+    }
+
+    if (codexConfigProfile?.trim()) {
+      const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
+      const execFn = this.options.exec ?? (async (cmd: string) => {
+        const { execSync } = await import("node:child_process");
+        return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
+      });
+      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn);
+      if (!probeResult.ok) {
+        return {
+          ok: false,
+          code: "resume_failed",
+          message: `Profile preflight failed: ${probeResult.error}${probeResult.migrationHint ? `\n  Fix: ${probeResult.migrationHint}` : ""}`,
+        };
+      }
     }
 
     const cmd = buildCodexResumeCore(

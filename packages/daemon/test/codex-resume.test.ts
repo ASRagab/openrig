@@ -115,14 +115,33 @@ describe("CodexResumeAdapter", () => {
       expect(sendText.mock.calls[0]![1]).toBe("codex -a on-request -s danger-full-access resume 'uuid; rm -rf /'");
     });
 
-    it("profile-bearing resume uses -p flag", async () => {
+    it("profile-bearing resume uses -p flag after preflight passes", async () => {
       const sendText = vi.fn(async () => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
-      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }));
+      const exec = vi.fn(async () => "[my-profile]\n");
+      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { exec });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo", "my-profile");
 
+      expect(exec).toHaveBeenCalled();
       expect(sendText.mock.calls[0]![1]).toBe("codex -p 'my-profile' resume 'uuid-123'");
+    });
+
+    it("profile preflight failure blocks resume before sendText", async () => {
+      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendKeys = vi.fn(async () => ({ ok: true as const }));
+      const exec = vi.fn(async () => { throw new Error("codex not found"); });
+      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { exec });
+
+      const result = await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo", "bad-profile");
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("resume_failed");
+        expect(result.message).toContain("Profile preflight failed");
+      }
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
     });
 
     it("sendKeys(Enter) fails after sendText -> C-c sent to clear buffer", async () => {
