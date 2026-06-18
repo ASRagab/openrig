@@ -706,19 +706,36 @@ function buildAuditCommand(): Command {
 
         const missionReadme = path.join(missionDir, "README.md");
         const missionProgress = path.join(missionDir, "PROGRESS.md");
-        const missionFm = fs.existsSync(missionReadme)
-          ? extractFrontmatterRaw(fs.readFileSync(missionReadme, "utf-8"))
-          : null;
+        const missionReadmeExists = fs.existsSync(missionReadme);
+        const missionProgressExists = fs.existsSync(missionProgress);
 
-        const missionResult = classifyScopeItem({
-          id: null,
-          path: missionDir,
-          readmeFrontmatterRaw: missionFm,
-          progressFileExists: fs.existsSync(missionProgress),
-          readmeOnlyMarker: false,
-          isActiveRelease: true,
-          level: "mission",
-        });
+        let missionResult: ReturnType<typeof classifyScopeItem>;
+        if (!missionReadmeExists && missionProgressExists) {
+          missionResult = {
+            railStatus: "malformed",
+            findings: [{
+              kind: "orphan_progress",
+              severity: "high",
+              path: missionDir,
+              message: `PROGRESS.md exists but no README.md (orphan progress rail, no backing scope item)`,
+              remediation: `Add a README.md with frontmatter id, or remove the orphan PROGRESS.md`,
+            }],
+            frontmatterError: null,
+          };
+        } else {
+          const missionFm = missionReadmeExists
+            ? extractFrontmatterRaw(fs.readFileSync(missionReadme, "utf-8"))
+            : null;
+          missionResult = classifyScopeItem({
+            id: null,
+            path: missionDir,
+            readmeFrontmatterRaw: missionFm,
+            progressFileExists: missionProgressExists,
+            readmeOnlyMarker: false,
+            isActiveRelease: true,
+            level: "mission",
+          });
+        }
 
         const slicesDir = path.join(missionDir, "slices");
         const sliceResults: Array<{ name: string; result: ReturnType<typeof classifyScopeItem> }> = [];
@@ -753,18 +770,27 @@ function buildAuditCommand(): Command {
             const sliceFm = extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"));
             const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
 
-            sliceResults.push({
-              name: entry,
-              result: classifyScopeItem({
-                id: null,
-                path: sliceDir,
-                readmeFrontmatterRaw: sliceFm,
-                progressFileExists: fs.existsSync(sliceProgress),
-                readmeOnlyMarker,
-                isActiveRelease: true,
-                level: "slice",
-              }),
+            const sliceResult = classifyScopeItem({
+              id: null,
+              path: sliceDir,
+              readmeFrontmatterRaw: sliceFm,
+              progressFileExists: fs.existsSync(sliceProgress),
+              readmeOnlyMarker,
+              isActiveRelease: true,
+              level: "slice",
             });
+
+            if (!/^\d{2}-/.test(entry)) {
+              sliceResult.findings.push({
+                kind: "id_convention_violation",
+                severity: "high",
+                path: sliceDir,
+                message: `Directory "${entry}" does not match the NN-slug slice naming convention (e.g. 01-my-slice)`,
+                remediation: `Rename to NN-slug format or move out of slices/`,
+              });
+            }
+
+            sliceResults.push({ name: entry, result: sliceResult });
           }
         }
 

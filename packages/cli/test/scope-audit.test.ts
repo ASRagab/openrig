@@ -135,4 +135,25 @@ describe("scope-audit classifier", () => {
     expect(result.frontmatterError).not.toBeNull();
     expect(result.findings.some((f) => f.kind === "registration_ghost")).toBe(true);
   });
+
+  // GUARD BLOCKING: no-leading-frontmatter README must emit finding
+  it("README with no frontmatter (readmeFrontmatterRaw null) + PROGRESS.md => missing_id finding", () => {
+    const result = classifyScopeItem(makeInput({
+      readmeFrontmatterRaw: null,
+      progressFileExists: true,
+      isActiveRelease: true,
+    }));
+    expect(result.findings.some((f) => f.kind === "missing_id")).toBe(true);
+    expect(result.railStatus).toBe("present");
+  });
+
+  it("README with no frontmatter + no PROGRESS.md => missing_id + missing_progress", () => {
+    const result = classifyScopeItem(makeInput({
+      readmeFrontmatterRaw: null,
+      progressFileExists: false,
+      isActiveRelease: true,
+    }));
+    expect(result.findings.some((f) => f.kind === "missing_id")).toBe(true);
+    expect(result.findings.some((f) => f.kind === "missing_progress")).toBe(true);
+  });
 });

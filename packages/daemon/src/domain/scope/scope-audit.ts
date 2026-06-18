@@ -56,7 +56,15 @@ export function classifyScopeItem(input: ScopeAuditInput): ScopeAuditResult {
   }
 
   // Frontmatter classification (strict parse, NOT parseYamlSafely)
-  if (input.readmeFrontmatterRaw !== null) {
+  if (input.readmeFrontmatterRaw === null) {
+    findings.push({
+      kind: "missing_id",
+      severity: input.isActiveRelease ? "high" : "low",
+      path: input.path,
+      message: `README has no frontmatter (no id can be extracted)`,
+      remediation: "Add YAML frontmatter with an id: field to the README",
+    });
+  } else {
     let parsed: unknown = null;
     let parseError: string | null = null;
     try {

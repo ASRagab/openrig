@@ -645,12 +645,48 @@ describe("--help is present on every command (HG-12)", () => {
     const cmd = scopeCommand();
     expect(cmd.description()).toBeTruthy();
     const tiers = cmd.commands;
-    expect(tiers.map((c) => c.name()).sort()).toEqual(["mission", "slice"]);
+    expect(tiers.map((c) => c.name()).sort()).toEqual(["audit", "mission", "slice"]);
     for (const tier of tiers) {
       expect(tier.description()).toBeTruthy();
       for (const verb of tier.commands) {
         expect(verb.description()).toBeTruthy();
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// Guard BLOCKING: audit edge cases
+// ---------------------------------------------------------------------
+
+describe("rig scope audit edge cases (guard BLOCKING fixes)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => {
+    substrate = seedSubstrate();
+  });
+  afterEach(() => {
+    fs.rmSync(substrate.root, { recursive: true, force: true });
+  });
+
+  it("README-less mission with PROGRESS.md emits orphan_progress (not a false clear)", async () => {
+    const missionDir = path.join(substrate.missionsRoot, "no-readme-mission");
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    const result = await run(["audit", "--mission", "no-readme-mission", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.mission.findings.some((f: { kind: string }) => f.kind === "orphan_progress")).toBe(true);
+  });
+
+  it("non-slice-shaped dir in slices/ with README + PROGRESS emits finding", async () => {
+    const sliceDir = path.join(substrate.missionsRoot, "release-0.3.2", "slices", "random-notes");
+    fs.mkdirSync(sliceDir, { recursive: true });
+    fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.0.3.2.99\n---\n# notes\n", "utf8");
+    fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    const result = await run(["audit", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    const sliceEntry = parsed.slices.find((s: { name: string }) => s.name === "random-notes");
+    expect(sliceEntry).toBeDefined();
+    expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "id_convention_violation" || f.kind === "slice_naming_convention")).toBe(true);
   });
 });
