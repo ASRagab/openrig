@@ -1036,7 +1036,21 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       deps.terminalBearerToken = terminalTokenEnv;
     } else {
       const { randomBytes } = await import("node:crypto");
-      deps.terminalBearerToken = randomBytes(32).toString("hex");
+      const nodePath = await import("node:path");
+      const nodeFs = await import("node:fs");
+      const homeDir = process.env.OPENRIG_HOME ?? nodePath.default.join(process.env.HOME ?? "", ".openrig");
+      const tokenPath = nodePath.default.join(homeDir, "terminal-token");
+      try {
+        const existing = nodeFs.default.readFileSync(tokenPath, "utf-8").trim();
+        if (existing) { deps.terminalBearerToken = existing; }
+      } catch {}
+      if (!deps.terminalBearerToken) {
+        deps.terminalBearerToken = randomBytes(32).toString("hex");
+        try {
+          nodeFs.default.mkdirSync(homeDir, { recursive: true });
+          nodeFs.default.writeFileSync(tokenPath, deps.terminalBearerToken, { mode: 0o600 });
+        } catch {}
+      }
     }
 
     // Notification dispatcher: chosen mechanism via env config.

@@ -310,6 +310,22 @@ export class TmuxAdapter {
     }
   }
 
+  async resizeWindow(target: string, cols: number, rows: number): Promise<TmuxResult> {
+    if (!Number.isFinite(cols) || !Number.isInteger(cols) || cols < 1) {
+      return { ok: false, code: "validation_error", message: `resizeWindow: cols must be a positive integer, got ${cols}` };
+    }
+    if (!Number.isFinite(rows) || !Number.isInteger(rows) || rows < 1) {
+      return { ok: false, code: "validation_error", message: `resizeWindow: rows must be a positive integer, got ${rows}` };
+    }
+    const cmd = `tmux resize-window -t ${shellQuote(target)} -x ${cols} -y ${rows}`;
+    try {
+      await this.exec(cmd);
+      return { ok: true };
+    } catch (err) {
+      return classifyWriteError(err);
+    }
+  }
+
   async killSession(name: string): Promise<TmuxResult> {
     const cmd = `tmux kill-session -t ${shellQuote(name)}`;
     try {

@@ -2,21 +2,35 @@ import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
-import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 
 const PIPE_PANE_POLL_MS = 50;
 const MAX_OUTPUT_BUFFER = 64 * 1024;
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 export function terminalWsRoutes(opts: { bearerToken: string | null }) {
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
-  if (opts.bearerToken) {
-    app.use("*", authBearerTokenMiddleware({ expectedToken: opts.bearerToken }));
-  }
+  app.use("*", async (c, next) => {
+    const token = opts.bearerToken;
+    if (!token) { await next(); return; }
+    const header = c.req.header("Authorization") ?? c.req.header("authorization");
+    if (header) {
+      const match = /^Bearer\s+(.+)$/i.exec(header);
+      if (match && constantTimeEqual(match[1]!.trim(), token)) { await next(); return; }
+    }
+    const queryToken = c.req.query("token");
+    if (queryToken && constantTimeEqual(queryToken.trim(), token)) { await next(); return; }
+    return c.json({ error: "unauthorized", hint: "Pass terminal token via Authorization header or ?token= query" }, 401);
+  });
 
   app.get(
     "/:sessionName",
@@ -83,14 +97,7 @@ export function terminalWsRoutes(opts: { bearerToken: string | null }) {
             } else if (msg.type === "text" && typeof msg.text === "string") {
               await tmux.sendText(sessionName, msg.text);
             } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-              const cols = msg.cols as number;
-              const rows = msg.rows as number;
-              if (cols > 0 && rows > 0) {
-                const tmuxExec = (tmux as unknown as { exec: (cmd: string) => Promise<string> }).exec;
-                if (tmuxExec) {
-                  await tmuxExec(`tmux resize-window -t ${sessionName} -x ${cols} -y ${rows}`);
-                }
-              }
+              await tmux.resizeWindow(sessionName, msg.cols as number, msg.rows as number);
             }
           } catch {}
         },

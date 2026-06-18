@@ -1,10 +1,25 @@
+import fs from "node:fs";
+import path from "node:path";
 import { ConfigStore } from "./config-store.js";
 import { readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout } from "./fetch-with-timeout.js";
 
 export function terminalAuthHeaders(): Record<string, string> {
-  const token = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+  const token = resolveTerminalToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function resolveTerminalToken(): string | null {
+  const env = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+  if (env) return env;
+  try {
+    const homeDir = process.env.OPENRIG_HOME ?? path.join(process.env.HOME ?? "", ".openrig");
+    const tokenPath = path.join(homeDir, "terminal-token");
+    const token = fs.readFileSync(tokenPath, "utf-8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
 }
 
 export class DaemonConnectionError extends Error {
