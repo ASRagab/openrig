@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
+import "@xterm/xterm/css/xterm.css";
 
 const SPECIAL_KEY_MAP: Record<string, string> = {
   "\t": "Tab",
@@ -84,6 +85,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<unknown>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
   const [error, setError] = useState<string | null>(null);
 
   const connect = useCallback(() => {
@@ -112,7 +115,12 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     ws.onclose = () => {
       const term = termRef.current as { write(data: string): void } | null;
       if (term) {
-        term.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n");
+        term.write("\r\n\x1b[90m[disconnected - reconnecting...]\x1b[0m\r\n");
+      }
+      if (mountedRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          if (mountedRef.current) connect();
+        }, 3000);
       }
     };
 
@@ -122,6 +130,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
   useEffect(() => {
     if (!containerRef.current) return;
+    mountedRef.current = true;
     let cleanedUp = false;
     let ws: WebSocket | undefined;
     let resizeObs: ResizeObserver | undefined;
@@ -174,6 +183,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
     return () => {
       cleanedUp = true;
+      mountedRef.current = false;
+      if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
       resizeObs?.disconnect();
       ws?.close();
       const term = termRef.current as { dispose(): void } | null;
