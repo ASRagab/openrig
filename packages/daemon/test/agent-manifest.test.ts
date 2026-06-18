@@ -485,11 +485,11 @@ profiles:
     expect(n1).toEqual(n2);
   });
 
-  // Slice 15 — per-seat silence-window-seconds override.
-  // The AgentSpec parser must preserve `profile.activity.silenceWindowSeconds`
-  // through normalization so resolveNodeConfig + rigspec-instantiator
-  // can plumb it through to NodeLauncher's setMonitorSilence call at
-  // seat-up. Both YAML conventions (snake_case + camelCase) are accepted.
+  // Per-seat silence-window-seconds override.
+  // The AgentSpec parser preserves `profile.activity.silenceWindowSeconds`
+  // through normalization. Currently inert (the live poller uses the
+  // global 3s default); retained for a future per-seat-poller decision.
+  // Both YAML conventions (snake_case + camelCase) are accepted.
   describe("profile.activity.silenceWindowSeconds normalization (slice 15 HG-7)", () => {
     const baseSpec = (activityBlock: string) => `
 name: test-agent

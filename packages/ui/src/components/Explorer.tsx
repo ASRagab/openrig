@@ -7,7 +7,7 @@ import { useNodeInventory, type NodeInventoryEntry } from "../hooks/useNodeInven
 import { cn } from "../lib/utils.js";
 import { displayAgentName, displayPodName, inferPodName } from "../lib/display-name.js";
 import {
-  getActivityState,
+  getActivityStateWithSource,
   getActivityLabel,
   getActivityTextClass,
   getActivityAnimationClass,
@@ -138,16 +138,14 @@ function TreeToggle({
 // + routes/rigs.ts.
 function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
   const activity = node.agentActivity;
-  const state = getActivityState(activity, node.terminalActive);
+  const { state, source: activitySource } = getActivityStateWithSource(activity, node.terminalActive);
   const label = getActivityLabel(state);
   const textClass = getActivityTextClass(state);
   const animClass = getActivityAnimationClass(state);
   const qitems = node.currentQitems ?? [];
 
-  // Build a single tooltip line summarizing activity + (if running) the
-  // owned qitem(s). Operator-friendly: the explorer is a tree, the drawer
-  // shows the full id; the tooltip is the short answer.
-  const titleLines = [`activity: ${label}`];
+  const sourceLabel = activitySource === "terminal_activity" ? " (activity-grade)" : "";
+  const titleLines = [`activity: ${label}${sourceLabel}`];
   if (qitems.length > 0) {
     for (const q of qitems) {
       titleLines.push(`on ${shortQitemTail(q.qitemId)} — ${q.bodyExcerpt}`);
@@ -160,6 +158,7 @@ function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
       className="inline-flex items-center gap-0.5 ml-1"
       data-testid={`node-activity-${node.logicalId}`}
       data-activity-state={state}
+      data-activity-source={activitySource}
       title={title}
     >
       <Activity className={cn("h-2.5 w-2.5 shrink-0", textClass, animClass)} strokeWidth={2.4} aria-label={title} />

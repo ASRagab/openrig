@@ -21,11 +21,10 @@ interface LaunchOpts {
   sessionName?: string;
   cwd?: string;
   /**
-   * Slice 15 — per-seat silence window override (seconds). The daemon
-   * configures tmux's `monitor-silence` on the seat's pane so the
-   * `terminal-active` primitive flips at this threshold. Falls back to
-   * the launcher's default (typically 3) when not provided. Caller
-   * (StartupOrchestrator) plumbs this from AgentSpec.profile.activity.
+   * Per-seat silence window override (seconds). Currently inert: the
+   * live SeatActivityService poller uses the global default (3s) and
+   * does not read per-seat windows. Retained for future per-seat-poller
+   * decision. Caller plumbs from AgentSpec.profile.activity.
    */
   silenceWindowSeconds?: number;
 }
@@ -38,8 +37,9 @@ interface NodeLauncherDeps {
   tmuxAdapter: TmuxAdapter;
   transcriptStore?: TranscriptStore;
   sessionEnv?: Record<string, string | undefined>;
-  /** Slice 15 — default monitor-silence window (seconds). Defaults to 3
-   *  per slice 15 README §v0. Per-seat override via LaunchOpts. */
+  /** Default silence window (seconds). Currently used only as the
+   *  SeatActivityService global default (3s). Per-seat override via
+   *  LaunchOpts is currently inert. */
   defaultSilenceWindowSeconds?: number;
 }
 

@@ -39,7 +39,7 @@ import {
 } from "../lib/token-format.js";
 import {
   getActivityLabel,
-  getActivityState,
+  getActivityStateWithSource,
   type ActivityState,
 } from "../lib/activity-visuals.js";
 import type { TopologyActivityVisual } from "../lib/topology-activity.js";
@@ -75,7 +75,7 @@ function activityLabelFromVisualState(state: TopologyActivityVisual["state"]): s
 }
 
 export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTableProps) {
-  const fallbackActivityState = getActivityState(data.agentActivity, data.terminalActive);
+  const { state: fallbackActivityState, source: fallbackActivitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive);
   const activityState = activityVisual?.state ?? fallbackActivityState;
   const activityLabel = activityVisual
     ? activityLabelFromVisualState(activityVisual.state)
@@ -103,6 +103,7 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
     <span
       data-testid="seat-overview-activity-state"
       data-activity-state={activityState}
+      data-activity-source={activityVisual ? "ring" : fallbackActivitySource}
       className={
         activityIsActive
           ? "topology-table-active-shimmer text-emerald-600"
