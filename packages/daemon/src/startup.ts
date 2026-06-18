@@ -1029,6 +1029,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // at route mount time (not per-request).
     deps.missionControlBearerToken = opts?.bearerToken ?? null;
 
+    const terminalTokenEnv = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+    if (terminalTokenEnv) {
+      deps.terminalBearerToken = terminalTokenEnv;
+    } else {
+      const { randomBytes } = await import("node:crypto");
+      deps.terminalBearerToken = randomBytes(32).toString("hex");
+    }
+
     // Notification dispatcher: chosen mechanism via env config.
     // OPENRIG_NOTIFICATIONS_MECHANISM=ntfy|webhook|none (default none).
     // OPENRIG_NOTIFICATIONS_TARGET=<topic url | webhook url>.

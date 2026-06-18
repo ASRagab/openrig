@@ -2,6 +2,11 @@ import { ConfigStore } from "./config-store.js";
 import { readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout } from "./fetch-with-timeout.js";
 
+export function terminalAuthHeaders(): Record<string, string> {
+  const token = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export class DaemonConnectionError extends Error {
   constructor(message: string) {
     super(message);
@@ -99,6 +104,9 @@ export class DaemonClient {
 
   private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<Response> {
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+    if (options?.headers) {
+      init = { ...init, headers: { ...(init.headers as Record<string, string> ?? {}), ...options.headers } };
+    }
     try {
       return await fetchWithTimeout(
         this.fetchImpl,

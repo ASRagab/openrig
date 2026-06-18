@@ -216,6 +216,7 @@ export interface AppDeps {
    * authBearerTokenMiddleware on write verbs.
    */
   missionControlBearerToken?: string | null;
+  terminalBearerToken?: string | null;
   specReviewService?: SpecReviewService;
   specLibraryService?: SpecLibraryService;
   /**
@@ -461,6 +462,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("kernelBootTracker" as never, deps.kernelBootTracker);
     c.set("rigPolicyStore" as never, deps.rigPolicyStore);
     c.set("db" as never, deps.rigRepo.db);
+    c.set("terminalBearerToken" as never, deps.terminalBearerToken ?? null);
     await next();
   });
 
@@ -492,7 +494,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/down", downRoutes);
   app.route("/api/kernel", kernelStatusRoutes);
   app.route("/api/transcripts", transcriptRoutes());
-  app.route("/api/transport", transportRoutes());
+  app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
   app.route("/api/activity", activityRoutes);
   app.route("/api/ask", askRoutes);
   app.route("/api/specs/review", specReviewRoutes());
@@ -565,7 +567,12 @@ export function createApp(deps: AppDeps): Hono {
       return c.notFound();
     }
 
-    return fileResponse(uiIndexPath);
+    const indexHtml = fs.readFileSync(uiIndexPath, "utf-8");
+    const tokenScript = deps.terminalBearerToken
+      ? `<script>if(!window.localStorage.getItem("openrig.terminalBearerToken"))window.localStorage.setItem("openrig.terminalBearerToken",${JSON.stringify(deps.terminalBearerToken)})</script>`
+      : "";
+    const injected = tokenScript ? indexHtml.replace("</head>", `${tokenScript}</head>`) : indexHtml;
+    return c.html(injected);
   });
 
   return app;

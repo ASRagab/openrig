@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -122,7 +122,7 @@ via single-hop ssh. SSH success is NOT verify success: the remote rig's
       const wrappedText = wrapSendBody(resolveSenderSession(), session, text);
       const res = await client.post<Record<string, unknown>>("/api/transport/send", {
         session, text: wrappedText, verify: opts.verify, force: opts.force, waitForIdleMs,
-      }, waitForIdleRequestOptions(waitForIdleMs));
+      }, { ...waitForIdleRequestOptions(waitForIdleMs), headers: terminalAuthHeaders() });
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));

@@ -24,6 +24,16 @@ import type { ClaimService } from "../domain/claim-service.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
+import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
+import type { MiddlewareHandler } from "hono";
+
+function terminalAuthGuard(): MiddlewareHandler {
+  return async (c, next) => {
+    const token = c.get("terminalBearerToken" as never) as string | null;
+    const mw = authBearerTokenMiddleware({ expectedToken: token });
+    return mw(c, next);
+  };
+}
 
 export const sessionsRoutes = new Hono();
 export const nodesRoutes = new Hono();
@@ -234,7 +244,7 @@ nodesRoutes.post("/launch-subset", async (c) => {
 // Returns 404 when the rig/node/session can't be resolved (UI surfaces
 // this as "preview unavailable on this rig"). Returns 503 when
 // SessionTransport is missing from context (degraded daemon).
-nodesRoutes.get("/:logicalId/preview", async (c) => {
+nodesRoutes.get("/:logicalId/preview", terminalAuthGuard(), async (c) => {
   const rigId = c.req.param("rigId")!;
   const logicalId = decodeURIComponent(c.req.param("logicalId")!);
   const deps = getDeps(c);
@@ -298,7 +308,7 @@ nodesRoutes.get("/:logicalId/preview", async (c) => {
 });
 
 // POST /api/rigs/:rigId/nodes/:logicalId/open-cmux
-nodesRoutes.post("/:logicalId/open-cmux", async (c) => {
+nodesRoutes.post("/:logicalId/open-cmux", terminalAuthGuard(), async (c) => {
   const rigId = c.req.param("rigId")!;
   const logicalId = decodeURIComponent(c.req.param("logicalId")!);
   const nodeCmuxService = c.get("nodeCmuxService" as never) as NodeCmuxService | undefined;
@@ -362,7 +372,7 @@ nodesRoutes.delete("/:logicalId", async (c) => {
 // Used by surfaces that hold a sessionName but not a (rigId, logicalId)
 // pair (Steering Loop State panel, Slice Story View Topology tab).
 // Behavior identical to the rig+node-keyed route otherwise.
-sessionAdminRoutes.get("/:sessionName/preview", async (c) => {
+sessionAdminRoutes.get("/:sessionName/preview", terminalAuthGuard(), async (c) => {
   const sessionName = decodeURIComponent(c.req.param("sessionName")!);
   const sessionTransport = c.get("sessionTransport" as never) as SessionTransport | undefined;
   const rateLimiter = c.get("previewRateLimiter" as never) as PreviewRateLimiter<{
