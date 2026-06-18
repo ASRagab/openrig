@@ -60,17 +60,23 @@ export function getActivityStateWithSource(
   activity: AgentActivitySummary | null | undefined,
   terminalActive?: boolean | null,
 ): ActivityStateResult {
-  if (activity && activity.state !== "unknown") {
-    if (activity.evidenceSource === "runtime_hook") {
-      return { state: activity.state, source: "hook" };
-    }
-    if (terminalActive === true) return { state: "running", source: "terminal_activity" };
-    if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
-    return { state: activity.state, source: (activity.evidenceSource as ActivitySource) || "pane_heuristic" };
+  const isFreshHook = activity
+    && activity.evidenceSource === "runtime_hook"
+    && activity.state !== "unknown"
+    && !activity.stale
+    && !activity.fallback;
+
+  if (isFreshHook) {
+    return { state: activity!.state, source: "hook" };
   }
   if (terminalActive === true) return { state: "running", source: "terminal_activity" };
   if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
-  if (activity) return { state: "unknown", source: "none" };
+  if (activity && activity.state !== "unknown" && activity.evidenceSource === "pane_heuristic") {
+    return { state: activity.state, source: "pane_heuristic" };
+  }
+  if (activity && activity.state !== "unknown") {
+    return { state: activity.state, source: "none" };
+  }
   return { state: "unknown", source: "none" };
 }
 

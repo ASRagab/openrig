@@ -186,7 +186,7 @@ describe("PL-019 activity-visuals", () => {
       expect(r).toEqual({ state: "unknown", source: "none" });
     });
 
-    it("unknown runtime_hook (stale) + terminalActive=null => source none (stale hook is not hook-grade)", () => {
+    it("unknown runtime_hook (stale) + terminalActive=null => source none", () => {
       const r = getActivityStateWithSource(
         { state: "unknown", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true },
         null,
@@ -194,7 +194,40 @@ describe("PL-019 activity-visuals", () => {
       expect(r).toEqual({ state: "unknown", source: "none" });
     });
 
-    it("runtime_hook running always source=hook regardless of terminalActive", () => {
+    it("stale non-unknown runtime_hook + terminalActive=null => source none (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true },
+        null,
+      );
+      expect(r.source).not.toBe("hook");
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("tmux_session running + terminalActive=null => source none (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "tmux_session", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("session_registry running + terminalActive=null => source none", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "session_registry", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("unrecognized evidenceSource running + terminalActive=null => source none", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "test_custom", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("runtime_hook running (fresh, not stale) always source=hook regardless of terminalActive", () => {
       const r = getActivityStateWithSource(
         { state: "running", reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" },
         false,
