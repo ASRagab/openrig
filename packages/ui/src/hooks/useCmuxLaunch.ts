@@ -21,7 +21,7 @@ interface OpenCmuxResult {
   message?: string;
 }
 
-async function postOpenCmux({ rigId, logicalId }: CmuxLaunchInput): Promise<OpenCmuxResult> {
+export async function postOpenCmux({ rigId, logicalId }: CmuxLaunchInput): Promise<OpenCmuxResult> {
   const res = await fetch(
     `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/open-cmux`,
     { method: "POST", headers: terminalAuthHeaders() },

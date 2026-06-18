@@ -55,6 +55,36 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(terminalAuthHeaders().Authorization).toBeUndefined();
   });
 
+  it("postOpenCmux sends Authorization: Bearer <token>", async () => {
+    const { calls } = stubFetch();
+    const { postOpenCmux } = await import("../src/hooks/useCmuxLaunch.js");
+    await postOpenCmux({ rigId: "rig-1", logicalId: "dev.impl" });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.url).toContain("/open-cmux");
+    expect(calls[0]!.init?.method).toBe("POST");
+    const headers = calls[0]!.init?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("source guard: all /open-cmux fetches carry terminalAuthHeaders", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const srcDir = path.resolve(import.meta.dirname, "../src");
+    const files = [
+      "hooks/useCmuxLaunch.ts",
+      "components/topology/LaunchCmuxButton.tsx",
+      "components/LiveNodeDetails.tsx",
+      "components/RigNode.tsx",
+    ];
+    for (const file of files) {
+      const src = fs.readFileSync(path.join(srcDir, file), "utf-8");
+      const cmuxFetches = [...src.matchAll(/fetch\([^)]*open-cmux[^)]*\)/gs)];
+      for (const match of cmuxFetches) {
+        expect(match[0]).toContain("terminalAuthHeaders()");
+      }
+    }
+  });
+
   it("source guard: useCmuxLaunch wires terminalAuthHeaders", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");

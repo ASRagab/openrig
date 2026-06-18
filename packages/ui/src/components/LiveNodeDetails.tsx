@@ -48,6 +48,7 @@ import {
 import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
+import { terminalAuthHeaders } from "./mission-control/missionControlAuth.js";
 
 type Tab = "overview" | "details";
 
@@ -189,7 +190,7 @@ function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId
     try {
       await fetch(
         `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/open-cmux`,
-        { method: "POST" },
+        { method: "POST", headers: terminalAuthHeaders() },
       );
     } catch {
       // best effort
