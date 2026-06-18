@@ -150,5 +150,8 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     const result = await closePromise;
     expect(result.code).toBe(1001);
     expect(result.reason).toContain("tmux session terminated");
+    await vi.waitFor(() => {
+      expect(stopPipePaneCalls).toContain("death-test");
+    }, { timeout: 2000 });
   }, 10000);
 });
