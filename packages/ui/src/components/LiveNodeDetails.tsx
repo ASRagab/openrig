@@ -31,6 +31,7 @@ import { AgentPluginsList } from "./specs/AgentPluginsList.js";
 // via SessionPreviewPane). PreviewPane is still owned by other
 // surfaces in the codebase; this file simply doesn't reference it.
 import { SessionPreviewPane } from "./preview/SessionPreviewPane.js";
+import { FocusedTerminal } from "./terminal/FocusedTerminal.js";
 import { SeatOverviewTable } from "./SeatOverviewTable.js";
 import { SeatOverviewSecondary } from "./SeatOverviewSecondary.js";
 import { SeatNotificationBanner } from "./SeatNotificationBanner.js";
@@ -487,13 +488,8 @@ function InlineTerminal({ data }: { data: NodeDetailData }) {
     );
   }
   return (
-    <div data-testid="live-terminal-shell" className="bg-stone-950/65 p-2 text-stone-50 backdrop-blur-sm">
-      <SessionPreviewPane
-        sessionName={data.canonicalSessionName}
-        lines={80}
-        testIdPrefix="live-terminal-preview"
-        variant="compact-terminal"
-      />
+    <div data-testid="live-terminal-shell" className="bg-stone-950/65 text-stone-50 backdrop-blur-sm h-[500px]">
+      <FocusedTerminal sessionName={data.canonicalSessionName} />
     </div>
   );
 }

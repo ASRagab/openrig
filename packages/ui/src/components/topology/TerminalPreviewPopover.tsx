@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type React from "react";
 import { createPortal } from "react-dom";
 import { SessionPreviewPane } from "../preview/SessionPreviewPane.js";
+import { FocusedTerminal } from "../terminal/FocusedTerminal.js";
 import { cn } from "../../lib/utils.js";
 import { ToolMark } from "../graphics/RuntimeMark.js";
 
@@ -184,12 +185,9 @@ export function TerminalPreviewPopover({
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <SessionPreviewPane
-        sessionName={sessionName}
-        lines={80}
-        testIdPrefix={`${testIdPrefix}-terminal-preview`}
-        variant="compact-terminal"
-      />
+      <div className="h-[400px] w-[600px]">
+        <FocusedTerminal sessionName={sessionName} />
+      </div>
     </div>,
     document.body,
   ) : null;

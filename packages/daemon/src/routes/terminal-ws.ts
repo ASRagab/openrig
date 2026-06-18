@@ -20,6 +20,22 @@ export function terminalWsRoutes(opts: { bearerToken: string | null }) {
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
   app.use("*", async (c, next) => {
+    const upgrade = c.req.header("Upgrade");
+    if (upgrade?.toLowerCase() === "websocket") {
+      const origin = c.req.header("Origin");
+      if (origin) {
+        try {
+          const originHost = new URL(origin).hostname;
+          const requestHost = c.req.header("Host")?.split(":")[0] ?? "";
+          const allowed = originHost === requestHost || originHost === "localhost" || originHost === "127.0.0.1";
+          if (!allowed) {
+            return c.json({ error: "origin_rejected", hint: `Origin ${origin} does not match host` }, 403);
+          }
+        } catch {
+          return c.json({ error: "origin_rejected", hint: "Malformed Origin header" }, 403);
+        }
+      }
+    }
     const token = opts.bearerToken;
     if (!token) { await next(); return; }
     const header = c.req.header("Authorization") ?? c.req.header("authorization");
@@ -54,6 +70,8 @@ export function terminalWsRoutes(opts: { bearerToken: string | null }) {
             ws.close(1008, `session not found: ${sessionName}`);
             return;
           }
+
+          await tmux.setWindowOption(sessionName, "aggressive-resize", "on").catch(() => {});
 
           outputPath = path.join(os.tmpdir(), `openrig-term-${sessionName.replace(/[^a-zA-Z0-9@-]/g, "_")}-${Date.now()}.log`);
           fs.writeFileSync(outputPath, "", "utf-8");

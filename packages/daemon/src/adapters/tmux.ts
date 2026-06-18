@@ -310,6 +310,16 @@ export class TmuxAdapter {
     }
   }
 
+  async setWindowOption(target: string, option: string, value: string): Promise<TmuxResult> {
+    const cmd = `tmux set-option -w -t ${shellQuote(target)} ${shellQuote(option)} ${shellQuote(value)}`;
+    try {
+      await this.exec(cmd);
+      return { ok: true };
+    } catch (err) {
+      return classifyWriteError(err);
+    }
+  }
+
   async resizeWindow(target: string, cols: number, rows: number): Promise<TmuxResult> {
     if (!Number.isFinite(cols) || !Number.isInteger(cols) || cols < 1) {
       return { ok: false, code: "validation_error", message: `resizeWindow: cols must be a positive integer, got ${cols}` };
