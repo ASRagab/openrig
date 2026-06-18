@@ -1279,6 +1279,8 @@ export function SliceScopePage() {
   }
 
   const detail = detailQuery.data;
+  const sliceScopeAudit = useScopeAudit(detail.missionId);
+  const sliceAuditEntry = sliceScopeAudit.data?.slices.find((s) => s.name === detail.name) ?? null;
 
   return (
     <ScopeShell
@@ -1300,10 +1302,34 @@ export function SliceScopePage() {
         <SliceOverviewTab detail={detail} />
       ) : null}
       {active === "progress" ? (
-        // FOLDED: AcceptanceTab content. Acceptance is the canonical "progress"
-        // proof at slice scope per project-tree.md L65 (acceptance items from
-        // IMPLEMENTATION-PRD with current state).
-        <AcceptanceTab acceptance={detail.acceptance} />
+        <div className="space-y-6">
+          {sliceAuditEntry && (sliceAuditEntry.railStatus === "missing" || sliceAuditEntry.railStatus === "malformed") && (
+            <EmptyState
+              label={sliceAuditEntry.railStatus === "malformed" ? "PROGRESS RAIL MALFORMED" : "PROGRESS RAIL MISSING"}
+              description={
+                sliceAuditEntry.railStatus === "malformed"
+                  ? `Slice progress rail has errors (${sliceAuditEntry.frontmatterError ?? "malformed frontmatter"}). Run the audit command to diagnose.`
+                  : "This slice has no PROGRESS.md and no readme-only marker."
+              }
+              variant="card"
+              testId="slice-progress-rail-status"
+              action={{ label: `rig scope audit --mission ${detail.missionId}` }}
+            />
+          )}
+          {sliceAuditEntry && sliceAuditEntry.findings.length > 0 && (
+            <section data-testid="slice-scope-findings" className="border border-outline-variant bg-amber-50/40 p-4">
+              <SectionHeader>Scope Findings ({sliceAuditEntry.findings.length})</SectionHeader>
+              <ul className="mt-2 space-y-1 font-mono text-[11px]">
+                {sliceAuditEntry.findings.map((f, i) => (
+                  <li key={i} className={cn("px-2 py-1", f.severity === "high" ? "text-red-700" : "text-stone-600")}>
+                    [{f.severity}] {f.kind}: {f.message}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          <AcceptanceTab acceptance={detail.acceptance} />
+        </div>
       ) : null}
       {active === "artifacts" ? (
         <SliceArtifactsTab detail={detail} />
