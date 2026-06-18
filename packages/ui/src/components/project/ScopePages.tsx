@@ -52,6 +52,7 @@ import { TestsVerificationTab } from "../slices/tabs/TestsVerificationTab.js";
 import { TopologyTab } from "../slices/tabs/TopologyTab.js";
 import { HostMultiRigGraph } from "../topology/HostMultiRigGraph.js";
 import { MissionProgressHeatmap } from "./MissionProgressHeatmap.js";
+import { useScopeAudit } from "../../hooks/useScopeAudit.js";
 import { QueueItemTrigger } from "../drawer-triggers/QueueItemTrigger.js";
 import {
   DateChip,
@@ -761,6 +762,7 @@ export function MissionScopePage() {
     missionData.data && "missionPath" in missionData.data ? missionData.data.missionPath : null;
   const missionReadme = useScopeMarkdown(missionPath, "README.md");
   const missionProgress = useScopeMarkdown(missionPath, "PROGRESS.md");
+  const scopeAudit = useScopeAudit(missionId);
   return (
     <ScopeShell
       eyebrow="Mission"
@@ -834,9 +836,40 @@ export function MissionScopePage() {
             detailsByName={rollup.details.itemsByName}
             isLoading={rollup.list.isLoading || rollup.details.isFetching}
           />
-          {missionProgress.content && (
+          {scopeAudit.data && (scopeAudit.data.mission.railStatus === "missing" || scopeAudit.data.mission.railStatus === "malformed") ? (
+            <EmptyState
+              label={scopeAudit.data.mission.railStatus === "malformed" ? "PROGRESS RAIL MALFORMED" : "PROGRESS RAIL MISSING"}
+              description={
+                scopeAudit.data.mission.railStatus === "malformed"
+                  ? `Mission progress rail has errors (${scopeAudit.data.mission.frontmatterError ?? "malformed frontmatter"}). Run the audit command to diagnose.`
+                  : "This mission has no PROGRESS.md. Scaffold one or run the audit to check scope health."
+              }
+              variant="card"
+              testId="mission-progress-rail-status"
+              action={{ label: `rig scope audit --mission ${missionId}` }}
+            />
+          ) : missionProgress.content ? (
             <section data-testid="mission-progress-readme" className="border border-outline-variant bg-white/20 p-4">
               <MarkdownViewer content={missionProgress.content} hideFrontmatter hideRawToggle />
+            </section>
+          ) : !scopeAudit.isLoading ? (
+            <EmptyState
+              label="NO PROGRESS YET"
+              description="No progress data has been written for this mission."
+              variant="card"
+              testId="mission-progress-empty"
+            />
+          ) : null}
+          {scopeAudit.data && scopeAudit.data.totalFindings > 0 && (
+            <section data-testid="mission-scope-findings" className="border border-outline-variant bg-amber-50/40 p-4">
+              <SectionHeader>Scope Audit Findings ({scopeAudit.data.totalFindings})</SectionHeader>
+              <ul className="mt-2 space-y-1 font-mono text-[11px]">
+                {[...scopeAudit.data.mission.findings, ...scopeAudit.data.slices.flatMap((s) => s.findings)].map((f, i) => (
+                  <li key={i} className={cn("px-2 py-1", f.severity === "high" ? "text-red-700" : "text-stone-600")}>
+                    [{f.severity}] {f.kind}: {f.message}
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
           <ScopeProgressRollup
@@ -1202,6 +1235,7 @@ export function SliceScopePage() {
   // unavailable=true and TimelineTab degrades to the auto-captured
   // event feed alone.
   const timelineMd = useSliceTimelineMarkdown(detailQuery.data?.slicePath ?? null);
+  const sliceScopeAudit = useScopeAudit(detailQuery.data?.missionId ?? null);
 
   if (detailQuery.isLoading) {
     return (
@@ -1246,6 +1280,7 @@ export function SliceScopePage() {
   }
 
   const detail = detailQuery.data;
+  const sliceAuditEntry = sliceScopeAudit.data?.slices.find((s) => s.name === detail.name) ?? null;
 
   return (
     <ScopeShell
@@ -1267,10 +1302,34 @@ export function SliceScopePage() {
         <SliceOverviewTab detail={detail} />
       ) : null}
       {active === "progress" ? (
-        // FOLDED: AcceptanceTab content. Acceptance is the canonical "progress"
-        // proof at slice scope per project-tree.md L65 (acceptance items from
-        // IMPLEMENTATION-PRD with current state).
-        <AcceptanceTab acceptance={detail.acceptance} />
+        <div className="space-y-6">
+          {sliceAuditEntry && (sliceAuditEntry.railStatus === "missing" || sliceAuditEntry.railStatus === "malformed") && (
+            <EmptyState
+              label={sliceAuditEntry.railStatus === "malformed" ? "PROGRESS RAIL MALFORMED" : "PROGRESS RAIL MISSING"}
+              description={
+                sliceAuditEntry.railStatus === "malformed"
+                  ? `Slice progress rail has errors (${sliceAuditEntry.frontmatterError ?? "malformed frontmatter"}). Run the audit command to diagnose.`
+                  : "This slice has no PROGRESS.md and no readme-only marker."
+              }
+              variant="card"
+              testId="slice-progress-rail-status"
+              action={{ label: `rig scope audit --mission ${detail.missionId}` }}
+            />
+          )}
+          {sliceAuditEntry && sliceAuditEntry.findings.length > 0 && (
+            <section data-testid="slice-scope-findings" className="border border-outline-variant bg-amber-50/40 p-4">
+              <SectionHeader>Scope Findings ({sliceAuditEntry.findings.length})</SectionHeader>
+              <ul className="mt-2 space-y-1 font-mono text-[11px]">
+                {sliceAuditEntry.findings.map((f, i) => (
+                  <li key={i} className={cn("px-2 py-1", f.severity === "high" ? "text-red-700" : "text-stone-600")}>
+                    [{f.severity}] {f.kind}: {f.message}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          <AcceptanceTab acceptance={detail.acceptance} />
+        </div>
       ) : null}
       {active === "artifacts" ? (
         <SliceArtifactsTab detail={detail} />

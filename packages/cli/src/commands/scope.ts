@@ -43,7 +43,9 @@ import {
 } from "../lib/scope/scope-fs.js";
 import {
   renderMissionNotesTemplate,
+  renderMissionProgressTemplate,
   renderMissionTemplate,
+  renderSliceProgressTemplate,
   renderSliceTemplate,
   titleFromSlug,
 } from "../lib/scope/templates.js";
@@ -226,6 +228,7 @@ function buildSliceCreateCommand(): Command {
     .argument("<slug>", "Short slug (becomes the folder name's suffix)")
     .option("--template <kind>", `Template: ${SLICE_TEMPLATE_KINDS.join(" | ")}`, "placeholder")
     .option("--title <text>", "Display title (defaults to titlecased slug)")
+    .option("--readme-only", "Write progress_rail: readme-only in README frontmatter instead of scaffolding PROGRESS.md")
     .option("--json", "Machine-readable output")
     .action(async (missionName: string, rawSlug: string, opts, command) => {
       const out = makeStdout();
@@ -276,7 +279,18 @@ function buildSliceCreateCommand(): Command {
         });
         fs.mkdirSync(sliceAbs, { recursive: true });
         const readmePath = path.join(sliceAbs, "README.md");
-        fs.writeFileSync(readmePath, body, "utf8");
+        const readmeOnly = Boolean(opts.readmeOnly);
+        if (readmeOnly) {
+          const markerBody = body.replace(
+            /^(---\n)/,
+            `---\nprogress_rail: readme-only\n`,
+          );
+          fs.writeFileSync(readmePath, markerBody, "utf8");
+        } else {
+          fs.writeFileSync(readmePath, body, "utf8");
+          const progressPath = path.join(sliceAbs, "PROGRESS.md");
+          fs.writeFileSync(progressPath, renderSliceProgressTemplate(title), "utf8");
+        }
         const payload = {
           ok: true,
           slice: {
@@ -643,11 +657,14 @@ function buildMissionCreateCommand(): Command {
           });
           missionNotesRendered = { rendered: r.rendered, resolvedFrom: r.resolvedFrom };
         }
+        const progressBody = renderMissionProgressTemplate(title);
         // All renders succeeded — safe to touch the filesystem.
         fs.mkdirSync(absPath, { recursive: true });
         fs.mkdirSync(path.join(absPath, "slices"), { recursive: true });
         const readmePath = path.join(absPath, "README.md");
         fs.writeFileSync(readmePath, readmeBody, "utf8");
+        const progressPath = path.join(absPath, "PROGRESS.md");
+        fs.writeFileSync(progressPath, progressBody, "utf8");
         let missionNotesPath: string | null = null;
         let missionNotesResolvedFrom: "env" | "built-in" | null = null;
         if (missionNotesRendered) {
@@ -683,6 +700,175 @@ function buildMissionCreateCommand(): Command {
 }
 
 // ---------------------------------------------------------------------
+// Audit (B2 — read-only scope audit)
+// ---------------------------------------------------------------------
+
+function buildAuditCommand(): Command {
+  return new Command("audit")
+    .description("Read-only scope audit: flag missing/malformed progress rails and registration ghosts")
+    .requiredOption("--mission <name>", "Mission to audit")
+    .option("--json", "Machine-readable JSON output")
+    .action(async (opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const { classifyScopeItem } = await import("../lib/scope/scope-audit.js");
+        const missionName = opts.mission as string;
+
+        const missionDir = path.join(missionsRoot, missionName);
+        if (!fs.existsSync(missionDir)) {
+          throw new ScopeCliError({ fact: `Mission "${missionName}" not found at ${missionDir}.`, consequence: "Cannot audit.", action: "Check the mission name." });
+        }
+
+        const missionReadme = path.join(missionDir, "README.md");
+        const missionProgress = path.join(missionDir, "PROGRESS.md");
+        const missionReadmeExists = fs.existsSync(missionReadme);
+        const missionProgressExists = fs.existsSync(missionProgress);
+
+        let missionResult: ReturnType<typeof classifyScopeItem>;
+        if (!missionReadmeExists && missionProgressExists) {
+          missionResult = {
+            railStatus: "malformed",
+            findings: [{
+              kind: "orphan_progress",
+              severity: "high",
+              path: missionDir,
+              message: `PROGRESS.md exists but no README.md (orphan progress rail, no backing scope item)`,
+              remediation: `Add a README.md with frontmatter id, or remove the orphan PROGRESS.md`,
+            }],
+            frontmatterError: null,
+          };
+        } else {
+          const missionFm = missionReadmeExists
+            ? extractFrontmatterRaw(fs.readFileSync(missionReadme, "utf-8"))
+            : null;
+          missionResult = classifyScopeItem({
+            id: null,
+            path: missionDir,
+            readmeFrontmatterRaw: missionFm,
+            progressFileExists: missionProgressExists,
+            readmeOnlyMarker: false,
+            isActiveRelease: true,
+            level: "mission",
+          });
+        }
+
+        const slicesDir = path.join(missionDir, "slices");
+        const sliceResults: Array<{ name: string; result: ReturnType<typeof classifyScopeItem> }> = [];
+
+        if (fs.existsSync(slicesDir)) {
+          for (const entry of fs.readdirSync(slicesDir)) {
+            const sliceDir = path.join(slicesDir, entry);
+            if (!fs.statSync(sliceDir).isDirectory()) continue;
+            const sliceReadme = path.join(sliceDir, "README.md");
+            const sliceProgress = path.join(sliceDir, "PROGRESS.md");
+
+            if (!fs.existsSync(sliceReadme)) {
+              if (fs.existsSync(sliceProgress)) {
+                sliceResults.push({
+                  name: entry,
+                  result: {
+                    railStatus: "malformed" as const,
+                    findings: [{
+                      kind: "orphan_progress" as const,
+                      severity: "high" as const,
+                      path: sliceDir,
+                      message: `PROGRESS.md exists but no README.md (orphan progress rail, no backing scope item)`,
+                      remediation: `Add a README.md with frontmatter id, or remove the orphan PROGRESS.md`,
+                    }],
+                    frontmatterError: null,
+                  },
+                });
+              } else {
+                const noReadmeResult = classifyScopeItem({
+                  id: null,
+                  path: sliceDir,
+                  readmeFrontmatterRaw: null,
+                  progressFileExists: false,
+                  readmeOnlyMarker: false,
+                  isActiveRelease: true,
+                  level: "slice",
+                });
+                sliceResults.push({ name: entry, result: noReadmeResult });
+              }
+              continue;
+            }
+
+            const sliceFm = extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"));
+            const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
+
+            const sliceResult = classifyScopeItem({
+              id: null,
+              path: sliceDir,
+              readmeFrontmatterRaw: sliceFm,
+              progressFileExists: fs.existsSync(sliceProgress),
+              readmeOnlyMarker,
+              isActiveRelease: true,
+              level: "slice",
+            });
+
+            if (!/^\d{2}-/.test(entry)) {
+              sliceResult.findings.push({
+                kind: "id_convention_violation",
+                severity: "high",
+                path: sliceDir,
+                message: `Directory "${entry}" does not match the NN-slug slice naming convention (e.g. 01-my-slice)`,
+                remediation: `Rename to NN-slug format or move out of slices/`,
+              });
+            }
+
+            sliceResults.push({ name: entry, result: sliceResult });
+          }
+        }
+
+        const allFindings = [
+          ...missionResult.findings.map((f) => ({ ...f, scope: "mission" as const, scopeName: missionName })),
+          ...sliceResults.flatMap((s) => s.result.findings.map((f) => ({ ...f, scope: "slice" as const, scopeName: s.name }))),
+        ];
+
+        if (json) {
+          out.write(JSON.stringify({
+            ok: allFindings.length === 0,
+            mission: { name: missionName, railStatus: missionResult.railStatus, frontmatterError: missionResult.frontmatterError, findings: missionResult.findings },
+            slices: sliceResults.map((s) => ({ name: s.name, railStatus: s.result.railStatus, frontmatterError: s.result.frontmatterError, findings: s.result.findings })),
+            totalFindings: allFindings.length,
+          }, null, 2));
+          out.write("\n");
+          if (allFindings.length > 0) process.exitCode = 1;
+          return;
+        }
+
+        out.write(`Scope audit: ${missionName}\n`);
+        out.write(`Mission rail: ${missionResult.railStatus}\n`);
+        out.write(`Slices: ${sliceResults.length} total\n\n`);
+
+        if (allFindings.length > 0) {
+          out.write("FINDINGS:\n");
+          for (const f of allFindings) {
+            out.write(`  [${f.severity}] [${f.kind}] ${f.scope}/${f.scopeName}\n`);
+            out.write(`    ${f.message}\n`);
+            out.write(`    fix: ${f.remediation}\n`);
+          }
+          out.write(`\nFAIL: ${allFindings.length} finding(s)\n`);
+          process.exitCode = 1;
+        } else {
+          out.write("PASS: all scope items have valid rails\n");
+        }
+      } catch (err) {
+        if (err instanceof ScopeCliError) { fail(err, json, out); }
+        throw err;
+      }
+    });
+}
+
+function extractFrontmatterRaw(content: string): string | null {
+  if (!content.startsWith("---")) return null;
+  const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
+  return match ? match[1]! : null;
+}
+
+// ---------------------------------------------------------------------
 // Aggregate
 // ---------------------------------------------------------------------
 
@@ -705,6 +891,7 @@ export function scopeCommand(): Command {
   mission.addCommand(buildMissionShowCommand());
   mission.addCommand(buildMissionCreateCommand());
   cmd.addCommand(mission);
+  cmd.addCommand(buildAuditCommand());
 
   return cmd;
 }

@@ -180,6 +180,29 @@ describe("rig scope slice create", () => {
     expect(fm.id).toBe("OPR.0.3.2.2");
     expect(typeof fm.id === "string" && /^OPR\.0\.3\.2\.\d+$/.test(fm.id as string)).toBe(true);
   });
+
+  it("AC-1: slice create scaffolds PROGRESS.md by default", async () => {
+    const r = await run([
+      "slice", "create", "release-0.3.2", "scaffold-test", "--json",
+    ], env.missionsRoot);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.slice.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(true);
+    const content = fs.readFileSync(progressPath, "utf8");
+    expect(content).toContain("# Progress");
+    expect(content).toContain("Implementation complete");
+  });
+
+  it("AC-1: slice create --readme-only writes marker instead of PROGRESS.md", async () => {
+    const r = await run([
+      "slice", "create", "release-0.3.2", "no-progress", "--readme-only", "--json",
+    ], env.missionsRoot);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.slice.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(false);
+    const readme = fs.readFileSync(path.join(parsed.slice.path, "README.md"), "utf8");
+    expect(readme).toMatch(/progress_rail:\s*readme-only/);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -482,6 +505,17 @@ describe("rig scope mission create (HG-14 + HG-15)", () => {
       else process.env.OPENRIG_MISSION_NOTES_TEMPLATE_PATH = prior;
     }
   });
+
+  it("AC-1: mission create scaffolds PROGRESS.md by default", async () => {
+    const r = await run(["mission", "create", "release-0.6.1", "--json"], env.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.mission.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(true);
+    const content = fs.readFileSync(progressPath, "utf8");
+    expect(content).toContain("# Progress");
+    expect(content).toContain("Scope complete");
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -645,12 +679,59 @@ describe("--help is present on every command (HG-12)", () => {
     const cmd = scopeCommand();
     expect(cmd.description()).toBeTruthy();
     const tiers = cmd.commands;
-    expect(tiers.map((c) => c.name()).sort()).toEqual(["mission", "slice"]);
+    expect(tiers.map((c) => c.name()).sort()).toEqual(["audit", "mission", "slice"]);
     for (const tier of tiers) {
       expect(tier.description()).toBeTruthy();
       for (const verb of tier.commands) {
         expect(verb.description()).toBeTruthy();
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// Guard BLOCKING: audit edge cases
+// ---------------------------------------------------------------------
+
+describe("rig scope audit edge cases (guard BLOCKING fixes)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => {
+    substrate = seedSubstrate();
+  });
+  afterEach(() => {
+    fs.rmSync(substrate.root, { recursive: true, force: true });
+  });
+
+  it("README-less mission with PROGRESS.md emits orphan_progress (not a false clear)", async () => {
+    const missionDir = path.join(substrate.missionsRoot, "no-readme-mission");
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    const result = await run(["audit", "--mission", "no-readme-mission", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.mission.findings.some((f: { kind: string }) => f.kind === "orphan_progress")).toBe(true);
+  });
+
+  it("NN-slug slice dir with no README and no PROGRESS emits findings (not skipped)", async () => {
+    const sliceDir = path.join(substrate.missionsRoot, "release-0.3.2", "slices", "02-bare");
+    fs.mkdirSync(sliceDir, { recursive: true });
+    const result = await run(["audit", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    const sliceEntry = parsed.slices.find((s: { name: string }) => s.name === "02-bare");
+    expect(sliceEntry).toBeDefined();
+    expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "missing_id")).toBe(true);
+    expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "missing_progress")).toBe(true);
+  });
+
+  it("non-slice-shaped dir in slices/ with README + PROGRESS emits finding", async () => {
+    const sliceDir = path.join(substrate.missionsRoot, "release-0.3.2", "slices", "random-notes");
+    fs.mkdirSync(sliceDir, { recursive: true });
+    fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.0.3.2.99\n---\n# notes\n", "utf8");
+    fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    const result = await run(["audit", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    const sliceEntry = parsed.slices.find((s: { name: string }) => s.name === "random-notes");
+    expect(sliceEntry).toBeDefined();
+    expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "id_convention_violation" || f.kind === "slice_naming_convention")).toBe(true);
   });
 });

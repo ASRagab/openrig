@@ -89,6 +89,7 @@ import { CmuxLayoutService } from "./domain/cmux-layout-service.js";
 import { getNodeInventory } from "./domain/node-inventory.js";
 import { filesRoutes } from "./routes/files.js";
 import { progressRoutes } from "./routes/progress.js";
+import { scopeAuditRoutes } from "./routes/scope-audit.js";
 import { steeringRoutes } from "./routes/steering.js";
 import { healthSummaryRoutes } from "./routes/health-summary.js";
 import type { StreamStore } from "./domain/stream-store.js";
@@ -527,6 +528,7 @@ export function createApp(deps: AppDeps): Hono {
   // UI Enhancement Pack v0 — files (item 3 + item 4) + progress (item 1B) routes.
   app.route("/api/files", filesRoutes());
   app.route("/api/progress", progressRoutes());
+  app.route("/api/scope/audit", scopeAuditRoutes());
   // Operator Surface Reconciliation v0 — steering composition + health summary.
   app.route("/api/steering", steeringRoutes());
   app.route("/api/health-summary", healthSummaryRoutes());
