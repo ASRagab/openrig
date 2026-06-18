@@ -8,7 +8,7 @@ describe("polish-8 demo-readiness source guards", () => {
     const src = read("../src/components/LiveNodeDetails.tsx");
     expect(src).not.toContain("LiveIdentityDisplay");
     expect(src).toContain("data-testid=\"live-node-tab-body\"");
-    expect(src).toContain("variant=\"compact-terminal\"");
+    expect(src).toContain("FocusedTerminal");
     expect(src).toContain("bg-stone-950/65");
   });
 

@@ -175,6 +175,8 @@ interface DaemonResult {
   db: Database.Database;
   deps: AppDeps;
   contextMonitor: import("./domain/context-monitor.js").ContextMonitor;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  injectWebSocket: (server: any) => void;
 }
 
 const KNOWN_PROVIDER_AUTH_ENV = new Set([
@@ -1029,6 +1031,28 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // at route mount time (not per-request).
     deps.missionControlBearerToken = opts?.bearerToken ?? null;
 
+    const terminalTokenEnv = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+    if (terminalTokenEnv) {
+      deps.terminalBearerToken = terminalTokenEnv;
+    } else {
+      const { randomBytes } = await import("node:crypto");
+      const nodePath = await import("node:path");
+      const nodeFs = await import("node:fs");
+      const homeDir = process.env.OPENRIG_HOME ?? nodePath.default.join(process.env.HOME ?? "", ".openrig");
+      const tokenPath = nodePath.default.join(homeDir, "terminal-token");
+      try {
+        const existing = nodeFs.default.readFileSync(tokenPath, "utf-8").trim();
+        if (existing) { deps.terminalBearerToken = existing; }
+      } catch {}
+      if (!deps.terminalBearerToken) {
+        deps.terminalBearerToken = randomBytes(32).toString("hex");
+        try {
+          nodeFs.default.mkdirSync(homeDir, { recursive: true });
+          nodeFs.default.writeFileSync(tokenPath, deps.terminalBearerToken, { mode: 0o600 });
+        } catch {}
+      }
+    }
+
     // Notification dispatcher: chosen mechanism via env config.
     // OPENRIG_NOTIFICATIONS_MECHANISM=ntfy|webhook|none (default none).
     // OPENRIG_NOTIFICATIONS_TARGET=<topic url | webhook url>.
@@ -1279,7 +1303,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const periodicSnapshotScheduler = new PeriodicSnapshotScheduler({ db, snapshotCapture, snapshotRepo });
   deps.periodicSnapshotScheduler = periodicSnapshotScheduler;
 
-  const app = createApp(deps);
+  const { app, injectWebSocket } = createApp(deps);
 
-  return { app, db, deps, contextMonitor };
+  return { app, db, deps, contextMonitor, injectWebSocket };
 }

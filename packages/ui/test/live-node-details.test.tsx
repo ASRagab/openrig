@@ -415,7 +415,7 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     const terminalShell = await screen.findByTestId("live-terminal-shell");
     expect(terminalShell.className).toContain("bg-stone-950/65");
     await waitFor(() => {
-      expect(screen.getByTestId("live-terminal-preview-pane").getAttribute("data-variant")).toBe("compact-terminal");
+      expect(screen.getByTestId(`focused-terminal-${NODE_DETAIL.canonicalSessionName}`)).toBeTruthy();
     });
     // The terminal sits inside the Overview section, NOT a separate
     // tab body. The Overview section wraps it.

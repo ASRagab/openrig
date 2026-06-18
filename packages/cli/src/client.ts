@@ -1,6 +1,26 @@
+import fs from "node:fs";
+import path from "node:path";
 import { ConfigStore } from "./config-store.js";
 import { readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout } from "./fetch-with-timeout.js";
+
+export function terminalAuthHeaders(): Record<string, string> {
+  const token = resolveTerminalToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function resolveTerminalToken(): string | null {
+  const env = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+  if (env) return env;
+  try {
+    const homeDir = process.env.OPENRIG_HOME ?? path.join(process.env.HOME ?? "", ".openrig");
+    const tokenPath = path.join(homeDir, "terminal-token");
+    const token = fs.readFileSync(tokenPath, "utf-8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
 
 export class DaemonConnectionError extends Error {
   constructor(message: string) {
@@ -99,6 +119,9 @@ export class DaemonClient {
 
   private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<Response> {
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+    if (options?.headers) {
+      init = { ...init, headers: { ...(init.headers as Record<string, string> ?? {}), ...options.headers } };
+    }
     try {
       return await fetchWithTimeout(
         this.fetchImpl,

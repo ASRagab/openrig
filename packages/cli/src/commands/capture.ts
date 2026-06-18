@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -69,7 +69,7 @@ Supported notes:
       if (opts.pod) body.pod = opts.pod;
       if (session) body.session = session;
 
-      const res = await client.post<Record<string, unknown>>("/api/transport/capture", body);
+      const res = await client.post<Record<string, unknown>>("/api/transport/capture", body, { headers: terminalAuthHeaders() });
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));

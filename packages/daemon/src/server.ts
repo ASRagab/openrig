@@ -90,6 +90,8 @@ import { getNodeInventory } from "./domain/node-inventory.js";
 import { filesRoutes } from "./routes/files.js";
 import { progressRoutes } from "./routes/progress.js";
 import { scopeAuditRoutes } from "./routes/scope-audit.js";
+import { registerTerminalWs } from "./routes/terminal-ws.js";
+import { createNodeWebSocket } from "@hono/node-ws";
 import { steeringRoutes } from "./routes/steering.js";
 import { healthSummaryRoutes } from "./routes/health-summary.js";
 import type { StreamStore } from "./domain/stream-store.js";
@@ -216,6 +218,7 @@ export interface AppDeps {
    * authBearerTokenMiddleware on write verbs.
    */
   missionControlBearerToken?: string | null;
+  terminalBearerToken?: string | null;
   specReviewService?: SpecReviewService;
   specLibraryService?: SpecLibraryService;
   /**
@@ -307,7 +310,8 @@ function isUiAssetRequestPath(requestPath: string): boolean {
     || relativePath === "manifest.webmanifest";
 }
 
-export function createApp(deps: AppDeps): Hono {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
   // Hard runtime invariant: all domain services must share the same db handle.
   if (deps.rigRepo.db !== deps.eventBus.db) {
     throw new Error("createApp: rigRepo and eventBus must share the same db handle");
@@ -461,6 +465,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("kernelBootTracker" as never, deps.kernelBootTracker);
     c.set("rigPolicyStore" as never, deps.rigPolicyStore);
     c.set("db" as never, deps.rigRepo.db);
+    c.set("terminalBearerToken" as never, deps.terminalBearerToken ?? null);
     await next();
   });
 
@@ -492,7 +497,9 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/down", downRoutes);
   app.route("/api/kernel", kernelStatusRoutes);
   app.route("/api/transcripts", transcriptRoutes());
-  app.route("/api/transport", transportRoutes());
+  app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
+  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null });
   app.route("/api/activity", activityRoutes);
   app.route("/api/ask", askRoutes);
   app.route("/api/specs/review", specReviewRoutes());
@@ -565,8 +572,13 @@ export function createApp(deps: AppDeps): Hono {
       return c.notFound();
     }
 
-    return fileResponse(uiIndexPath);
+    const indexHtml = fs.readFileSync(uiIndexPath, "utf-8");
+    const tokenScript = deps.terminalBearerToken
+      ? `<script>if(!window.localStorage.getItem("openrig.terminalBearerToken"))window.localStorage.setItem("openrig.terminalBearerToken",${JSON.stringify(deps.terminalBearerToken)})</script>`
+      : "";
+    const injected = tokenScript ? indexHtml.replace("</head>", `${tokenScript}</head>`) : indexHtml;
+    return c.html(injected);
   });
 
-  return app;
+  return { app, injectWebSocket: injectWebSocket as never };
 }

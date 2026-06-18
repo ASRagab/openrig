@@ -8,6 +8,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useSettings } from "./useSettings.js";
+import { terminalAuthHeaders } from "../components/mission-control/missionControlAuth.js";
 
 export interface NodePreviewResponse {
   content: string;
@@ -22,13 +23,13 @@ export interface NodePreviewUnavailable {
   hint?: string;
 }
 
-async function fetchNodePreview(
+export async function fetchNodePreview(
   rigId: string,
   logicalId: string,
   lines: number,
 ): Promise<NodePreviewResponse | NodePreviewUnavailable> {
   const url = `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/preview?lines=${lines}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: terminalAuthHeaders() });
   // 404 from a daemon without the route OR with no such node → unavailable.
   if (res.status === 404) {
     const body = await res.json().catch(() => ({})) as { error?: string };
@@ -86,12 +87,12 @@ export function isNodePreviewUnavailable(
 // name but no rigId/logicalId — Loop State panel, Slice Story View
 // Topology tab). Same shape; different route. ---
 
-async function fetchSessionPreview(
+export async function fetchSessionPreview(
   sessionName: string,
   lines: number,
 ): Promise<NodePreviewResponse | NodePreviewUnavailable> {
   const url = `/api/sessions/${encodeURIComponent(sessionName)}/preview?lines=${lines}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: terminalAuthHeaders() });
   if (res.status === 404) {
     const body = await res.json().catch(() => ({})) as { error?: string };
     return { unavailable: true, reason: body.error ?? "preview_unavailable" };

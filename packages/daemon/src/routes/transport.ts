@@ -1,8 +1,12 @@
 import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
+import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 
-export function transportRoutes(): Hono {
+export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
   const router = new Hono();
+
+  const terminalToken = opts?.bearerToken ?? null;
+  router.use("*", authBearerTokenMiddleware({ expectedToken: terminalToken }));
 
   router.post("/send", async (c) => {
     const transport = c.get("sessionTransport" as never) as SessionTransport;

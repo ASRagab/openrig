@@ -194,15 +194,8 @@ describe("P5.3 ActivityRing and HotPotatoEdge", () => {
 
     expect(screen.getByTestId("hybrid-driver-terminal-popover")).toBeDefined();
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith("/api/sessions/velocity-driver%40openrig-velocity/preview?lines=80");
+      expect(screen.getByTestId("focused-terminal-velocity-driver@openrig-velocity")).toBeTruthy();
     });
-    await screen.findByText("latest terminal line");
-    expect(screen.queryByText(/terminal preview/i)).toBeNull();
-    expect(screen.queryByTestId("hybrid-driver-terminal-close")).toBeNull();
-    expect(screen.queryByText(/live preview/i)).toBeNull();
-    expect(screen.queryByText(/captured/i)).toBeNull();
-    expect(screen.queryByText(/1 lines/i)).toBeNull();
-    expect(screen.getByTestId("hybrid-driver-terminal-preview-pane").getAttribute("data-variant")).toBe("compact-terminal");
     const driverPopover = screen.getByTestId("hybrid-driver-terminal-popover");
     expect(driverPopover.parentElement).toBe(document.body);
     expect(driverPopover.className).toContain("fixed");
@@ -287,11 +280,9 @@ describe("P5.3 ActivityRing and HotPotatoEdge", () => {
     expect(hybridNodes).toMatch(/TerminalPreviewPopover/);
     expect(rigNode).toMatch(/getActivityCardClasses/);
     expect(rigNode).toMatch(/TerminalPreviewPopover/);
-    expect(terminalPopover).toMatch(/SessionPreviewPane/);
+    expect(terminalPopover).toMatch(/FocusedTerminal/);
     expect(terminalPopover).toMatch(/createPortal/);
     expect(terminalPopover).toMatch(/document\.body/);
-    expect(terminalPopover).toMatch(/variant="compact-terminal"/);
-    expect(terminalPopover).toMatch(/bg-stone-950\/65/);
     expect(terminalPopover).toMatch(/text-stone-50/);
     expect(terminalPopover).toMatch(/backdrop-blur-sm/);
     expect(terminalPopover).not.toMatch(/border-outline-variant/);

@@ -6,6 +6,7 @@
 // surface when it is.
 
 import { useMutation } from "@tanstack/react-query";
+import { terminalAuthHeaders } from "../components/mission-control/missionControlAuth.js";
 
 interface CmuxLaunchInput {
   rigId: string;
@@ -20,10 +21,10 @@ interface OpenCmuxResult {
   message?: string;
 }
 
-async function postOpenCmux({ rigId, logicalId }: CmuxLaunchInput): Promise<OpenCmuxResult> {
+export async function postOpenCmux({ rigId, logicalId }: CmuxLaunchInput): Promise<OpenCmuxResult> {
   const res = await fetch(
     `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/open-cmux`,
-    { method: "POST" },
+    { method: "POST", headers: terminalAuthHeaders() },
   );
   const body = (await res.json().catch(() => null)) as OpenCmuxResult | null;
   if (!res.ok || body?.ok === false) {
