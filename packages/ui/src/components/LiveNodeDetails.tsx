@@ -48,7 +48,7 @@ import {
 import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
-import { terminalAuthHeaders } from "./mission-control/missionControlAuth.js";
+import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
 
 type Tab = "overview" | "details";
 
@@ -188,10 +188,7 @@ function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId
   };
   const handleOpenCmux = async () => {
     try {
-      await fetch(
-        `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/open-cmux`,
-        { method: "POST", headers: terminalAuthHeaders() },
-      );
+      await postOpenCmux({ rigId, logicalId });
     } catch {
       // best effort
     }

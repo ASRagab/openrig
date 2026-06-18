@@ -18,7 +18,7 @@ import { TerminalPreviewPopover } from "./topology/TerminalPreviewPopover.js";
 import type { TopologyActivityVisual } from "../lib/topology-activity.js";
 import { formatCompactTokenCount, formatTokenTotalTitle, sumTokenCounts } from "../lib/token-format.js";
 import { formatRuntimeModel } from "../lib/runtime-brand.js";
-import { terminalAuthHeaders } from "./mission-control/missionControlAuth.js";
+import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
 
 interface RigNodeData {
@@ -143,10 +143,8 @@ export function RigNode({ data }: { data: RigNodeData }) {
     e.stopPropagation();
     if (!data.rigId) return;
     try {
-      const res = await fetch(`/api/rigs/${encodeURIComponent(data.rigId)}/nodes/${encodeURIComponent(data.logicalId)}/open-cmux`, { method: "POST", headers: terminalAuthHeaders() });
-      if (res.ok) {
-        flashFeedback("cmux");
-      }
+      const result = await postOpenCmux({ rigId: data.rigId, logicalId: data.logicalId });
+      if (result.ok) flashFeedback("cmux");
     } catch { /* best-effort */ }
   };
 

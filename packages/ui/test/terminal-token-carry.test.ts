@@ -44,17 +44,6 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(headers?.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
-  it("terminalAuthHeaders reads token from localStorage", async () => {
-    const { terminalAuthHeaders } = await import("../src/components/mission-control/missionControlAuth.js");
-    expect(terminalAuthHeaders().Authorization).toBe(`Bearer ${TOKEN}`);
-  });
-
-  it("terminalAuthHeaders returns empty when no token", async () => {
-    window.localStorage.removeItem("openrig.terminalBearerToken");
-    const { terminalAuthHeaders } = await import("../src/components/mission-control/missionControlAuth.js");
-    expect(terminalAuthHeaders().Authorization).toBeUndefined();
-  });
-
   it("postOpenCmux sends Authorization: Bearer <token>", async () => {
     const { calls } = stubFetch();
     const { postOpenCmux } = await import("../src/hooks/useCmuxLaunch.js");
@@ -66,37 +55,40 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(headers?.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
-  it("source guard: all /open-cmux fetches carry terminalAuthHeaders", async () => {
+  it("terminalAuthHeaders reads token from localStorage", async () => {
+    const { terminalAuthHeaders } = await import("../src/components/mission-control/missionControlAuth.js");
+    expect(terminalAuthHeaders().Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("terminalAuthHeaders returns empty when no token", async () => {
+    window.localStorage.removeItem("openrig.terminalBearerToken");
+    const { terminalAuthHeaders } = await import("../src/components/mission-control/missionControlAuth.js");
+    expect(terminalAuthHeaders().Authorization).toBeUndefined();
+  });
+
+  it("source guard: all /open-cmux consumers use postOpenCmux (no direct fetch)", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const srcDir = path.resolve(import.meta.dirname, "../src");
-    const files = [
-      "hooks/useCmuxLaunch.ts",
-      "components/topology/LaunchCmuxButton.tsx",
+    const consumers = [
       "components/LiveNodeDetails.tsx",
       "components/RigNode.tsx",
+      "components/topology/LaunchCmuxButton.tsx",
     ];
-    for (const file of files) {
+    for (const file of consumers) {
       const src = fs.readFileSync(path.join(srcDir, file), "utf-8");
-      const cmuxFetches = [...src.matchAll(/fetch\([^)]*open-cmux[^)]*\)/gs)];
-      for (const match of cmuxFetches) {
-        expect(match[0]).toContain("terminalAuthHeaders()");
-      }
+      expect(src, `${file} must import postOpenCmux`).toContain("postOpenCmux");
+      const lines = src.split("\n");
+      const directFetchLines = lines.filter((l) => l.includes("open-cmux") && l.includes("fetch("));
+      expect(directFetchLines.length, `${file} has direct fetch to /open-cmux`).toBe(0);
     }
   });
 
-  it("source guard: useCmuxLaunch wires terminalAuthHeaders", async () => {
+  it("source guard: postOpenCmux owns the /open-cmux fetch with terminalAuthHeaders", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const src = fs.readFileSync(path.resolve(import.meta.dirname, "../src/hooks/useCmuxLaunch.ts"), "utf-8");
     expect(src).toContain("terminalAuthHeaders()");
-    expect(src).toContain("headers: terminalAuthHeaders()");
-  });
-
-  it("source guard: LaunchCmuxButton wires terminalAuthHeaders", async () => {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const src = fs.readFileSync(path.resolve(import.meta.dirname, "../src/components/topology/LaunchCmuxButton.tsx"), "utf-8");
-    expect(src).toContain("headers: terminalAuthHeaders()");
+    expect(src).toContain("open-cmux");
   });
 });

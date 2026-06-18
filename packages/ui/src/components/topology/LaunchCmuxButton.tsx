@@ -11,7 +11,7 @@
 
 import { useEffect, useRef } from "react";
 import { launchRigCmux } from "../../hooks/launchRigCmux.js";
-import { terminalAuthHeaders } from "../mission-control/missionControlAuth.js";
+import { postOpenCmux } from "../../hooks/useCmuxLaunch.js";
 
 interface LaunchCmuxButtonProps {
   rigId: string;
@@ -140,10 +140,12 @@ export function LaunchCmuxButton({ rigId }: LaunchCmuxButtonProps) {
           if (openMissingRef.current) openMissingRef.current.disabled = true;
           Promise.allSettled(
             ids.map(async (logicalId) => {
-              const res = await fetch(`/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/open-cmux`, { method: "POST", headers: terminalAuthHeaders() });
-              if (!res.ok) return { ok: false };
-              const body = await res.json().catch(() => ({})) as { ok?: boolean };
-              return { ok: body.ok === true };
+              try {
+                const result = await postOpenCmux({ rigId, logicalId });
+                return { ok: result.ok === true };
+              } catch {
+                return { ok: false };
+              }
             }),
           ).then((results) => {
             const opened = results.filter((r) => r.status === "fulfilled" && (r as PromiseFulfilledResult<{ ok: boolean }>).value.ok).length;
