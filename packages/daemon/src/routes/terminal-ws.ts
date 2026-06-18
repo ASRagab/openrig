@@ -60,6 +60,7 @@ export function registerTerminalWs(
       let pipeActive = false;
       let outputPath: string | null = null;
       let tailInterval: ReturnType<typeof setInterval> | null = null;
+      let livenessInterval: ReturnType<typeof setInterval> | null = null;
       let lastSize = 0;
 
       return {
@@ -93,6 +94,13 @@ export function registerTerminalWs(
               }
             } catch {}
           }, PIPE_PANE_POLL_MS);
+
+          livenessInterval = setInterval(async () => {
+            const alive = await tmux.hasSession(sessionName);
+            if (!alive) {
+              ws.close(1001, "tmux session terminated");
+            }
+          }, 2000);
         },
 
         async onMessage(evt: { data: unknown }, _ws: unknown) {
@@ -114,6 +122,7 @@ export function registerTerminalWs(
 
         async onClose() {
           if (tailInterval) { clearInterval(tailInterval); tailInterval = null; }
+          if (livenessInterval) { clearInterval(livenessInterval); livenessInterval = null; }
           const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
           if (tmux && pipeActive) {
             await tmux.stopPipePane(sessionName).catch(() => {});

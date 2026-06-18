@@ -1,6 +1,79 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
 
+const SPECIAL_KEY_MAP: Record<string, string> = {
+  "\t": "Tab",
+  "\r": "Enter",
+  "\x7f": "BSpace",
+  "\x1b": "Escape",
+  "\x03": "C-c",
+  "\x04": "C-d",
+  "\x1a": "C-z",
+  "\x0c": "C-l",
+  "\x01": "C-a",
+  "\x05": "C-e",
+  "\x0b": "C-k",
+  "\x15": "C-u",
+  "\x17": "C-w",
+};
+
+const ESCAPE_SEQ_MAP: Record<string, string> = {
+  "\x1b[A": "Up",
+  "\x1b[B": "Down",
+  "\x1b[C": "Right",
+  "\x1b[D": "Left",
+  "\x1b[H": "Home",
+  "\x1b[F": "End",
+  "\x1b[5~": "PgUp",
+  "\x1b[6~": "PgDn",
+  "\x1b[3~": "DC",
+  "\x1b[2~": "IC",
+};
+
+type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
+
+export function mapXtermInput(data: string): WsMessage[] {
+  const messages: WsMessage[] = [];
+  let i = 0;
+  let textBuf = "";
+
+  const flushText = () => {
+    if (textBuf) { messages.push({ type: "text", text: textBuf }); textBuf = ""; }
+  };
+
+  while (i < data.length) {
+    if (data[i] === "\x1b" && data[i + 1] === "[") {
+      const rest = data.slice(i);
+      let matched = false;
+      for (const [seq, key] of Object.entries(ESCAPE_SEQ_MAP)) {
+        if (rest.startsWith(seq)) {
+          flushText();
+          messages.push({ type: "keys", keys: [key] });
+          i += seq.length;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        textBuf += data[i]!;
+        i++;
+      }
+    } else {
+      const key = SPECIAL_KEY_MAP[data[i]!];
+      if (key) {
+        flushText();
+        messages.push({ type: "keys", keys: [key] });
+        i++;
+      } else {
+        textBuf += data[i]!;
+        i++;
+      }
+    }
+  }
+  flushText();
+  return messages;
+}
+
 interface FocusedTerminalProps {
   sessionName: string;
   daemonBaseUrl?: string;
@@ -78,7 +151,10 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
         term.onData((data: string) => {
           const wsc = wsRef.current;
           if (!wsc || wsc.readyState !== WebSocket.OPEN) return;
-          wsc.send(JSON.stringify({ type: "text", text: data }));
+          const mapped = mapXtermInput(data);
+          for (const msg of mapped) {
+            wsc.send(JSON.stringify(msg));
+          }
         });
 
         term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
