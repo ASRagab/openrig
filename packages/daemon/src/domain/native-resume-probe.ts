@@ -27,7 +27,8 @@ const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 export function buildNativeResumeCommand(
   runtime: string | null,
   resumeToken: string | null,
-  sessionName?: string | null
+  sessionName?: string | null,
+  codexConfigProfile?: string | null,
 ): string | null {
   if (!resumeToken) return null;
   if (runtime === "claude-code") {
@@ -35,9 +36,23 @@ export function buildNativeResumeCommand(
     return `claude --resume ${shellQuote(resumeToken)}${nameSuffix}`;
   }
   if (runtime === "codex") {
-    return `codex resume ${shellQuote(resumeToken)}`;
+    return buildCodexResumeCore(resumeToken, codexConfigProfile);
   }
   return null;
+}
+
+export function buildCodexResumeCore(
+  resumeToken: string,
+  codexConfigProfile?: string | null,
+  useLast?: boolean,
+  extraArgs?: string,
+): string {
+  const profileOrPosture = codexConfigProfile
+    ? ` -p ${shellQuote(codexConfigProfile)}`
+    : " -a on-request -s danger-full-access";
+  const middle = extraArgs ? `${extraArgs} ` : "";
+  const tokenArg = useLast ? "--last" : shellQuote(resumeToken);
+  return `codex${profileOrPosture} resume ${middle}${tokenArg}`;
 }
 
 export function assessNativeResumeProbe(

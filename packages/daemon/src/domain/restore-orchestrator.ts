@@ -906,7 +906,7 @@ export class RestoreOrchestrator {
         await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
         return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. Re-run with --fresh ${node.logicalId} for a deliberate fresh-primed seat, or restore the original session manually.` };
       } else {
-        const resumeOutcome = await this.attemptResume(sessionName, resumeType, resumeToken, node.cwd ?? "/");
+        const resumeOutcome = await this.attemptResume(sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile);
         if (resumeOutcome.kind === "resumed") {
           baseStatus = "resumed";
         } else if (resumeOutcome.kind === "attention_required") {
@@ -1139,7 +1139,8 @@ export class RestoreOrchestrator {
     sessionName: string,
     resumeType: string,
     resumeToken: string | null,
-    cwd: string
+    cwd: string,
+    codexConfigProfile?: string | null,
   ): Promise<
     | { kind: "resumed" }
     | { kind: "retry_fresh" }
@@ -1162,7 +1163,7 @@ export class RestoreOrchestrator {
     }
 
     if (this.codexResume.canResume(resumeType, resumeToken)) {
-      const result = await this.codexResume.resume(sessionName, resumeType, resumeToken, cwd);
+      const result = await this.codexResume.resume(sessionName, resumeType, resumeToken, cwd, codexConfigProfile);
       if (result.ok) return { kind: "resumed" };
       if (result.code === "retry_fresh") return { kind: "retry_fresh" };
       // Codex auth-refusal: stored OAuth token can no longer be refreshed.

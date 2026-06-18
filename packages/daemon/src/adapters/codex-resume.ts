@@ -1,8 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TmuxAdapter } from "./tmux.js";
 import type { ResumeResult } from "./claude-resume.js";
-import { shellQuote } from "./shell-quote.js";
-import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -13,6 +12,7 @@ interface CodexResumeOptions {
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  exec?: (cmd: string) => Promise<string>;
 }
 
 export class CodexResumeAdapter {
@@ -34,15 +34,34 @@ export class CodexResumeAdapter {
     tmuxSessionName: string,
     resumeType: string | null,
     resumeToken: string | null,
-    _cwd: string
+    _cwd: string,
+    codexConfigProfile?: string | null,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Codex resume not available" };
     }
 
-    const cmd = resumeType === "codex_last"
-      ? "codex resume --last"
-      : `codex resume ${shellQuote(resumeToken!)}`;
+    if (codexConfigProfile?.trim()) {
+      const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
+      const execFn = this.options.exec ?? (async (cmd: string) => {
+        const { execSync } = await import("node:child_process");
+        return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
+      });
+      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn);
+      if (!probeResult.ok) {
+        return {
+          ok: false,
+          code: "resume_failed",
+          message: `Profile preflight failed: ${probeResult.error}${probeResult.migrationHint ? `\n  Fix: ${probeResult.migrationHint}` : ""}`,
+        };
+      }
+    }
+
+    const cmd = buildCodexResumeCore(
+      resumeToken ?? "",
+      codexConfigProfile,
+      resumeType === "codex_last",
+    );
 
     const textResult = await this.tmux.sendText(tmuxSessionName, cmd);
     if (!textResult.ok) {
