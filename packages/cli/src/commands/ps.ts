@@ -3,7 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, type LifecycleDeps } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost, hostDisplayTarget } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -174,6 +174,8 @@ interface PsCliOptions {
   summary?: boolean;
   filter?: string;
   host?: string;
+  allHosts?: boolean;
+  hosts?: string;
   active?: boolean;
   /** OPR.0.3.3.19 - include archived rigs (default excludes them). Parity
    *  with `rig stream list --include-archived`. */
@@ -508,11 +510,17 @@ Exit codes:
     .option("--filter <key=value>", "Filter entries; supported keys: status, lifecycleState, name-prefix, name, agentActivity.state")
     .option("--active", "Shortcut for --filter agentActivity.state=running (PL-019)")
     .option("--include-archived", "Include archived rigs (default hides them); parity with 'rig stream list --include-archived'")
-    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml (CLI-side ssh shell-out)")
+    .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
+    .option("--all-hosts", "Fan out to all registered HTTP hosts (observation-only)")
+    .option("--hosts <ids>", "Fan out to specific hosts (comma-separated)")
     .action(async (opts: PsCliOptions) => {
       const deps = getDepsF();
 
-      // --- Cross-host short-circuit (CLI-side ssh shell-out; daemon untouched) ---
+      if (opts.allHosts || opts.hosts) {
+        await runFanOutPs(opts, deps);
+        return;
+      }
+
       if (opts.host) {
         await runCrossHostPs(opts.host, opts, deps);
         return;
@@ -901,7 +909,12 @@ async function runCrossHostPs(
   }
   const host = resolved.host;
 
-  // Reconstruct argv. `rig ps` has no positional args; all flags propagate.
+  if (host.transport === "http") {
+    await runHttpPs(host, opts, deps);
+    return;
+  }
+
+  // SSH path — reconstruct argv
   const argv: string[] = ["rig", "ps"];
   if (opts.nodes) argv.push("--nodes");
   if (opts.full) argv.push("--full");
@@ -916,9 +929,6 @@ async function runCrossHostPs(
 
   if (opts.json) {
     if (result.ok) {
-      // Verbatim remote stdout passthrough — the remote `rig ps --json` already
-      // produced the correct JSON shape (bare array OR envelope per its own
-      // shaping flags); we do NOT double-wrap.
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       return;
@@ -934,4 +944,107 @@ async function runCrossHostPs(
     return;
   }
   emitCrossHostFailure(host.id, hostDisplayTarget(host), result, false);
+}
+
+async function runHttpPs(
+  host: HttpHostEntry,
+  opts: PsCliOptions,
+  deps: PsDeps,
+): Promise<void> {
+  const bearerResult = resolveRemoteBearer(host);
+  if (!bearerResult.ok) {
+    emitCrossHostError(host.id, bearerResult.failedStep, bearerResult.error, opts.json);
+    process.exitCode = 1;
+    return;
+  }
+
+  const client = deps.clientFactory(host.url);
+  try {
+    const res = await client.get<unknown>("/api/ps", {
+      headers: { Authorization: `Bearer ${bearerResult.token}` },
+    });
+    const failedStep = classifyHttpFailedStep(res.status);
+    if (failedStep !== "none") {
+      emitCrossHostError(host.id, failedStep, `HTTP ${res.status}`, opts.json);
+      process.exitCode = 1;
+      return;
+    }
+    if (opts.json) {
+      console.log(JSON.stringify({ cross_host: { host: host.id, target: host.url }, data: res.data }));
+    } else {
+      console.log(`[via host=${host.id} (${host.url})]`);
+      console.log(JSON.stringify(res.data, null, 2));
+    }
+  } catch (err) {
+    const failedStep = classifyHttpError(err);
+    emitCrossHostError(host.id, failedStep, (err as Error).message, opts.json);
+    process.exitCode = 1;
+  }
+}
+
+interface FanOutHostResult {
+  host: string;
+  ok: boolean;
+  failedStep: import("../cross-host-types.js").FailedStep;
+  data?: unknown;
+  error?: string;
+}
+
+async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
+  const loader = deps.hostRegistryLoader ?? loadHostRegistry;
+  const registry = loader();
+  if (!registry.ok) {
+    console.error(`Error: ${registry.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let targetHosts = registry.registry.hosts.filter((h) => h.transport === "http") as HttpHostEntry[];
+  if (opts.hosts) {
+    const ids = opts.hosts.split(",").map((s) => s.trim()).filter(Boolean);
+    targetHosts = targetHosts.filter((h) => ids.includes(h.id));
+    const missing = ids.filter((id) => !targetHosts.some((h) => h.id === id));
+    if (missing.length > 0) {
+      console.error(`Warning: unknown or non-http host ids: ${missing.join(", ")}`);
+    }
+  }
+
+  const results: FanOutHostResult[] = await Promise.all(
+    targetHosts.map(async (host): Promise<FanOutHostResult> => {
+      const bearerResult = resolveRemoteBearer(host);
+      if (!bearerResult.ok) {
+        return { host: host.id, ok: false, failedStep: bearerResult.failedStep, error: bearerResult.error };
+      }
+      const client = deps.clientFactory(host.url);
+      try {
+        const res = await client.get<unknown>("/api/ps", {
+          headers: { Authorization: `Bearer ${bearerResult.token}` },
+        });
+        const failedStep = classifyHttpFailedStep(res.status);
+        if (failedStep !== "none") {
+          return { host: host.id, ok: false, failedStep, error: `HTTP ${res.status}` };
+        }
+        return { host: host.id, ok: true, failedStep: "none", data: res.data };
+      } catch (err) {
+        return { host: host.id, ok: false, failedStep: classifyHttpError(err), error: (err as Error).message };
+      }
+    }),
+  );
+
+  const hasFailure = results.some((r) => !r.ok);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ hosts: results }));
+  } else {
+    for (const r of results) {
+      if (r.ok) {
+        console.log(`\n[host=${r.host}]`);
+        console.log(JSON.stringify(r.data, null, 2));
+      } else {
+        console.log(`\n[host=${r.host}] FAILED (${r.failedStep}): ${r.error}`);
+      }
+    }
+  }
+
+  if (hasFailure) process.exitCode = 3;
 }

@@ -99,7 +99,7 @@ export function loadHostRegistry(path: string = defaultHostRegistryPath()): Host
   if (!existsSync(path)) {
     return {
       ok: false,
-      error: `host registry not found at ${path}. Create it with a 'hosts:' array of { id, transport, target, [user] } entries; v0 supports transport: ssh only.`,
+      error: `host registry not found at ${path}. Create it with a 'hosts:' array; transport: ssh (target + user) or http (url + bearer_env/bearer_file).`,
     };
   }
   let raw: string;
