@@ -42,9 +42,11 @@ const ACTIVITY_TEXT_CLASSES: Record<ActivityState, string> = {
   unknown: "text-stone-400",
 };
 
+export type ActivitySource = "hook" | "terminal_activity" | "pane_heuristic" | "none";
+
 export interface ActivityStateResult {
   state: ActivityState;
-  source: "hook" | "terminal_activity" | "none";
+  source: ActivitySource;
 }
 
 export function getActivityState(
@@ -59,7 +61,12 @@ export function getActivityStateWithSource(
   terminalActive?: boolean | null,
 ): ActivityStateResult {
   if (activity && activity.state !== "unknown") {
-    return { state: activity.state, source: "hook" };
+    if (activity.evidenceSource === "runtime_hook") {
+      return { state: activity.state, source: "hook" };
+    }
+    if (terminalActive === true) return { state: "running", source: "terminal_activity" };
+    if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
+    return { state: activity.state, source: (activity.evidenceSource as ActivitySource) || "pane_heuristic" };
   }
   if (terminalActive === true) return { state: "running", source: "terminal_activity" };
   if (terminalActive === false) return { state: "idle", source: "terminal_activity" };

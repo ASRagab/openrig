@@ -144,7 +144,7 @@ function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
   const animClass = getActivityAnimationClass(state);
   const qitems = node.currentQitems ?? [];
 
-  const sourceLabel = activitySource === "terminal_activity" ? " (activity-grade)" : "";
+  const sourceLabel = activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : "";
   const titleLines = [`activity: ${label}${sourceLabel}`];
   if (qitems.length > 0) {
     for (const q of qitems) {

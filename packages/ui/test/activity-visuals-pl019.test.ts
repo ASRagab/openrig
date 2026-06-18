@@ -153,6 +153,38 @@ describe("PL-019 activity-visuals", () => {
       }
     });
 
+    it("pane_heuristic running + terminalActive=true => terminal_activity (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        true,
+      );
+      expect(r).toEqual({ state: "running", source: "terminal_activity" });
+    });
+
+    it("pane_heuristic idle + terminalActive=false => terminal_activity (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "idle", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        false,
+      );
+      expect(r).toEqual({ state: "idle", source: "terminal_activity" });
+    });
+
+    it("pane_heuristic running + terminalActive=null => source pane_heuristic (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "pane_heuristic" });
+    });
+
+    it("runtime_hook running always source=hook regardless of terminalActive", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" },
+        false,
+      );
+      expect(r).toEqual({ state: "running", source: "hook" });
+    });
+
     it("backward compat: single-arg getActivityState still works", () => {
       expect(getActivityState(null)).toBe("unknown");
       expect(getActivityState({ state: "running", reason: "x", evidenceSource: "y", sampledAt: "z" })).toBe("running");

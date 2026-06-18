@@ -171,7 +171,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
           data-testid={`hybrid-activity-dot-${data.logicalId}`}
           data-activity-state={activityState}
           data-activity-source={activitySource}
-          aria-label={`activity: ${activityLabel}${activitySource === "terminal_activity" ? " (activity-grade)" : ""}`}
+          aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
         />
       </div>
       {data.rigId ? (

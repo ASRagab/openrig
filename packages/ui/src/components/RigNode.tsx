@@ -206,8 +206,8 @@ export function RigNode({ data }: { data: RigNodeData }) {
             data-testid={`activity-dot-${data.logicalId}`}
             data-activity-state={activityState}
             data-activity-source={activitySource}
-            aria-label={`activity: ${activityLabel}${activitySource === "terminal_activity" ? " (activity-grade)" : ""}`}
-            title={`activity: ${activityLabel}${activitySource === "terminal_activity" ? " (activity-grade)" : ""}`}
+            aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
+            title={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
           />
           {/* PL-012: context-usage tier ring parallel to PL-019 activity
               dot. Two signals at the same scale: "is this agent working?"
