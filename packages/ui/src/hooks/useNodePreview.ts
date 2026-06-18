@@ -23,7 +23,7 @@ export interface NodePreviewUnavailable {
   hint?: string;
 }
 
-async function fetchNodePreview(
+export async function fetchNodePreview(
   rigId: string,
   logicalId: string,
   lines: number,
@@ -87,7 +87,7 @@ export function isNodePreviewUnavailable(
 // name but no rigId/logicalId — Loop State panel, Slice Story View
 // Topology tab). Same shape; different route. ---
 
-async function fetchSessionPreview(
+export async function fetchSessionPreview(
   sessionName: string,
   lines: number,
 ): Promise<NodePreviewResponse | NodePreviewUnavailable> {
