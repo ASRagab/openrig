@@ -393,6 +393,29 @@ describe("rig launch --host HTTP", () => {
     expect(launchCalls[0]!.headers?.Authorization).toBe("Bearer remote-tok");
   });
 
+  it("single-node launch with --hold-reason includes holdReason in body", async () => {
+    vi.stubEnv("HOST_B_TOKEN", "remote-tok");
+    const client = mockClient({
+      "/api/rigs/rig-1/nodes/dev.impl/launch": { status: 200, data: { ok: true } },
+    });
+    const { launchCommand } = await import("../src/commands/launch.js");
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(launchCommand({
+      lifecycleDeps: {} as any,
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://remote:7433", bearer_env: "HOST_B_TOKEN" },
+      ]),
+    } as any));
+    await captureLogs(async () => {
+      await prog.parseAsync(["node", "rig", "launch", "rig-1", "dev.impl", "--host", "host-b", "--hold-reason", "audit test", "--json"]);
+    });
+    const launchCalls = client._calls.filter((c) => c.path.includes("/launch"));
+    expect(launchCalls.length).toBe(1);
+    expect((launchCalls[0]!.body as Record<string, unknown>).holdReason).toBe("audit test");
+  });
+
   it("subset launch sends launch-subset with seats", async () => {
     vi.stubEnv("HOST_B_TOKEN", "remote-tok");
     const client = mockClient({

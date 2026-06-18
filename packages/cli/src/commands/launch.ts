@@ -51,7 +51,7 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
           body = { seats: seatList, ...(opts.holdReason ? { holdReason: opts.holdReason } : {}) };
         } else if (nodeRef) {
           apiPath = `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(nodeRef)}/launch`;
-          body = {};
+          body = opts.holdReason ? { holdReason: opts.holdReason } : {};
         } else {
           console.error("Either a node reference or --seats is required for launch --host");
           process.exitCode = 1;
