@@ -703,8 +703,9 @@ async function handleNodes(
   limit: number | null,
   fields: string[] | null,
   useEnvelope: boolean,
+  requestHeaders?: Record<string, string>,
 ): Promise<void> {
-  const rigRes = await client.get<PsEntry[]>(psApiPath(opts));
+  const rigRes = await client.get<PsEntry[]>(psApiPath(opts), requestHeaders ? { headers: requestHeaders } : undefined);
   if (rigRes.status >= 400) {
     console.error(`Failed to fetch rig list from daemon (HTTP ${rigRes.status}). Check daemon status with: rig status`);
     process.exitCode = 2;
@@ -713,7 +714,7 @@ async function handleNodes(
 
   const allNodes: NodeEntry[] = [];
   for (const rig of rigRes.data) {
-    const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`);
+    const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, requestHeaders ? { headers: requestHeaders } : undefined);
     if (nodesRes.status >= 400) {
       console.error(`Warning: failed to fetch nodes for rig "${rig.rigName ?? rig.name}" (HTTP ${nodesRes.status}). List rigs with: rig ps`);
       continue;
@@ -994,8 +995,15 @@ async function runHttpPs(
 
   const client = deps.clientFactory(host.url);
   const headers = buildRemoteHeaders(bearerResult.token);
+  const useEnvelope = parsedFilter !== null || limit !== null || fields !== null || opts.summary === true;
+
   try {
-    const res = await client.get<unknown[]>(psApiPath(opts), { headers });
+    if (opts.nodes) {
+      await handleNodes(client, opts, parsedFilter, limit, fields, useEnvelope, headers);
+      return;
+    }
+
+    const res = await client.get<PsEntry[]>(psApiPath(opts), { headers });
     const failedStep = classifyHttpFailedStep(res.status);
     if (failedStep !== "none") {
       emitCrossHostError(host.id, failedStep, `HTTP ${res.status}`, opts.json);
@@ -1003,35 +1011,13 @@ async function runHttpPs(
       return;
     }
 
-    let entries = (Array.isArray(res.data) ? res.data : []) as PsEntry[];
-    if (parsedFilter) entries = applyRigFilter(entries, parsedFilter);
-
-    if (opts.nodes) {
-      for (const rig of entries) {
-        if (!rig.rigId) continue;
-        try {
-          const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, { headers });
-          if (nodesRes.status < 400) {
-            (rig as PsEntry & { nodes?: NodeEntry[] }).nodes = nodesRes.data;
-          }
-        } catch {}
-      }
-      if (parsedFilter) {
-        for (const rig of entries) {
-          const nodes = (rig as PsEntry & { nodes?: NodeEntry[] }).nodes;
-          if (nodes) (rig as PsEntry & { nodes?: NodeEntry[] }).nodes = applyNodeFilter(nodes, parsedFilter);
-        }
-      }
-    }
-
-    if (limit !== null && limit >= 0) entries = entries.slice(0, limit);
+    const all = Array.isArray(res.data) ? res.data : [];
+    const filtered = parsedFilter ? applyRigFilter(all, parsedFilter) : all;
 
     if (opts.summary) {
-      const summary = opts.nodes
-        ? summarizeNodes(entries.flatMap((r) => ((r as PsEntry & { nodes?: NodeEntry[] }).nodes ?? [])))
-        : summarizeRigs(entries);
+      const summary = summarizeRigs(filtered);
       if (opts.json) {
-        console.log(JSON.stringify({ cross_host: { host: host.id, target: host.url }, summary }));
+        console.log(JSON.stringify(summary));
       } else {
         console.log(`[via host=${host.id} (${host.url})]`);
         console.log(JSON.stringify(summary, null, 2));
@@ -1039,21 +1025,20 @@ async function runHttpPs(
       return;
     }
 
-    let data: unknown = entries;
-    if (fields) {
-      data = opts.nodes
-        ? entries.map((e) => ({
-            ...selectFields([e] as unknown as Record<string, unknown>[], fields!)[0],
-            nodes: selectFields(((e as PsEntry & { nodes?: NodeEntry[] }).nodes ?? []) as unknown as Record<string, unknown>[], fields!),
-          }))
-        : selectFields(entries as unknown as Record<string, unknown>[], fields);
-    }
+    const limited = limit !== null ? filtered.slice(0, limit) : filtered;
+    const truncated = limit !== null && filtered.length > limit;
+    const projected = fields ? selectFields(limited as unknown as Array<Record<string, unknown>>, fields) : limited;
 
     if (opts.json) {
-      console.log(JSON.stringify({ cross_host: { host: host.id, target: host.url }, data }));
+      if (useEnvelope) {
+        const envelope: Record<string, unknown> = { entries: projected, totalRigs: filtered.length, truncated };
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.log(JSON.stringify(projected));
+      }
     } else {
       console.log(`[via host=${host.id} (${host.url})]`);
-      console.log(JSON.stringify(data, null, 2));
+      console.log(JSON.stringify(projected, null, 2));
     }
   } catch (err) {
     const failedStep = classifyHttpError(err);

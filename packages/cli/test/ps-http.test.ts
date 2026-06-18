@@ -123,8 +123,7 @@ describe("rig ps --host HTTP", () => {
       await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--summary", "--json"]);
     });
     const parsed = JSON.parse(stdout.join(""));
-    expect(parsed.summary).toBeDefined();
-    expect(parsed.summary.totalRigs).toBe(1);
+    expect(parsed.totalRigs).toBe(1);
   });
 
   it("invalid --limit rejected before HTTP request", async () => {
