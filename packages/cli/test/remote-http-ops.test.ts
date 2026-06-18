@@ -294,3 +294,110 @@ describe("rig whoami --host HTTP", () => {
     expect(output).not.toContain("rigs");
   });
 });
+
+describe("rig whoami --all-hosts fan-out", () => {
+  it("returns per-host identity envelope with partial failure", async () => {
+    vi.stubEnv("HOST_B_TOKEN", "remote-tok");
+    const client = mockClient({
+      "/api/info": { status: 200, data: { installRoot: "/opt/openrig" } },
+      "/api/ps": { status: 200, data: [{ rigId: "r1", name: "my-rig" }] },
+    });
+    const { whoamiCommand } = await import("../src/commands/whoami.js");
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(whoamiCommand({
+      lifecycleDeps: {} as any,
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-a", transport: "http", url: "http://a:7433", bearer_env: "HOST_B_TOKEN" },
+        { id: "host-b", transport: "http", url: "http://b:7433", bearer_env: "HOST_B_TOKEN" },
+      ]),
+    } as any));
+    const { stdout } = await captureLogs(async () => {
+      await prog.parseAsync(["node", "rig", "whoami", "--all-hosts", "--json"]);
+    });
+    const parsed = JSON.parse(stdout.join(""));
+    expect(parsed.hosts).toBeDefined();
+    expect(parsed.hosts.length).toBe(2);
+    expect(parsed.hosts[0].ok).toBe(true);
+    expect(parsed.hosts[0].identity.installRoot).toBe("/opt/openrig");
+  });
+
+  it("ssh-only host in --hosts gets failure entry", async () => {
+    vi.stubEnv("TOK", "tok");
+    const client = mockClient({
+      "/api/info": { status: 200, data: { installRoot: "/opt" } },
+      "/api/ps": { status: 200, data: [] },
+    });
+    const { whoamiCommand } = await import("../src/commands/whoami.js");
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(whoamiCommand({
+      lifecycleDeps: {} as any,
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "ssh-host", transport: "ssh", target: "vm.local" },
+        { id: "http-host", transport: "http", url: "http://x", bearer_env: "TOK" },
+      ]),
+    } as any));
+    const { stdout } = await captureLogs(async () => {
+      await prog.parseAsync(["node", "rig", "whoami", "--hosts", "ssh-host", "--json"]);
+    });
+    const parsed = JSON.parse(stdout.join(""));
+    const ssh = parsed.hosts?.find((h: { host: string }) => h.host === "ssh-host");
+    expect(ssh).toBeDefined();
+    expect(ssh.ok).toBe(false);
+  });
+
+  it("unknown --hosts id returns error", async () => {
+    const { whoamiCommand } = await import("../src/commands/whoami.js");
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(whoamiCommand({
+      lifecycleDeps: {} as any,
+      clientFactory: () => mockClient({}),
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://x", bearer_env: "TOK" },
+      ]),
+    } as any));
+    const { stderr, exitCode } = await captureLogs(async () => {
+      await prog.parseAsync(["node", "rig", "whoami", "--hosts", "typo", "--json"]);
+    });
+    expect(stderr.some((s) => s.includes("unknown host ids"))).toBe(true);
+    expect(exitCode).toBe(1);
+  });
+});
+
+describe("SSH fallback", () => {
+  it("cross-host-executor rejects non-ssh transport with honest error", async () => {
+    const { runCrossHostCommand } = await import("../src/cross-host-executor.js");
+    const result = await runCrossHostCommand(
+      { id: "http-host", transport: "http", url: "http://x" } as any,
+      ["rig", "ps"],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe("ssh-unreachable");
+  });
+
+  it("SSH host entry still works through the executor", async () => {
+    const { runCrossHostCommand } = await import("../src/cross-host-executor.js");
+    const result = await runCrossHostCommand(
+      { id: "ssh-host", transport: "ssh", target: "nonexistent.local" },
+      ["rig", "ps"],
+      { connectTimeout: 1, spawn: (() => {
+        const { EventEmitter } = require("node:events");
+        const proc = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: () => {}, end: () => {} };
+        setTimeout(() => {
+          proc.stderr.emit("data", Buffer.from("ssh: Could not resolve hostname"));
+          proc.emit("close", 255);
+        }, 10);
+        return proc;
+      }) as any },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe("ssh-unreachable");
+  });
+});
