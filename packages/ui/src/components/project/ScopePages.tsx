@@ -836,11 +836,7 @@ export function MissionScopePage() {
             detailsByName={rollup.details.itemsByName}
             isLoading={rollup.list.isLoading || rollup.details.isFetching}
           />
-          {missionProgress.content ? (
-            <section data-testid="mission-progress-readme" className="border border-outline-variant bg-white/20 p-4">
-              <MarkdownViewer content={missionProgress.content} hideFrontmatter hideRawToggle />
-            </section>
-          ) : scopeAudit.data && (scopeAudit.data.mission.railStatus === "missing" || scopeAudit.data.mission.railStatus === "malformed") ? (
+          {scopeAudit.data && (scopeAudit.data.mission.railStatus === "missing" || scopeAudit.data.mission.railStatus === "malformed") ? (
             <EmptyState
               label={scopeAudit.data.mission.railStatus === "malformed" ? "PROGRESS RAIL MALFORMED" : "PROGRESS RAIL MISSING"}
               description={
@@ -852,7 +848,11 @@ export function MissionScopePage() {
               testId="mission-progress-rail-status"
               action={{ label: `rig scope audit --mission ${missionId}` }}
             />
-          ) : !missionProgress.content && !scopeAudit.isLoading ? (
+          ) : missionProgress.content ? (
+            <section data-testid="mission-progress-readme" className="border border-outline-variant bg-white/20 p-4">
+              <MarkdownViewer content={missionProgress.content} hideFrontmatter hideRawToggle />
+            </section>
+          ) : !scopeAudit.isLoading ? (
             <EmptyState
               label="NO PROGRESS YET"
               description="No progress data has been written for this mission."
