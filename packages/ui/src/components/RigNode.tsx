@@ -3,7 +3,7 @@ import { Handle, Position } from "@xyflow/react";
 import { displayAgentName } from "../lib/display-name.js";
 import { cn } from "../lib/utils.js";
 import {
-  getActivityState,
+  getActivityStateWithSource,
   getActivityLabel,
   getActivityBgClass,
   getActivityAnimationClass,
@@ -51,6 +51,7 @@ interface RigNodeData {
   // working?" dot color (replacing the previous startup-status color).
   // currentQitems surfaces in the hover hint when the agent is running.
   agentActivity?: AgentActivitySummary | null;
+  terminalActive?: boolean | null;
   currentQitems?: CurrentQitemSummary[];
   activityRing?: TopologyActivityVisual;
   reducedMotion?: boolean;
@@ -94,7 +95,7 @@ export function RigNode({ data }: { data: RigNodeData }) {
   // startupStatus retains its independent surface via the ATTN/FAILED badges
   // below \u2014 activity answers "is this agent working?", startup answers "did
   // this agent boot?". Two different questions, two different surfaces.
-  const activityState = getActivityState(data.agentActivity);
+  const { state: activityState, source: activitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive);
   const activityLabel = getActivityLabel(activityState);
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);
@@ -204,8 +205,9 @@ export function RigNode({ data }: { data: RigNodeData }) {
             className={`inline-flex h-2.5 w-2.5 rounded-full border border-white/50 ${activityBgClass} ${activityAnimClass} ${statusChanged ? "status-changed" : ""}`}
             data-testid={`activity-dot-${data.logicalId}`}
             data-activity-state={activityState}
-            aria-label={`activity: ${activityLabel}`}
-            title={`activity: ${activityLabel}`}
+            data-activity-source={activitySource}
+            aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
+            title={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
           />
           {/* PL-012: context-usage tier ring parallel to PL-019 activity
               dot. Two signals at the same scale: "is this agent working?"

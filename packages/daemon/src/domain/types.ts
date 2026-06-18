@@ -448,11 +448,11 @@ export interface NodeInventoryEntry {
   /**
    * Slice 15 — `terminal-active` primitive (tmux byte-stream).
    *
-   *   true  → seat is currently producing tmux output (pane silence
-   *           flag = 0, within configured silence window)
+   *   true  → seat is currently producing tmux output (window_activity
+   *           timestamp within the silence window)
    *   false → seat is silent past the threshold
-   *   null  → no signal (not tmux-bound, monitor-silence not configured,
-   *           or transient read error). Distinct from `false`: consumers
+   *   null  → no signal (not tmux-bound, or transient read error).
+   *           Distinct from `false`: consumers
    *           treat `null` as "no observation right now", not "definitely
    *           idle".
    *
@@ -493,9 +493,8 @@ export interface NodeInventoryEntry {
  * polls the timestamp at a configurable cadence and compares it
  * against the silence window threshold; `isActiveWithinWindow` is true
  * when the most recent activity is within that window. The
- * `monitor-silence` option is configured on the seat's window at
- * launch time for tmux's own status-line + bell-alert behavior, but is
- * not the read source.
+ * The daemon no longer configures tmux's `monitor-silence` option at
+ * launch (removed OPR.0.4.0.18); `window_activity` is the sole source.
  */
 export interface SeatActivity {
   /** tmux pane id OR canonical session name — whatever the daemon binds. */
@@ -632,13 +631,11 @@ export interface ProfileSpec {
     runtimeResources: string[];
   };
   /**
-   * Slice 15 — per-seat activity-detection tuning. The daemon configures
-   * tmux's `monitor-silence` option for the seat's pane at seat-up.
-   * `silenceWindowSeconds` is the integer threshold (in seconds) below
-   * which an output-producing pane reads as "terminal-active". When
-   * omitted, the daemon's default (3 seconds per slice 15 README) is
-   * applied. Invalid values (non-integer, outside [1, 3600]) are
-   * dropped at normalize time and the default is used.
+   * Per-seat activity-detection tuning. `silenceWindowSeconds` is the
+   * threshold below which terminal output reads as "terminal-active".
+   * Currently inert: the live SeatActivityService poller uses the global
+   * 3s default and does not read per-seat windows. Retained for a future
+   * per-seat-poller decision. Invalid values are dropped at normalize time.
    */
   activity?: {
     silenceWindowSeconds?: number;

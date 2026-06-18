@@ -258,8 +258,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Slice 15 — Seat-activity service for the `terminal-active` primitive.
   // Lives at module scope so the projection chain (PsProjectionService,
   // node-inventory enrichment) reads from one source. Default silence
-  // window: 3s per slice 15 README; per-seat override comes from
-  // AgentSpec.profile.activity.silenceWindowSeconds at seat-up time.
+  // window: 3s per slice 15 README. Per-seat silenceWindowSeconds from
+  // AgentSpec.profile.activity is currently inert (the poller uses the
+  // global default; per-seat windows are not wired to the live poll).
   const seatActivityService = new SeatActivityService({
     tmux: tmuxAdapter,
     defaultWindowSeconds: 3,

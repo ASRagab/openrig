@@ -38,11 +38,10 @@ export interface ResolvedNodeConfig {
   resolvedSpecVersion: string;
   resolvedSpecHash: string;
   /**
-   * Slice 15 — per-seat activity-detection tuning. Forwarded verbatim
-   * from `profile.activity` after agent-manifest normalization (which
-   * dropped invalid values). The instantiator passes
-   * `silenceWindowSeconds` to NodeLauncher.launchNode where it overrides
-   * the launcher's default (3s) for the tmux monitor-silence call.
+   * Per-seat activity-detection tuning. Forwarded verbatim from
+   * `profile.activity` after agent-manifest normalization. Currently
+   * inert: the live poller uses the global 3s default and does not
+   * read per-seat windows. Retained for a future per-seat decision.
    */
   activity?: { silenceWindowSeconds?: number };
 }

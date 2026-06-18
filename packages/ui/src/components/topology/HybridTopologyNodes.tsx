@@ -5,7 +5,7 @@ import {
   getActivityAnimationClass,
   getActivityBgClass,
   getActivityLabel,
-  getActivityState,
+  getActivityStateWithSource,
   isActivityStale,
 } from "../../lib/activity-visuals.js";
 import type { AgentActivitySummary } from "../../hooks/useNodeInventory.js";
@@ -44,6 +44,7 @@ interface HybridAgentNodeData {
   contextTotalInputTokens?: number | null;
   contextTotalOutputTokens?: number | null;
   agentActivity?: AgentActivitySummary | null;
+  terminalActive?: boolean | null;
   currentQitems?: unknown[];
   rigId?: string | null;
   activityRing?: TopologyActivityVisual;
@@ -111,7 +112,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
   const cmuxLaunch = useCmuxLaunch();
   const core = isCoreRole(data.role);
   const isInfra = data.nodeKind === "infrastructure";
-  const activityState = getActivityState(data.agentActivity);
+  const { state: activityState, source: activitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive);
   const activityLabel = getActivityLabel(activityState);
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);
@@ -169,7 +170,8 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
           )}
           data-testid={`hybrid-activity-dot-${data.logicalId}`}
           data-activity-state={activityState}
-          aria-label={`activity: ${activityLabel}`}
+          data-activity-source={activitySource}
+          aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
         />
       </div>
       {data.rigId ? (

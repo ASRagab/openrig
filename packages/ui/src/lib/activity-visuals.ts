@@ -42,9 +42,42 @@ const ACTIVITY_TEXT_CLASSES: Record<ActivityState, string> = {
   unknown: "text-stone-400",
 };
 
-export function getActivityState(activity: AgentActivitySummary | null | undefined): ActivityState {
-  if (!activity) return "unknown";
-  return activity.state;
+export type ActivitySource = "hook" | "terminal_activity" | "pane_heuristic" | "none";
+
+export interface ActivityStateResult {
+  state: ActivityState;
+  source: ActivitySource;
+}
+
+export function getActivityState(
+  activity: AgentActivitySummary | null | undefined,
+  terminalActive?: boolean | null,
+): ActivityState {
+  return getActivityStateWithSource(activity, terminalActive).state;
+}
+
+export function getActivityStateWithSource(
+  activity: AgentActivitySummary | null | undefined,
+  terminalActive?: boolean | null,
+): ActivityStateResult {
+  const isFreshHook = activity
+    && activity.evidenceSource === "runtime_hook"
+    && activity.state !== "unknown"
+    && !activity.stale
+    && !activity.fallback;
+
+  if (isFreshHook) {
+    return { state: activity!.state, source: "hook" };
+  }
+  if (terminalActive === true) return { state: "running", source: "terminal_activity" };
+  if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
+  if (activity && activity.state !== "unknown" && activity.evidenceSource === "pane_heuristic") {
+    return { state: activity.state, source: "pane_heuristic" };
+  }
+  if (activity && activity.state !== "unknown") {
+    return { state: activity.state, source: "none" };
+  }
+  return { state: "unknown", source: "none" };
 }
 
 export function getActivityLabel(state: ActivityState): string {

@@ -7,6 +7,8 @@ export interface AgentActivitySummary {
   sampledAt: string;
   evidence?: string | null;
   staleness?: number | null;
+  stale?: boolean;
+  fallback?: boolean;
 }
 
 export interface CurrentQitemSummary {

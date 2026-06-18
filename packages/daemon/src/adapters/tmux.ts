@@ -400,36 +400,6 @@ export class TmuxAdapter {
   }
 
   /**
-   * Slice 15 — configure tmux's per-window `monitor-silence` option for
-   * the target's containing window. The runtime flips
-   * `pane_silence_flag` to "1" when the pane has been silent past the
-   * threshold; "0" while producing output. This is the v0 source of
-   * the `terminal-active` primitive (README §v0). Window-scoped is the
-   * correct level: tmux's monitor-silence is a window option (see
-   * `man tmux` §OPTIONS); `-w` targets the window containing the pane.
-   *
-   * Validates `seconds` at the adapter boundary so a bad caller can't
-   * inject negative / zero / fractional / NaN values into the shell
-   * command — those would either silently coerce or fail with an
-   * opaque tmux error.
-   */
-  async setMonitorSilence(target: string, seconds: number): Promise<TmuxResult> {
-    if (!Number.isFinite(seconds) || !Number.isInteger(seconds) || seconds < 1) {
-      return {
-        ok: false,
-        code: "validation_error",
-        message: `setMonitorSilence: seconds must be a positive integer, got ${seconds}`,
-      };
-    }
-    const cmd = `tmux set-option -w -t ${shellQuote(target)} monitor-silence ${shellQuote(String(seconds))}`;
-    try {
-      await this.exec(cmd);
-      return { ok: true };
-    } catch (err) {
-      return classifyWriteError(err);
-    }
-  }
-
   /**
    * Slice 15 — read the timestamp (Unix epoch seconds) of the last
    * activity on the pane's window. The daemon's SeatActivityService

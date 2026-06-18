@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getActivityState,
+  getActivityStateWithSource,
   getActivityLabel,
   getActivityBgClass,
   getActivityTextClass,
@@ -100,6 +101,143 @@ describe("PL-019 activity-visuals", () => {
     it("returns false for fresh sampledAt without explicit staleness", () => {
       const fresh = new Date(Date.now() - 1_000).toISOString();
       expect(isActivityStale({ state: "running", reason: "x", evidenceSource: "y", sampledAt: fresh })).toBe(false);
+    });
+  });
+
+  describe("dot fallback precedence matrix (OPR.0.4.0.18)", () => {
+    it("fresh hook running wins over terminalActive=false", () => {
+      const r = getActivityStateWithSource({ state: "running", reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" }, false);
+      expect(r).toEqual({ state: "running", source: "hook" });
+    });
+
+    it("fresh hook needs_input wins over terminalActive=true", () => {
+      const r = getActivityStateWithSource({ state: "needs_input", reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" }, true);
+      expect(r).toEqual({ state: "needs_input", source: "hook" });
+    });
+
+    it("stale/unknown hook + terminalActive=true => running from terminal_activity", () => {
+      const r = getActivityStateWithSource({ state: "unknown", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true }, true);
+      expect(r).toEqual({ state: "running", source: "terminal_activity" });
+    });
+
+    it("stale/unknown hook + terminalActive=false => idle from terminal_activity", () => {
+      const r = getActivityStateWithSource({ state: "unknown", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true }, false);
+      expect(r).toEqual({ state: "idle", source: "terminal_activity" });
+    });
+
+    it("no hook (null) + terminalActive=true => running from terminal_activity", () => {
+      const r = getActivityStateWithSource(null, true);
+      expect(r).toEqual({ state: "running", source: "terminal_activity" });
+    });
+
+    it("no hook (null) + terminalActive=false => idle from terminal_activity", () => {
+      const r = getActivityStateWithSource(null, false);
+      expect(r).toEqual({ state: "idle", source: "terminal_activity" });
+    });
+
+    it("no hook + terminalActive=null => unknown from none", () => {
+      const r = getActivityStateWithSource(null, null);
+      expect(r).toEqual({ state: "unknown", source: "none" });
+    });
+
+    it("NEVER emits needs_input from terminal_activity fallback", () => {
+      for (const ta of [true, false, null, undefined]) {
+        const r = getActivityStateWithSource(null, ta);
+        if (r.source === "terminal_activity") {
+          expect(r.state).not.toBe("needs_input");
+        }
+        const r2 = getActivityStateWithSource({ state: "unknown", reason: "x", evidenceSource: "y", sampledAt: "z" }, ta);
+        if (r2.source === "terminal_activity") {
+          expect(r2.state).not.toBe("needs_input");
+        }
+      }
+    });
+
+    it("pane_heuristic running + terminalActive=true => terminal_activity (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        true,
+      );
+      expect(r).toEqual({ state: "running", source: "terminal_activity" });
+    });
+
+    it("pane_heuristic idle + terminalActive=false => terminal_activity (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "idle", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        false,
+      );
+      expect(r).toEqual({ state: "idle", source: "terminal_activity" });
+    });
+
+    it("pane_heuristic running + terminalActive=null => source pane_heuristic (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "pane_heuristic" });
+    });
+
+    it("unknown pane_heuristic + terminalActive=null => source none (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "unknown", reason: "capture_failed", evidenceSource: "pane_heuristic", sampledAt: "z" },
+        null,
+      );
+      expect(r.source).not.toBe("hook");
+      expect(r).toEqual({ state: "unknown", source: "none" });
+    });
+
+    it("unknown runtime_hook (stale) + terminalActive=null => source none", () => {
+      const r = getActivityStateWithSource(
+        { state: "unknown", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true },
+        null,
+      );
+      expect(r).toEqual({ state: "unknown", source: "none" });
+    });
+
+    it("stale non-unknown runtime_hook + terminalActive=null => source none (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "z", stale: true },
+        null,
+      );
+      expect(r.source).not.toBe("hook");
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("tmux_session running + terminalActive=null => source none (not hook)", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "tmux_session", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("session_registry running + terminalActive=null => source none", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "session_registry", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("unrecognized evidenceSource running + terminalActive=null => source none", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "test_custom", sampledAt: "z" },
+        null,
+      );
+      expect(r).toEqual({ state: "running", source: "none" });
+    });
+
+    it("runtime_hook running (fresh, not stale) always source=hook regardless of terminalActive", () => {
+      const r = getActivityStateWithSource(
+        { state: "running", reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" },
+        false,
+      );
+      expect(r).toEqual({ state: "running", source: "hook" });
+    });
+
+    it("backward compat: single-arg getActivityState still works", () => {
+      expect(getActivityState(null)).toBe("unknown");
+      expect(getActivityState({ state: "running", reason: "x", evidenceSource: "y", sampledAt: "z" })).toBe("running");
     });
   });
 
