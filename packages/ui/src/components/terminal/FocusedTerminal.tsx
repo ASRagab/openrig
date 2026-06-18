@@ -87,9 +87,10 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
   const fitAddonRef = useRef<unknown>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const generationRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
 
-  const connect = useCallback(() => {
+  const connectForGeneration = useCallback((gen: number) => {
     const base = daemonBaseUrl ?? window.location.origin;
     const wsUrl = base.replace(/^http/, "ws");
     const token = readTerminalBearerToken();
@@ -97,6 +98,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     const ws = new WebSocket(`${wsUrl}/api/terminal/${encodeURIComponent(sessionName)}${tokenParam}`);
 
     ws.onopen = () => {
+      if (generationRef.current !== gen) { ws.close(); return; }
       const fitAddon = fitAddonRef.current as { fit(): void } | null;
       const term = termRef.current as { cols: number; rows: number } | null;
       if (fitAddon && term) {
@@ -106,6 +108,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     };
 
     ws.onmessage = (evt) => {
+      if (generationRef.current !== gen) return;
       const term = termRef.current as { write(data: string): void } | null;
       if (typeof evt.data === "string" && term) {
         term.write(evt.data);
@@ -113,13 +116,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     };
 
     ws.onclose = () => {
+      if (generationRef.current !== gen) return;
       const term = termRef.current as { write(data: string): void } | null;
       if (term) {
         term.write("\r\n\x1b[90m[disconnected - reconnecting...]\x1b[0m\r\n");
       }
-      if (mountedRef.current) {
+      if (mountedRef.current && generationRef.current === gen) {
         reconnectTimerRef.current = setTimeout(() => {
-          if (mountedRef.current) connect();
+          if (mountedRef.current && generationRef.current === gen) connectForGeneration(gen);
         }, 3000);
       }
     };
@@ -131,8 +135,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
   useEffect(() => {
     if (!containerRef.current) return;
     mountedRef.current = true;
+    generationRef.current++;
+    const currentGen = generationRef.current;
     let cleanedUp = false;
-    let ws: WebSocket | undefined;
     let resizeObs: ResizeObserver | undefined;
 
     (async () => {
@@ -172,7 +177,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
           wsc.send(JSON.stringify({ type: "resize", cols, rows }));
         });
 
-        ws = connect();
+        connectForGeneration(currentGen);
 
         resizeObs = new ResizeObserver(() => { fitAddon.fit(); });
         resizeObs.observe(containerRef.current!);
@@ -184,6 +189,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     return () => {
       cleanedUp = true;
       mountedRef.current = false;
+      generationRef.current++;
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
       resizeObs?.disconnect();
       const activeWs = wsRef.current;
@@ -193,7 +199,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [connect]);
+  }, [connectForGeneration]);
 
   if (error) {
     return (

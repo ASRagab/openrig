@@ -126,4 +126,35 @@ describe("FocusedTerminal reconnect behavior", () => {
     // No second socket created
     expect(instances.length).toBe(1);
   });
+
+  it("session change invalidates old socket's reconnect (no stale reconnect)", async () => {
+    const { FocusedTerminal } = await import("../src/components/terminal/FocusedTerminal.js");
+
+    const { rerender } = render(
+      React.createElement(FocusedTerminal, { sessionName: "old-session" }),
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+
+    expect(instances.length).toBe(1);
+    const oldSocket = instances[0]!;
+    expect(oldSocket.url).toContain("old-session");
+
+    // Rerender with new session (triggers cleanup + new effect)
+    rerender(React.createElement(FocusedTerminal, { sessionName: "new-session" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+
+    // New session socket should be created
+    const newSessionSockets = instances.filter((i) => i.url.includes("new-session"));
+    expect(newSessionSockets.length).toBeGreaterThanOrEqual(1);
+
+    // Old socket's onclose fires (stale close from cleanup)
+    await act(async () => { oldSocket.onclose?.({ code: 1006, reason: "cleanup" }); });
+
+    // Advance past reconnect timer
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+    // No stale reconnect to old-session
+    const oldSessionSockets = instances.filter((i) => i.url.includes("old-session"));
+    expect(oldSessionSockets.length).toBe(1);
+  });
 });
