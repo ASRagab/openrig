@@ -5,7 +5,7 @@ import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { loadHostRegistry, resolveHost } from "../host-registry.js";
+import { loadHostRegistry, resolveHost, hostDisplayTarget } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 
@@ -322,15 +322,15 @@ async function runCrossHostWhoami(
       if (result.stderr) process.stderr.write(result.stderr);
       return;
     }
-    emitCrossHostFailure(host.id, host.target, result, true);
+    emitCrossHostFailure(host.id, hostDisplayTarget(host), result, true);
     return;
   }
 
-  console.log(`[via host=${host.id} (${host.target})]`);
+  console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   if (result.ok) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     return;
   }
-  emitCrossHostFailure(host.id, host.target, result, false);
+  emitCrossHostFailure(host.id, hostDisplayTarget(host), result, false);
 }

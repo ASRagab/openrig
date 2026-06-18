@@ -56,9 +56,10 @@ export async function runCrossHostCommand(
     return {
       ok: false,
       failedStep: "ssh-unreachable",
-      sshStderr: `host '${host.id}': transport '${host.transport}' is not supported (v0 supports ssh only)`,
+      sshStderr: `host '${host.id}': transport '${host.transport}' is not ssh; use HTTP transport for this host`,
     };
   }
+  const sshHost = host;
   if (argv.length === 0) {
     return {
       ok: false,
@@ -77,7 +78,7 @@ export async function runCrossHostCommand(
   // Stay deferential to ~/.ssh/config defaults.
 
   const remoteCommandLine = argv.map(shellQuote).join(" ");
-  const fullArgs = [...sshOpts, host.target, remoteCommandLine];
+  const fullArgs = [...sshOpts, sshHost.target, remoteCommandLine];
 
   const spawn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
   const child = spawn("ssh", fullArgs);
