@@ -136,6 +136,16 @@ export function renderMissionNotesTemplate(
   };
 }
 
+export function renderMissionProgressTemplate(missionName: string): string {
+  const raw = fs.readFileSync(resolveTemplate("mission-progress.md"), "utf8");
+  return raw.replace(/\{\{missionName\}\}/g, missionName);
+}
+
+export function renderSliceProgressTemplate(sliceName: string): string {
+  const raw = fs.readFileSync(resolveTemplate("slice-progress.md"), "utf8");
+  return raw.replace(/\{\{sliceName\}\}/g, sliceName);
+}
+
 /** Convert a folder-slug to a title-cased display name. */
 export function titleFromSlug(slug: string): string {
   return slug

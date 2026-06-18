@@ -180,6 +180,29 @@ describe("rig scope slice create", () => {
     expect(fm.id).toBe("OPR.0.3.2.2");
     expect(typeof fm.id === "string" && /^OPR\.0\.3\.2\.\d+$/.test(fm.id as string)).toBe(true);
   });
+
+  it("AC-1: slice create scaffolds PROGRESS.md by default", async () => {
+    const r = await run([
+      "slice", "create", "release-0.3.2", "scaffold-test", "--json",
+    ], env.missionsRoot);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.slice.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(true);
+    const content = fs.readFileSync(progressPath, "utf8");
+    expect(content).toContain("# Progress");
+    expect(content).toContain("Implementation complete");
+  });
+
+  it("AC-1: slice create --readme-only writes marker instead of PROGRESS.md", async () => {
+    const r = await run([
+      "slice", "create", "release-0.3.2", "no-progress", "--readme-only", "--json",
+    ], env.missionsRoot);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.slice.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(false);
+    const readme = fs.readFileSync(path.join(parsed.slice.path, "README.md"), "utf8");
+    expect(readme).toMatch(/progress_rail:\s*readme-only/);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -481,6 +504,17 @@ describe("rig scope mission create (HG-14 + HG-15)", () => {
       if (prior === undefined) delete process.env.OPENRIG_MISSION_NOTES_TEMPLATE_PATH;
       else process.env.OPENRIG_MISSION_NOTES_TEMPLATE_PATH = prior;
     }
+  });
+
+  it("AC-1: mission create scaffolds PROGRESS.md by default", async () => {
+    const r = await run(["mission", "create", "release-0.6.1", "--json"], env.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    const progressPath = path.join(parsed.mission.path, "PROGRESS.md");
+    expect(fs.existsSync(progressPath)).toBe(true);
+    const content = fs.readFileSync(progressPath, "utf8");
+    expect(content).toContain("# Progress");
+    expect(content).toContain("Scope complete");
   });
 });
 

@@ -43,7 +43,9 @@ import {
 } from "../lib/scope/scope-fs.js";
 import {
   renderMissionNotesTemplate,
+  renderMissionProgressTemplate,
   renderMissionTemplate,
+  renderSliceProgressTemplate,
   renderSliceTemplate,
   titleFromSlug,
 } from "../lib/scope/templates.js";
@@ -226,6 +228,7 @@ function buildSliceCreateCommand(): Command {
     .argument("<slug>", "Short slug (becomes the folder name's suffix)")
     .option("--template <kind>", `Template: ${SLICE_TEMPLATE_KINDS.join(" | ")}`, "placeholder")
     .option("--title <text>", "Display title (defaults to titlecased slug)")
+    .option("--readme-only", "Write progress_rail: readme-only in README frontmatter instead of scaffolding PROGRESS.md")
     .option("--json", "Machine-readable output")
     .action(async (missionName: string, rawSlug: string, opts, command) => {
       const out = makeStdout();
@@ -276,7 +279,18 @@ function buildSliceCreateCommand(): Command {
         });
         fs.mkdirSync(sliceAbs, { recursive: true });
         const readmePath = path.join(sliceAbs, "README.md");
-        fs.writeFileSync(readmePath, body, "utf8");
+        const readmeOnly = Boolean(opts.readmeOnly);
+        if (readmeOnly) {
+          const markerBody = body.replace(
+            /^(---\n)/,
+            `---\nprogress_rail: readme-only\n`,
+          );
+          fs.writeFileSync(readmePath, markerBody, "utf8");
+        } else {
+          fs.writeFileSync(readmePath, body, "utf8");
+          const progressPath = path.join(sliceAbs, "PROGRESS.md");
+          fs.writeFileSync(progressPath, renderSliceProgressTemplate(title), "utf8");
+        }
         const payload = {
           ok: true,
           slice: {
@@ -643,11 +657,14 @@ function buildMissionCreateCommand(): Command {
           });
           missionNotesRendered = { rendered: r.rendered, resolvedFrom: r.resolvedFrom };
         }
+        const progressBody = renderMissionProgressTemplate(title);
         // All renders succeeded — safe to touch the filesystem.
         fs.mkdirSync(absPath, { recursive: true });
         fs.mkdirSync(path.join(absPath, "slices"), { recursive: true });
         const readmePath = path.join(absPath, "README.md");
         fs.writeFileSync(readmePath, readmeBody, "utf8");
+        const progressPath = path.join(absPath, "PROGRESS.md");
+        fs.writeFileSync(progressPath, progressBody, "utf8");
         let missionNotesPath: string | null = null;
         let missionNotesResolvedFrom: "env" | "built-in" | null = null;
         if (missionNotesRendered) {
