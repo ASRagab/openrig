@@ -99,7 +99,7 @@ async function postHookPayload(payload, env = process.env) {
   }
 }
 
-function buildSessionIdentityPayload(providerPayload, now = () => new Date()) {
+function buildSessionIdentityPayload(providerPayload, env = process.env, now = () => new Date()) {
   if (!providerPayload || typeof providerPayload !== "object") return null;
   const hookEvent = firstString(
     providerPayload.hookEvent, providerPayload.hookEventName,
@@ -110,9 +110,9 @@ function buildSessionIdentityPayload(providerPayload, now = () => new Date()) {
   const sessionId = firstString(providerPayload.session_id, providerPayload.sessionId);
   if (!sessionId) return null;
 
-  const sessionName = firstString(providerPayload.sessionName, providerPayload.session_name);
-  const nodeId = firstString(providerPayload.nodeId, providerPayload.node_id);
-  const runtime = firstString(providerPayload.runtime);
+  const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
+  const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
+  const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
 
   if ((!sessionName && !nodeId) || !runtime) return null;
 
@@ -132,7 +132,7 @@ async function main() {
   const payload = buildOpenRigPayload(providerPayload);
   await postHookPayload(payload);
 
-  const identityPayload = buildSessionIdentityPayload(providerPayload);
+  const identityPayload = buildSessionIdentityPayload(providerPayload, process.env);
   if (identityPayload) {
     await postHookPayload(identityPayload);
   }

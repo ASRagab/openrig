@@ -94,38 +94,118 @@ describe("isCodex013xOrLater", () => {
 });
 
 describe("activity-relay session identity", () => {
-  it("buildSessionIdentityPayload extracts session_id from SessionStart", () => {
+  it("buildSessionIdentityPayload reads OpenRig identity from env, session_id from stdin", () => {
     const { buildSessionIdentityPayload } = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
-    const payload = buildSessionIdentityPayload({
-      hookEvent: "SessionStart",
-      session_id: "thread-abc-123",
-      sessionName: "dev-worker@test-rig",
-      runtime: "codex",
-    });
+    const env = { OPENRIG_SESSION_NAME: "dev-worker@test-rig", OPENRIG_NODE_ID: "node-1", OPENRIG_RUNTIME: "codex" };
+    const payload = buildSessionIdentityPayload(
+      { hookEvent: "SessionStart", session_id: "thread-abc-123" },
+      env,
+    );
     expect(payload).not.toBeNull();
     expect(payload.eventFamily).toBe("session_identity");
     expect(payload.sessionId).toBe("thread-abc-123");
     expect(payload.sessionName).toBe("dev-worker@test-rig");
+    expect(payload.runtime).toBe("codex");
   });
 
   it("buildSessionIdentityPayload returns null for non-SessionStart", () => {
     const { buildSessionIdentityPayload } = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
-    const payload = buildSessionIdentityPayload({
-      hookEvent: "UserPromptSubmit",
-      session_id: "thread-abc-123",
-      sessionName: "dev-worker@test-rig",
-      runtime: "codex",
-    });
+    const env = { OPENRIG_SESSION_NAME: "dev-worker@test-rig", OPENRIG_RUNTIME: "codex" };
+    const payload = buildSessionIdentityPayload({ hookEvent: "UserPromptSubmit", session_id: "thread-abc-123" }, env);
     expect(payload).toBeNull();
   });
 
   it("buildSessionIdentityPayload returns null when no session_id", () => {
     const { buildSessionIdentityPayload } = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
-    const payload = buildSessionIdentityPayload({
-      hookEvent: "SessionStart",
-      sessionName: "dev-worker@test-rig",
-      runtime: "codex",
-    });
+    const env = { OPENRIG_SESSION_NAME: "dev-worker@test-rig", OPENRIG_RUNTIME: "codex" };
+    const payload = buildSessionIdentityPayload({ hookEvent: "SessionStart" }, env);
     expect(payload).toBeNull();
+  });
+
+  it("returns null when provider payload has identity but env does not", () => {
+    const { buildSessionIdentityPayload } = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
+    const payload = buildSessionIdentityPayload(
+      { hookEvent: "SessionStart", session_id: "thread-123", sessionName: "foo", runtime: "codex" },
+      {},
+    );
+    expect(payload).toBeNull();
+  });
+});
+
+describe("clearResumeToken clears provenance", () => {
+  let db: Database.Database;
+  let sessionRegistry: SessionRegistry;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    sessionRegistry = new SessionRegistry(db);
+    const rigRepo = new RigRepository(db);
+    const rig = rigRepo.createRig("test-rig");
+    const node = rigRepo.addNode(rig.id, "dev.worker", { runtime: "codex" });
+    sessionRegistry.registerSession(node.id, "dev-worker@test-rig");
+  });
+
+  afterEach(() => db.close());
+
+  function getSessionId(): string {
+    return (db.prepare("SELECT id FROM sessions LIMIT 1").get() as { id: string }).id;
+  }
+
+  it("clearResumeToken clears provenance so scrape can write after", () => {
+    const id = getSessionId();
+    sessionRegistry.updateResumeToken(id, "codex_id", "hook-thread", "hook");
+    sessionRegistry.clearResumeToken(id);
+
+    const row = db.prepare("SELECT resume_provenance FROM sessions WHERE id = ?").get(id) as { resume_provenance: string | null };
+    expect(row.resume_provenance).toBeNull();
+
+    sessionRegistry.updateResumeToken(id, "codex_id", "scrape-thread", "scrape");
+    const after = db.prepare("SELECT resume_token, resume_provenance FROM sessions WHERE id = ?").get(id) as { resume_token: string; resume_provenance: string };
+    expect(after.resume_token).toBe("scrape-thread");
+    expect(after.resume_provenance).toBe("scrape");
+  });
+});
+
+describe("ensureCodexFeatureFlag version-aware", () => {
+  it("unknown version (no row) does NOT write config", () => {
+    const written: string[] = [];
+    const adapter = {
+      ensureCodexFeatureFlag: (enabled: boolean, opts?: { codexVersion?: string }) => {
+        if (!enabled) return;
+        if (!opts?.codexVersion) return;
+        if (isCodex013xOrLater(opts.codexVersion)) return;
+        written.push("wrote");
+      },
+    };
+    adapter.ensureCodexFeatureFlag(true, { codexVersion: undefined });
+    expect(written).toHaveLength(0);
+  });
+
+  it("confirmed 0.12x writes config", () => {
+    const written: string[] = [];
+    const adapter = {
+      ensureCodexFeatureFlag: (enabled: boolean, opts?: { codexVersion?: string }) => {
+        if (!enabled) return;
+        if (!opts?.codexVersion) return;
+        if (isCodex013xOrLater(opts.codexVersion)) return;
+        written.push("wrote");
+      },
+    };
+    adapter.ensureCodexFeatureFlag(true, { codexVersion: "0.120.0" });
+    expect(written).toHaveLength(1);
+  });
+
+  it("confirmed 0.139 does NOT write config", () => {
+    const written: string[] = [];
+    const adapter = {
+      ensureCodexFeatureFlag: (enabled: boolean, opts?: { codexVersion?: string }) => {
+        if (!enabled) return;
+        if (!opts?.codexVersion) return;
+        if (isCodex013xOrLater(opts.codexVersion)) return;
+        written.push("wrote");
+      },
+    };
+    adapter.ensureCodexFeatureFlag(true, { codexVersion: "0.139.0" });
+    expect(written).toHaveLength(0);
   });
 });

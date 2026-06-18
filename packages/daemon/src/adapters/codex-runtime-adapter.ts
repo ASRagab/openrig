@@ -73,7 +73,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    */
   ensureCodexFeatureFlag(enabled: boolean, opts?: { codexVersion?: string }): void {
     if (!enabled) return;
-    if (opts?.codexVersion && isCodex013xOrLater(opts.codexVersion)) return;
+    if (!opts?.codexVersion) return;
+    if (isCodex013xOrLater(opts.codexVersion)) return;
     const homedir = this.fs.homedir;
     if (!homedir) return;
     const configPath = nodePath.join(homedir, ".codex", "config.toml");

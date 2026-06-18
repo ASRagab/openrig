@@ -86,7 +86,7 @@ export class SessionRegistry {
 
   clearResumeToken(sessionId: string): void {
     this.db
-      .prepare("UPDATE sessions SET resume_type = NULL, resume_token = NULL WHERE id = ?")
+      .prepare("UPDATE sessions SET resume_type = NULL, resume_token = NULL, resume_provenance = NULL WHERE id = ?")
       .run(sessionId);
   }
 
