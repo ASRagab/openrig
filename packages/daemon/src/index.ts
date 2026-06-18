@@ -69,7 +69,7 @@ export async function startServer(port?: number) {
         // tick (matches contextMonitor pattern).
         deps.watchdogScheduler?.start();
         // Slice 15 — start the seat-activity scheduler (1Hz default).
-        // Polls every running tmux-bound seat's silence_flag so
+        // Polls every running tmux-bound seat's window_activity timestamp so
         // PsProjectionService + node-inventory enrichment serve
         // fresh data on each request.
         deps.seatActivityService?.start(deps.rigRepo.db);

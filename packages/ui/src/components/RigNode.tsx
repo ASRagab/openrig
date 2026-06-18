@@ -51,6 +51,7 @@ interface RigNodeData {
   // working?" dot color (replacing the previous startup-status color).
   // currentQitems surfaces in the hover hint when the agent is running.
   agentActivity?: AgentActivitySummary | null;
+  terminalActive?: boolean | null;
   currentQitems?: CurrentQitemSummary[];
   activityRing?: TopologyActivityVisual;
   reducedMotion?: boolean;
@@ -94,7 +95,7 @@ export function RigNode({ data }: { data: RigNodeData }) {
   // startupStatus retains its independent surface via the ATTN/FAILED badges
   // below \u2014 activity answers "is this agent working?", startup answers "did
   // this agent boot?". Two different questions, two different surfaces.
-  const activityState = getActivityState(data.agentActivity);
+  const activityState = getActivityState(data.agentActivity, data.terminalActive);
   const activityLabel = getActivityLabel(activityState);
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);

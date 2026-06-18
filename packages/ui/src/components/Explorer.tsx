@@ -138,7 +138,7 @@ function TreeToggle({
 // + routes/rigs.ts.
 function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
   const activity = node.agentActivity;
-  const state = getActivityState(activity);
+  const state = getActivityState(activity, node.terminalActive);
   const label = getActivityLabel(state);
   const textClass = getActivityTextClass(state);
   const animClass = getActivityAnimationClass(state);

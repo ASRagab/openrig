@@ -44,6 +44,7 @@ interface HybridAgentNodeData {
   contextTotalInputTokens?: number | null;
   contextTotalOutputTokens?: number | null;
   agentActivity?: AgentActivitySummary | null;
+  terminalActive?: boolean | null;
   currentQitems?: unknown[];
   rigId?: string | null;
   activityRing?: TopologyActivityVisual;
@@ -111,7 +112,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
   const cmuxLaunch = useCmuxLaunch();
   const core = isCoreRole(data.role);
   const isInfra = data.nodeKind === "infrastructure";
-  const activityState = getActivityState(data.agentActivity);
+  const activityState = getActivityState(data.agentActivity, data.terminalActive);
   const activityLabel = getActivityLabel(activityState);
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);

@@ -23,7 +23,6 @@ function setupDb(): Database.Database {
 function mockTmuxAdapter(overrides?: {
   createSession?: (name: string, cwd?: string, env?: Record<string, string>) => Promise<TmuxResult>;
   killSession?: (name: string) => Promise<TmuxResult>;
-  setMonitorSilence?: (target: string, seconds: number) => Promise<TmuxResult>;
 }): TmuxAdapter {
   return {
     createSession: overrides?.createSession ?? (async () => ({ ok: true as const })),
@@ -34,10 +33,6 @@ function mockTmuxAdapter(overrides?: {
     hasSession: async () => false,
     sendText: async () => ({ ok: true as const }),
     sendKeys: async () => ({ ok: true as const }),
-    // Slice 15 — monitor-silence configured at seat-up. Default mock
-    // succeeds quietly so existing tests don't pick up new warnings.
-    // Tests that exercise failure paths supply their own override.
-    setMonitorSilence: overrides?.setMonitorSilence ?? (async () => ({ ok: true as const })),
   } as unknown as TmuxAdapter;
 }
 
@@ -486,111 +481,4 @@ describe("NodeLauncher", () => {
     });
   });
 
-  // Slice 15 HG-7 — per-seat silenceWindowSeconds plumbing.
-  // NodeLauncher calls setMonitorSilence(sessionName, seconds) after
-  // createSession succeeds. Discriminator tests prove the override
-  // reaches the adapter call AND the default fires when the override
-  // is absent. Tmux failures must surface as launch warnings (not
-  // crash, not silent).
-  describe("slice 15 — setMonitorSilence wiring (HG-7 + Finding 2)", () => {
-    function mockTmuxWithMonitor(overrides?: {
-      createSession?: TmuxAdapter["createSession"];
-      setMonitorSilence?: (target: string, seconds: number) => Promise<TmuxResult>;
-    }): { tmux: TmuxAdapter; setSpy: ReturnType<typeof vi.fn> } {
-      const setSpy = vi.fn<(target: string, seconds: number) => Promise<TmuxResult>>()
-        .mockImplementation(overrides?.setMonitorSilence ?? (async () => ({ ok: true })));
-      const tmux = {
-        ...mockTmuxAdapter({ createSession: overrides?.createSession }),
-        setMonitorSilence: setSpy,
-      } as unknown as TmuxAdapter;
-      return { tmux, setSpy };
-    }
-
-    it("HG-7 DISCRIMINATOR: opts.silenceWindowSeconds=7 → setMonitorSilence called with (sessionName, 7)", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux, setSpy } = mockTmuxWithMonitor();
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl", { silenceWindowSeconds: 7 });
-      expect(result.ok).toBe(true);
-      expect(setSpy).toHaveBeenCalledOnce();
-      expect(setSpy.mock.calls[0]![1]).toBe(7);
-    });
-
-    it("HG-7 DISCRIMINATOR: no opts.silenceWindowSeconds → setMonitorSilence called with the launcher default (3)", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux, setSpy } = mockTmuxWithMonitor();
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl");
-      expect(result.ok).toBe(true);
-      expect(setSpy).toHaveBeenCalledOnce();
-      expect(setSpy.mock.calls[0]![1]).toBe(3);
-    });
-
-    it("HG-7 DISCRIMINATOR: explicit constructor defaultSilenceWindowSeconds overrides the built-in 3", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux, setSpy } = mockTmuxWithMonitor();
-      const launcher = new NodeLauncher({
-        db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
-        defaultSilenceWindowSeconds: 12,
-      });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl");
-      expect(result.ok).toBe(true);
-      expect(setSpy.mock.calls[0]![1]).toBe(12);
-    });
-
-    it("Finding 2: setMonitorSilence returning { ok: false } adds a launch warning but does NOT abort", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux, setSpy } = mockTmuxWithMonitor({
-        setMonitorSilence: async () => ({ ok: false, code: "session_not_found", message: "no session" }),
-      });
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl");
-      expect(result.ok).toBe(true);
-      expect(setSpy).toHaveBeenCalledOnce();
-      if (result.ok) {
-        const warnings = result.warnings ?? [];
-        expect(warnings.some((w) => w.toLowerCase().includes("monitor-silence"))).toBe(true);
-        expect(warnings.some((w) => w.includes("no session"))).toBe(true);
-      }
-      // Session still recorded — launch was not aborted.
-      const sessions = sessionRegistry.getSessionsForRig(rig.id);
-      expect(sessions).toHaveLength(1);
-    });
-
-    it("Finding 2: setMonitorSilence throwing adds a launch warning but does NOT abort", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux, setSpy } = mockTmuxWithMonitor({
-        setMonitorSilence: async () => { throw new Error("tmux gone away"); },
-      });
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl");
-      expect(result.ok).toBe(true);
-      expect(setSpy).toHaveBeenCalledOnce();
-      if (result.ok) {
-        const warnings = result.warnings ?? [];
-        expect(warnings.some((w) => w.toLowerCase().includes("monitor-silence"))).toBe(true);
-        expect(warnings.some((w) => w.includes("tmux gone away"))).toBe(true);
-      }
-      const sessions = sessionRegistry.getSessionsForRig(rig.id);
-      expect(sessions).toHaveLength(1);
-    });
-
-    it("Finding 2: setMonitorSilence succeeding emits NO warning", async () => {
-      const { rig } = seedRigWithNode();
-      const { tmux } = mockTmuxWithMonitor();
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-
-      const result = await launcher.launchNode(rig.id, "dev1-impl");
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        const warnings = result.warnings ?? [];
-        expect(warnings.some((w) => w.toLowerCase().includes("monitor-silence"))).toBe(false);
-      }
-    });
-  });
 });

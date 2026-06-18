@@ -42,9 +42,29 @@ const ACTIVITY_TEXT_CLASSES: Record<ActivityState, string> = {
   unknown: "text-stone-400",
 };
 
-export function getActivityState(activity: AgentActivitySummary | null | undefined): ActivityState {
-  if (!activity) return "unknown";
-  return activity.state;
+export interface ActivityStateResult {
+  state: ActivityState;
+  source: "hook" | "terminal_activity" | "none";
+}
+
+export function getActivityState(
+  activity: AgentActivitySummary | null | undefined,
+  terminalActive?: boolean | null,
+): ActivityState {
+  return getActivityStateWithSource(activity, terminalActive).state;
+}
+
+export function getActivityStateWithSource(
+  activity: AgentActivitySummary | null | undefined,
+  terminalActive?: boolean | null,
+): ActivityStateResult {
+  if (activity && activity.state !== "unknown") {
+    return { state: activity.state, source: "hook" };
+  }
+  if (terminalActive === true) return { state: "running", source: "terminal_activity" };
+  if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
+  if (activity) return { state: "unknown", source: "hook" };
+  return { state: "unknown", source: "none" };
 }
 
 export function getActivityLabel(state: ActivityState): string {

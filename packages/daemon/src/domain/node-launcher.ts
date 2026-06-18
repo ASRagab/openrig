@@ -123,32 +123,7 @@ export class NodeLauncher {
       return { ok: false, code: tmuxResult.code, message: tmuxResult.message };
     }
 
-    // 3a. Slice 15 — configure tmux monitor-silence on the new session
-    // so the runtime maintains a per-pane silence_flag that the daemon's
-    // SeatActivityService reads on its poll tick. Best-effort: a tmux
-    // misfire here does NOT abort seat launch — the seat still functions,
-    // we just won't have a terminal-active signal for it until a
-    // subsequent seat-up retry. Threshold: per-seat override (from
-    // AgentSpec.profile.activity.silenceWindowSeconds via LaunchOpts)
-    // falls back to the launcher default (3s per slice 15 README).
-    //
-    // Failures are surfaced as launch warnings (not silently swallowed)
-    // so the operator and downstream consumers can see when activity
-    // detection isn't active for a seat. The seat still launches.
     const launchWarnings: string[] = [];
-    const silenceWindowSeconds = opts?.silenceWindowSeconds ?? this.defaultSilenceWindowSeconds;
-    try {
-      const monitorResult = await this.tmuxAdapter.setMonitorSilence(sessionName, silenceWindowSeconds);
-      if (!monitorResult.ok) {
-        launchWarnings.push(
-          `monitor-silence setup failed for ${sessionName}: ${monitorResult.message}`,
-        );
-      }
-    } catch (err) {
-      launchWarnings.push(
-        `monitor-silence setup failed for ${sessionName}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
 
     // 3b. Start transcript rotation (V1 pre-release CLI/daemon Item 1:
     // bounded capture-pane overwrite replaces the unbounded pipe-pane

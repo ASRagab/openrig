@@ -75,7 +75,7 @@ function activityLabelFromVisualState(state: TopologyActivityVisual["state"]): s
 }
 
 export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTableProps) {
-  const fallbackActivityState = getActivityState(data.agentActivity);
+  const fallbackActivityState = getActivityState(data.agentActivity, data.terminalActive);
   const activityState = activityVisual?.state ?? fallbackActivityState;
   const activityLabel = activityVisual
     ? activityLabelFromVisualState(activityVisual.state)
