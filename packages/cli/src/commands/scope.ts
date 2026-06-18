@@ -683,6 +683,118 @@ function buildMissionCreateCommand(): Command {
 }
 
 // ---------------------------------------------------------------------
+// Audit (B2 — read-only scope audit)
+// ---------------------------------------------------------------------
+
+function buildAuditCommand(): Command {
+  return new Command("audit")
+    .description("Read-only scope audit: flag missing/malformed progress rails and registration ghosts")
+    .requiredOption("--mission <name>", "Mission to audit")
+    .option("--json", "Machine-readable JSON output")
+    .action(async (opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const { classifyScopeItem } = await import("../lib/scope/scope-audit.js");
+        const missionName = opts.mission as string;
+
+        const missionDir = path.join(missionsRoot, missionName);
+        if (!fs.existsSync(missionDir)) {
+          throw new ScopeCliError({ fact: `Mission "${missionName}" not found at ${missionDir}.`, consequence: "Cannot audit.", action: "Check the mission name." });
+        }
+
+        const missionReadme = path.join(missionDir, "README.md");
+        const missionProgress = path.join(missionDir, "PROGRESS.md");
+        const missionFm = fs.existsSync(missionReadme)
+          ? extractFrontmatterRaw(fs.readFileSync(missionReadme, "utf-8"))
+          : null;
+
+        const missionResult = classifyScopeItem({
+          id: null,
+          path: missionDir,
+          readmeFrontmatterRaw: missionFm,
+          progressFileExists: fs.existsSync(missionProgress),
+          readmeOnlyMarker: false,
+          isActiveRelease: true,
+          level: "mission",
+        });
+
+        const slicesDir = path.join(missionDir, "slices");
+        const sliceResults: Array<{ name: string; result: ReturnType<typeof classifyScopeItem> }> = [];
+
+        if (fs.existsSync(slicesDir)) {
+          for (const entry of fs.readdirSync(slicesDir)) {
+            const sliceDir = path.join(slicesDir, entry);
+            if (!fs.statSync(sliceDir).isDirectory()) continue;
+            const sliceReadme = path.join(sliceDir, "README.md");
+            const sliceProgress = path.join(sliceDir, "PROGRESS.md");
+            const sliceFm = fs.existsSync(sliceReadme)
+              ? extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"))
+              : null;
+            const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
+
+            sliceResults.push({
+              name: entry,
+              result: classifyScopeItem({
+                id: null,
+                path: sliceDir,
+                readmeFrontmatterRaw: sliceFm,
+                progressFileExists: fs.existsSync(sliceProgress),
+                readmeOnlyMarker,
+                isActiveRelease: true,
+                level: "slice",
+              }),
+            });
+          }
+        }
+
+        const allFindings = [
+          ...missionResult.findings.map((f) => ({ ...f, scope: "mission" as const, scopeName: missionName })),
+          ...sliceResults.flatMap((s) => s.result.findings.map((f) => ({ ...f, scope: "slice" as const, scopeName: s.name }))),
+        ];
+
+        if (json) {
+          out.write(JSON.stringify({
+            ok: allFindings.length === 0,
+            mission: { name: missionName, railStatus: missionResult.railStatus, frontmatterError: missionResult.frontmatterError, findings: missionResult.findings },
+            slices: sliceResults.map((s) => ({ name: s.name, railStatus: s.result.railStatus, frontmatterError: s.result.frontmatterError, findings: s.result.findings })),
+            totalFindings: allFindings.length,
+          }, null, 2));
+          out.write("\n");
+          if (allFindings.length > 0) process.exitCode = 1;
+          return;
+        }
+
+        out.write(`Scope audit: ${missionName}\n`);
+        out.write(`Mission rail: ${missionResult.railStatus}\n`);
+        out.write(`Slices: ${sliceResults.length} total\n\n`);
+
+        if (allFindings.length > 0) {
+          out.write("FINDINGS:\n");
+          for (const f of allFindings) {
+            out.write(`  [${f.severity}] [${f.kind}] ${f.scope}/${f.scopeName}\n`);
+            out.write(`    ${f.message}\n`);
+            out.write(`    fix: ${f.remediation}\n`);
+          }
+          out.write(`\nFAIL: ${allFindings.length} finding(s)\n`);
+          process.exitCode = 1;
+        } else {
+          out.write("PASS: all scope items have valid rails\n");
+        }
+      } catch (err) {
+        if (err instanceof ScopeCliError) { fail(err, json, out); }
+        throw err;
+      }
+    });
+}
+
+function extractFrontmatterRaw(content: string): string | null {
+  const match = /^---\s*\n([\s\S]*?)\n---/m.exec(content);
+  return match ? match[1]! : null;
+}
+
+// ---------------------------------------------------------------------
 // Aggregate
 // ---------------------------------------------------------------------
 
@@ -705,6 +817,7 @@ export function scopeCommand(): Command {
   mission.addCommand(buildMissionShowCommand());
   mission.addCommand(buildMissionCreateCommand());
   cmd.addCommand(mission);
+  cmd.addCommand(buildAuditCommand());
 
   return cmd;
 }
