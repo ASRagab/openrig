@@ -504,14 +504,18 @@ describe("RigGraph", () => {
     });
   });
 
-  it("prefers the human rig name for the watermark stamp", async () => {
+  it("graph view does NOT render a diagonal watermark stamp (OPR.0.4.0.21 ghost removal)", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
     render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" rigName="demo-rig" /></QueryWrapper>);
 
     await waitFor(() => {
-      expect(screen.getByTestId("rig-stamp-watermark").textContent).toBe("demo-rig");
+      expect(screen.queryByTestId("rig-stamp-watermark")).toBeNull();
     });
+    const container = document.querySelector("[data-testid]")?.closest("[class]");
+    if (container) {
+      expect(container.innerHTML).not.toContain("stamp-watermark");
+    }
   });
 
   it("renders custom RigNode content via nodeTypes registration", async () => {

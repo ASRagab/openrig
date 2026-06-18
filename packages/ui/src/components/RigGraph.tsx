@@ -12,7 +12,6 @@ import { RigNode } from "./RigNode.js";
 import { HotPotatoEdge } from "./topology/HotPotatoEdge.js";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { displayPodName, inferPodName } from "../lib/display-name.js";
-import { shortId } from "../lib/display-id.js";
 import { useTopologyActivity } from "../hooks/useTopologyActivity.js";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion.js";
 import {
@@ -364,7 +363,6 @@ export function RigGraph({
   // setSelection({type:'seat-detail'}) drawer-open behavior. The
   // useNodeSelection alias is fully retired post-Phase 5.1.
   const navigate = useNavigate();
-  const rigStamp = rigName?.trim() ? rigName : (rigId ? shortId(rigId) : null);
 
   const onNodeClick: NodeMouseHandler = useCallback(
     async (_event, node) => {
@@ -496,13 +494,6 @@ export function RigGraph({
       <div className="absolute top-4 right-4 w-3 h-3"><div className="reg-tr" /></div>
       <div className="absolute bottom-4 left-4 w-3 h-3"><div className="reg-bl" /></div>
       <div className="absolute bottom-4 right-4 w-3 h-3"><div className="reg-br" /></div>
-
-      {/* Ambient rig stamp watermark */}
-      {rigStamp && (
-        <div data-testid="rig-stamp-watermark" className="stamp-watermark text-3xl left-[20%] top-[35%]">
-          {rigStamp}
-        </div>
-      )}
 
       {reconnecting && (
         <div className="absolute top-spacing-4 right-spacing-4 z-20">
