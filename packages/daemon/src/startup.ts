@@ -437,10 +437,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     ensureDefaultClaudeCompactionFiles(OPENRIG_HOME);
     const settingsStore = new SettingsStore();
     const enabled = settingsStore.resolveOne("runtime.codex.hooks_enabled").value as boolean;
+    let codexVersion: string | undefined;
     const codexVersionRow = db.prepare(
       "SELECT version FROM runtime_verifications WHERE runtime = 'codex' ORDER BY verified_at DESC LIMIT 1"
     ).get() as { version: string | null } | undefined;
-    codexAdapter.ensureCodexFeatureFlag(enabled, { codexVersion: codexVersionRow?.version ?? undefined });
+    if (codexVersionRow?.version) {
+      codexVersion = codexVersionRow.version;
+    } else {
+      try {
+        const verifyResult = await runtimeVerifier.verifyCodex();
+        codexVersion = verifyResult.version ?? undefined;
+      } catch { /* codex not available — skip feature flag */ }
+    }
+    codexAdapter.ensureCodexFeatureFlag(enabled, { codexVersion });
   } catch (err) {
     console.error(`[openrig] runtime setup warning: ${(err as Error).message}`);
   }
