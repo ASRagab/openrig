@@ -236,7 +236,7 @@ describe("Ps CLI", () => {
     expect(output).toContain("demo-rig#rig-new");
   });
 
-  it("ps --nodes --json produces valid JSON array with restoreOutcome", async () => {
+  it("ps --nodes --json --full produces valid JSON array with restoreOutcome", async () => {
     psData = [
       { rigId: "rig-1", name: "test-rig", nodeCount: 1, runningCount: 1, status: "running", uptime: "1m", latestSnapshot: null },
     ];
@@ -256,7 +256,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--full"]);
     });
     const parsed = JSON.parse(logs.join(""));
     expect(Array.isArray(parsed)).toBe(true);
