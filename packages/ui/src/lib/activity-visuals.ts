@@ -183,7 +183,9 @@ export function formatRollupLabel(rollup: ActivityRollup): string {
   const parts: string[] = [];
   if (rollup.working > 0) parts.push(`${rollup.working} working`);
   if (rollup.idle > 0) parts.push(`${rollup.idle} idle`);
-  if (rollup.needsInput > 0) parts.push(`${rollup.needsInput} needs you`);
+  if (rollup.needsInputHookGrade > 0) parts.push(`${rollup.needsInputHookGrade} needs you`);
+  const paneNeedsInput = rollup.needsInput - rollup.needsInputHookGrade;
+  if (paneNeedsInput > 0) parts.push(`${paneNeedsInput} needs input (activity-grade)`);
   if (rollup.unknown > 0) parts.push(`${rollup.unknown} unknown`);
   return parts.join(" · ") || "no seats";
 }

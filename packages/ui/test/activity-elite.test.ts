@@ -88,9 +88,24 @@ describe("computeActivityRollup (FR-3)", () => {
     expect(rollup.working + rollup.idle + rollup.needsInput + rollup.unknown).toBe(rollup.total);
   });
 
-  it("formats rollup label", () => {
+  it("formats rollup label with hook-grade needs_input as 'needs you'", () => {
     const rollup = { working: 3, idle: 2, needsInput: 1, needsInputHookGrade: 1, unknown: 0, total: 6 };
     expect(formatRollupLabel(rollup)).toBe("3 working · 2 idle · 1 needs you");
+  });
+
+  it("pane-grade needs_input labeled activity-grade in rollup (AC-4)", () => {
+    const items = [
+      { activity: { state: "needs_input" as const, reason: "hook", evidenceSource: "runtime_hook", sampledAt: "z" }, terminalActive: null },
+      { activity: { state: "needs_input" as const, reason: "pane", evidenceSource: "pane_heuristic", sampledAt: "z" }, terminalActive: null },
+      { activity: { state: "running" as const, reason: "x", evidenceSource: "runtime_hook", sampledAt: "z" }, terminalActive: true },
+    ];
+    const rollup = computeActivityRollup(items);
+    expect(rollup.needsInput).toBe(2);
+    expect(rollup.needsInputHookGrade).toBe(1);
+    const label = formatRollupLabel(rollup);
+    expect(label).toContain("1 needs you");
+    expect(label).toContain("1 needs input (activity-grade)");
+    expect(label).not.toMatch(/2 needs you/);
   });
 });
 

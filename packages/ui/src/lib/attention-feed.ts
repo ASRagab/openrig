@@ -148,3 +148,37 @@ function qitemIdFromCard(card: FeedCard): string | null {
         : null;
   return fromPayload;
 }
+
+export interface NeedsInputSeat {
+  logicalId: string;
+  sessionName?: string | null;
+  source: "hook" | "pane_heuristic" | string;
+  eventAt?: string | null;
+  sampledAt?: string;
+}
+
+export function needsInputSeatToFeedCard(seat: NeedsInputSeat): FeedCard {
+  const id = `activity-needs-input-${seat.logicalId}`;
+  const createdAt = seat.eventAt ?? seat.sampledAt ?? new Date().toISOString();
+  const receivedAt = Date.parse(createdAt) || Date.now();
+  const syntheticEvent: ActivityEvent = {
+    seq: -1,
+    type: "activity.needs_input.synthetic",
+    payload: {
+      logicalId: seat.logicalId,
+      sessionName: seat.sessionName,
+      source: seat.source,
+    },
+    createdAt,
+    receivedAt,
+  };
+  return {
+    id,
+    kind: "action-required",
+    title: `${seat.logicalId} needs input${seat.source !== "hook" ? " (activity-grade)" : ""}`,
+    body: seat.sessionName ?? undefined,
+    source: syntheticEvent,
+    receivedAt,
+    createdAt,
+  };
+}
