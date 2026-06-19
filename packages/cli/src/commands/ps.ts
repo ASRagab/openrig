@@ -830,31 +830,47 @@ async function handleNodes(
   const humanList = (opts.full || limit !== null) ? limited : limited.slice(0, HUMAN_NODE_BUDGET);
   const humanTruncated = !opts.full && limit === null && filtered.length > HUMAN_NODE_BUDGET;
 
-  const header = padNodeRow("RIG", "POD", "MEMBER", "SESSION", "RUNTIME", "STATUS", "STARTUP", "LIFECYCLE", "TERMINAL", "WORK", "ACTIVITY", "CTX", "RESTORE", "ERROR");
-  console.log(header);
-  for (const n of humanList as NodeEntry[]) {
-    const parts = n.logicalId.split(".");
-    const pod = n.podNamespace ?? (parts.length > 1 ? parts[0]! : "—");
-    const member = parts.length > 1 ? parts.slice(1).join(".") : n.logicalId;
-    const rig = `${n.rigName}#${n.rigId}`;
-    console.log(padNodeRow(
-      rig,
-      pod,
-      member,
-      n.canonicalSessionName ?? "—",
-      n.runtime ?? "—",
-      n.sessionStatus ?? "—",
-      n.startupStatus ?? "—",
-      abbrevNodeLifecycle(n.lifecycleState),
-      // Slice 15 — terminal-active + has-work as DISTINCT columns
-      // (non-inference contract: never collapsed into one signal).
-      formatTerminalActive(n.terminalActive),
-      formatHasWork(n.hasAssignedWork, n.pendingWorkCount),
-      formatActivity(n.agentActivity),
-      formatContextUsage(n.contextUsage),
-      n.restoreOutcome,
-      n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—",
-    ));
+  if (useCompact) {
+    console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
+    for (const n of humanList as NodeEntry[]) {
+      const attn = needsAttention(n);
+      const reason = attn
+        ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
+        : "—";
+      console.log(padCompactNodeRow(
+        n.rigName,
+        n.canonicalSessionName ?? "—",
+        abbrevNodeLifecycle(n.lifecycleState),
+        formatActivity(n.agentActivity),
+        formatHasWork(n.hasAssignedWork, n.pendingWorkCount),
+        reason,
+      ));
+    }
+  } else {
+    const header = padNodeRow("RIG", "POD", "MEMBER", "SESSION", "RUNTIME", "STATUS", "STARTUP", "LIFECYCLE", "TERMINAL", "WORK", "ACTIVITY", "CTX", "RESTORE", "ERROR");
+    console.log(header);
+    for (const n of humanList as NodeEntry[]) {
+      const parts = n.logicalId.split(".");
+      const pod = n.podNamespace ?? (parts.length > 1 ? parts[0]! : "—");
+      const member = parts.length > 1 ? parts.slice(1).join(".") : n.logicalId;
+      const rig = `${n.rigName}#${n.rigId}`;
+      console.log(padNodeRow(
+        rig,
+        pod,
+        member,
+        n.canonicalSessionName ?? "—",
+        n.runtime ?? "—",
+        n.sessionStatus ?? "—",
+        n.startupStatus ?? "—",
+        abbrevNodeLifecycle(n.lifecycleState),
+        formatTerminalActive(n.terminalActive),
+        formatHasWork(n.hasAssignedWork, n.pendingWorkCount),
+        formatActivity(n.agentActivity),
+        formatContextUsage(n.contextUsage),
+        n.restoreOutcome,
+        n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—",
+      ));
+    }
   }
   if (humanTruncated) {
     const remaining = filtered.length - HUMAN_NODE_BUDGET;
@@ -917,6 +933,17 @@ function padNodeRow(rig: string, pod: string, member: string, session: string, r
     fitCell(ctx, 6),
     fitCell(restore, 10),
     error,
+  ].join("");
+}
+
+function padCompactNodeRow(rig: string, session: string, lifecycle: string, activity: string, work: string, reason: string): string {
+  return [
+    fitCell(rig, 22),
+    fitCell(session, 38),
+    fitCell(lifecycle, 11),
+    fitCell(activity, 14),
+    fitCell(work, 6),
+    reason,
   ].join("");
 }
 

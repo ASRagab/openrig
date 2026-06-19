@@ -442,16 +442,42 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
   });
 
   // -- Human table compact --
-  it("compact default human table still renders aligned table", async () => {
+  it("compact default human table uses compact columns and omits full-only columns", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
     });
     const output = logs.join("\n");
-    // Table header still present
+    // Compact headers present
     expect(output).toContain("RIG");
     expect(output).toContain("SESSION");
+    expect(output).toContain("LIFECYCLE");
+    expect(output).toContain("ACTIVITY");
+    expect(output).toContain("WORK");
+    // Full-only headers absent
+    expect(output).not.toContain("CTX");
+    expect(output).not.toContain("RESTORE");
+    expect(output).not.toContain("RUNTIME");
+    expect(output).not.toContain("STARTUP");
+    expect(output).not.toContain("TERMINAL");
+    expect(output).not.toContain("POD");
+    expect(output).not.toContain("MEMBER");
     // All nodes rendered (same breadth)
     expect(output).toContain("orch1-lead@openrig-build");
     expect(output).toContain("dev1-driver@openrig-velocity");
+  });
+
+  it("--full human table uses full-detail columns", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--full"]);
+    });
+    const output = logs.join("\n");
+    // Full headers present
+    expect(output).toContain("CTX");
+    expect(output).toContain("RESTORE");
+    expect(output).toContain("RUNTIME");
+    expect(output).toContain("STARTUP");
+    expect(output).toContain("TERMINAL");
+    expect(output).toContain("POD");
+    expect(output).toContain("MEMBER");
   });
 });

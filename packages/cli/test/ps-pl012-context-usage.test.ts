@@ -222,10 +222,10 @@ describe("PL-012 ps --filter contextUsage.* + CTX field", () => {
     expect(entries[0]).toEqual({ logicalId: "alpha", contextUsage: expect.objectContaining({ usedPercentage: 73 }) });
   });
 
-  it("CTX column appears in human output", async () => {
+  it("CTX column appears in --full human output", async () => {
     nodesByRig["rig-1"] = [nodeAt("alpha", 73), nodeAt("delta", null)];
     const { logs, exitCode } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--full"]);
     });
     expect(exitCode).toBeUndefined();
     const out = logs.join("\n");
