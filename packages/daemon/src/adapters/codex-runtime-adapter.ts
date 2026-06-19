@@ -550,7 +550,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         }
       }
       if (binding.tmuxSession) {
-        await this.dismissSkippableCodexUpdatePrompt(binding.tmuxSession, 1);
+        await this.dismissCodexInteractiveGates(binding.tmuxSession, 1);
       }
       await this.sleep(250);
     }
