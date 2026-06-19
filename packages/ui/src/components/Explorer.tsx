@@ -11,6 +11,7 @@ import {
   getActivityLabel,
   getActivityTextClass,
   getActivityAnimationClass,
+  getTimeInState,
   shortQitemTail,
 } from "../lib/activity-visuals.js";
 import { EmptyState } from "./ui/empty-state.js";
@@ -145,7 +146,9 @@ function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
   const qitems = node.currentQitems ?? [];
 
   const sourceLabel = activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : "";
-  const titleLines = [`activity: ${label}${sourceLabel}`];
+  const timeInState = getTimeInState(activity);
+  const durationSuffix = timeInState ? ` ${timeInState.label}` : "";
+  const titleLines = [`activity: ${label}${durationSuffix}${sourceLabel}`];
   if (qitems.length > 0) {
     for (const q of qitems) {
       titleLines.push(`on ${shortQitemTail(q.qitemId)} — ${q.bodyExcerpt}`);

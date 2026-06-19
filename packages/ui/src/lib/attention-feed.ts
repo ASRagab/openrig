@@ -124,18 +124,19 @@ export function mergeAttentionIntoFeed(
  * re-verify-2 qitem-20260518192210 CLEANUP-1).
  */
 export const QUEUE_DERIVED_CARD_ID_PREFIX = "queue-attention-";
+export const ACTIVITY_NEEDS_INPUT_CARD_ID_PREFIX = "activity-needs-input-";
+
+export function isSyntheticFeedCard(card: FeedCard): boolean {
+  return card.id.startsWith(QUEUE_DERIVED_CARD_ID_PREFIX)
+    || card.id.startsWith(ACTIVITY_NEEDS_INPUT_CARD_ID_PREFIX);
+}
 
 export function isQueueDerivedFeedCard(card: FeedCard): boolean {
   return card.id.startsWith(QUEUE_DERIVED_CARD_ID_PREFIX);
 }
 
-/**
- * Filter rawCards to ONLY event-derived cards' seqs for useDismissedSeqs.
- * Queue-derived cards (synthetic seq=-1) are excluded; their dismissal
- * lives in useDismissedCardIds.
- */
 export function eventDerivedSeqsForPrune(rawCards: FeedCard[]): number[] {
-  return rawCards.filter((c) => !isQueueDerivedFeedCard(c)).map((c) => c.source.seq);
+  return rawCards.filter((c) => !isSyntheticFeedCard(c)).map((c) => c.source.seq);
 }
 
 function qitemIdFromCard(card: FeedCard): string | null {
@@ -147,4 +148,41 @@ function qitemIdFromCard(card: FeedCard): string | null {
         ? (payload.qitem_id as string)
         : null;
   return fromPayload;
+}
+
+export interface NeedsInputSeat {
+  logicalId: string;
+  sessionName?: string | null;
+  source: "hook" | "pane_heuristic" | string;
+  eventAt?: string | null;
+  sampledAt?: string;
+  rigId?: string;
+}
+
+export function needsInputSeatToFeedCard(seat: NeedsInputSeat): FeedCard {
+  const id = `activity-needs-input-${seat.rigId ?? "unknown"}-${seat.logicalId}`;
+  const createdAt = seat.eventAt ?? seat.sampledAt ?? new Date().toISOString();
+  const receivedAt = Date.parse(createdAt) || Date.now();
+  const syntheticEvent: ActivityEvent = {
+    seq: -1,
+    type: "activity.needs_input.synthetic",
+    payload: {
+      logicalId: seat.logicalId,
+      sessionName: seat.sessionName,
+      source: seat.source,
+      rigId: seat.rigId,
+    },
+    createdAt,
+    receivedAt,
+  };
+  return {
+    id,
+    kind: "action-required",
+    title: `${seat.logicalId} needs input${seat.source !== "hook" ? " (activity-grade)" : ""}`,
+    body: seat.sessionName ?? undefined,
+    rigId: seat.rigId,
+    source: syntheticEvent,
+    receivedAt,
+    createdAt,
+  };
 }

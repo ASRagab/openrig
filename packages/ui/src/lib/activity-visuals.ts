@@ -125,3 +125,67 @@ export function shortQitemTail(qitemId: string): string {
   if (qitemId.length <= 8) return qitemId;
   return qitemId.slice(-8);
 }
+
+export function getTimeInState(activity: AgentActivitySummary | null | undefined): { seconds: number; label: string } | null {
+  if (!activity) return null;
+  const ts = activity.eventAt ?? activity.sampledAt;
+  if (!ts) return null;
+  const parsed = Date.parse(ts);
+  if (Number.isNaN(parsed)) return null;
+  const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  return { seconds, label: formatDuration(seconds) };
+}
+
+function formatDuration(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainMins = minutes % 60;
+  if (hours < 24) return remainMins > 0 ? `${hours}h ${remainMins}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+export function isHookGradeNeedsInput(result: ActivityStateResult): boolean {
+  return result.state === "needs_input" && result.source === "hook";
+}
+
+export interface ActivityRollup {
+  working: number;
+  idle: number;
+  needsInput: number;
+  needsInputHookGrade: number;
+  unknown: number;
+  total: number;
+}
+
+export function computeActivityRollup(
+  items: Array<{ activity: AgentActivitySummary | null | undefined; terminalActive?: boolean | null }>,
+): ActivityRollup {
+  const rollup: ActivityRollup = { working: 0, idle: 0, needsInput: 0, needsInputHookGrade: 0, unknown: 0, total: items.length };
+  for (const item of items) {
+    const result = getActivityStateWithSource(item.activity, item.terminalActive);
+    switch (result.state) {
+      case "running": rollup.working++; break;
+      case "idle": rollup.idle++; break;
+      case "needs_input":
+        rollup.needsInput++;
+        if (result.source === "hook") rollup.needsInputHookGrade++;
+        break;
+      case "unknown": rollup.unknown++; break;
+    }
+  }
+  return rollup;
+}
+
+export function formatRollupLabel(rollup: ActivityRollup): string {
+  const parts: string[] = [];
+  if (rollup.working > 0) parts.push(`${rollup.working} working`);
+  if (rollup.idle > 0) parts.push(`${rollup.idle} idle`);
+  if (rollup.needsInputHookGrade > 0) parts.push(`${rollup.needsInputHookGrade} needs you`);
+  const paneNeedsInput = rollup.needsInput - rollup.needsInputHookGrade;
+  if (paneNeedsInput > 0) parts.push(`${paneNeedsInput} needs input (activity-grade)`);
+  if (rollup.unknown > 0) parts.push(`${rollup.unknown} unknown`);
+  return parts.join(" · ") || "no seats";
+}

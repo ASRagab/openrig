@@ -7,6 +7,7 @@ import {
   getActivityLabel,
   getActivityStateWithSource,
   isActivityStale,
+  getTimeInState,
 } from "../../lib/activity-visuals.js";
 import type { AgentActivitySummary } from "../../hooks/useNodeInventory.js";
 import { cn } from "../../lib/utils.js";
@@ -117,6 +118,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);
   const activityStale = isActivityStale(data.agentActivity);
+  const timeInState = getTimeInState(data.agentActivity);
   const activityCard = getActivityCardSignal({ activityRing: data.activityRing, activityState });
   const runtimeTitle = data.runtime || data.model ? formatRuntimeModel(data.runtime, data.model) : null;
   const contextKnown = data.contextAvailability === "known" && typeof data.contextUsedPercentage === "number";
@@ -171,7 +173,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
           data-testid={`hybrid-activity-dot-${data.logicalId}`}
           data-activity-state={activityState}
           data-activity-source={activitySource}
-          aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
+          aria-label={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
         />
       </div>
       {data.rigId ? (

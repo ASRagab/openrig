@@ -8,6 +8,7 @@ import {
   getActivityBgClass,
   getActivityAnimationClass,
   isActivityStale,
+  getTimeInState,
   shortQitemTail,
 } from "../lib/activity-visuals.js";
 import type { AgentActivitySummary, CurrentQitemSummary } from "../hooks/useNodeInventory.js";
@@ -101,6 +102,7 @@ export function RigNode({ data }: { data: RigNodeData }) {
   const activityBgClass = getActivityBgClass(activityState);
   const activityAnimClass = getActivityAnimationClass(activityState);
   const activityIsStale = isActivityStale(data.agentActivity);
+  const timeInState = getTimeInState(data.agentActivity);
   const activityCard = getActivityCardSignal({ activityRing: data.activityRing, activityState });
   const tokenTotal = sumTokenCounts(data.contextTotalInputTokens, data.contextTotalOutputTokens);
   const tokenLabel = formatCompactTokenCount(tokenTotal);
@@ -205,8 +207,8 @@ export function RigNode({ data }: { data: RigNodeData }) {
             data-testid={`activity-dot-${data.logicalId}`}
             data-activity-state={activityState}
             data-activity-source={activitySource}
-            aria-label={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
-            title={`activity: ${activityLabel}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
+            aria-label={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
+            title={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
           />
           {/* PL-012: context-usage tier ring parallel to PL-019 activity
               dot. Two signals at the same scale: "is this agent working?"
