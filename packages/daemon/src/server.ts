@@ -219,6 +219,7 @@ export interface AppDeps {
    */
   missionControlBearerToken?: string | null;
   terminalBearerToken?: string | null;
+  enableNodeWebSocket?: boolean;
   specReviewService?: SpecReviewService;
   specLibraryService?: SpecLibraryService;
   /**
@@ -310,8 +311,7 @@ function isUiAssetRequestPath(requestPath: string): boolean {
     || relativePath === "manifest.webmanifest";
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
+export function createApp(deps: AppDeps): Hono {
   // Hard runtime invariant: all domain services must share the same db handle.
   if (deps.rigRepo.db !== deps.eventBus.db) {
     throw new Error("createApp: rigRepo and eventBus must share the same db handle");
@@ -498,8 +498,14 @@ export function createApp(deps: AppDeps): { app: Hono; injectWebSocket: (server:
   app.route("/api/kernel", kernelStatusRoutes);
   app.route("/api/transcripts", transcriptRoutes());
   app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
-  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-  registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let injectWebSocket: (server: any) => void = () => {};
+  if (deps.enableNodeWebSocket) {
+    const ws = createNodeWebSocket({ app });
+    injectWebSocket = ws.injectWebSocket as never;
+    _lastInjectWebSocket = injectWebSocket;
+    registerTerminalWs(app, ws.upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null });
+  }
   app.route("/api/activity", activityRoutes);
   app.route("/api/ask", askRoutes);
   app.route("/api/specs/review", specReviewRoutes());
@@ -580,5 +586,16 @@ export function createApp(deps: AppDeps): { app: Hono; injectWebSocket: (server:
     return c.html(injected);
   });
 
-  return { app, injectWebSocket: injectWebSocket as never };
+  return app;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _lastInjectWebSocket: ((server: any) => void) | null = null;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createAppWithWebSocket(deps: AppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
+  deps.enableNodeWebSocket = true;
+  _lastInjectWebSocket = null;
+  const app = createApp(deps);
+  return { app, injectWebSocket: _lastInjectWebSocket ?? (() => {}) };
 }

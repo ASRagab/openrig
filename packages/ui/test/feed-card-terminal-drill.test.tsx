@@ -1,11 +1,11 @@
-// OPR.0.3.3.20 — card-level drill to terminal preview (AC-4).
+// OPR.0.3.3.20 + OPR.0.4.0.24 — card-level drill to LIVE terminal.
 //
 // Discriminator A (scope fence): the drill resolves through the session-NAME
-// preview seam (/api/sessions/:sessionName/preview) — NO rigId/logicalId/
-// agentActivity topology call is made.
-// Discriminator B (honesty): no resolved session -> the drill renders DISABLED
-// with an honest title (never an empty/wrong terminal); the label says
-// captured/preview, never claims live state.
+// seam and mounts FocusedTerminal (live xterm/WebSocket) — NO /preview fetch.
+// Discriminator B (honesty): no resolved session -> DISABLED with honest title.
+// AC-3 (degradation): when the live terminal cannot connect, FocusedTerminal
+// surfaces an honest "Terminal unavailable" state — no /preview fallback,
+// no false captured promise.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
@@ -60,15 +60,14 @@ describe("FeedCardTerminalDrill (AC-4)", () => {
 
     fireEvent.click(getByTestId("feed-card-drill-card-1"));
 
-    // The popover opened and the preview pane fetched the session-keyed route.
     await waitFor(() => getByTestId("feed-card-drill-card-1-terminal-popover"));
     await waitFor(() => {
-      const previewCalls = mockFetch.mock.calls
-        .map((c) => String(c[0]))
-        .filter((u) => u.includes("/api/sessions/"));
-      expect(previewCalls.length).toBeGreaterThan(0);
-      expect(previewCalls[0]).toContain("/api/sessions/dev-impl%40my-rig/preview");
+      expect(getByTestId("focused-terminal-dev-impl@my-rig")).toBeTruthy();
     });
+    const previewCalls = mockFetch.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes("/preview"));
+    expect(previewCalls).toHaveLength(0);
   });
 
   it("DISCRIMINATOR A: no topology resolution — no /api/rigs/ or agent-activity call is made", async () => {
@@ -100,18 +99,51 @@ describe("FeedCardTerminalDrill (AC-4)", () => {
     expect(previewCalls).toHaveLength(0);
   });
 
-  it("the drill label is honest: says captured/preview, never claims live state", () => {
+  it("the drill label says live terminal (converged from captured preview)", () => {
     const { getByTestId } = withQueryClient(
       <FeedCardTerminalDrill cardId="card-4" sessionName="dev-impl@my-rig" />,
     );
 
     const drill = getByTestId("feed-card-drill-card-4") as HTMLButtonElement;
-    expect(drill.textContent).toContain("terminal preview");
-    expect(drill.title).toContain("captured snapshot");
-    // No live-state overclaim: the visible label never says "live", and the
-    // only "live" in the title is the explicit "not live" disclaimer.
-    expect(drill.textContent).not.toMatch(/live/i);
-    expect(drill.title).toContain("not live");
-    expect(drill.title.replace("not live", "")).not.toMatch(/live/i);
+    expect(drill.textContent).toContain("live terminal");
+    expect(drill.title).toContain("live terminal");
+    expect(drill.textContent).not.toContain("captured");
+    expect(drill.textContent).not.toContain("preview");
+    expect(drill.title).not.toContain("captured");
+    expect(drill.title).not.toContain("snapshot");
+  });
+
+  it("AC-3: drill mounts FocusedTerminal (live path), no /preview fallback, no captured copy", async () => {
+    const { getByTestId } = withQueryClient(
+      <FeedCardTerminalDrill cardId="card-5" sessionName="dev-impl@my-rig" />,
+    );
+
+    fireEvent.click(getByTestId("feed-card-drill-card-5"));
+    await waitFor(() => getByTestId("feed-card-drill-card-5-terminal-popover"));
+
+    await waitFor(() => {
+      expect(getByTestId("focused-terminal-dev-impl@my-rig")).toBeTruthy();
+    });
+
+    const previewCalls = mockFetch.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes("/preview"));
+    expect(previewCalls).toHaveLength(0);
+
+    const popoverEl = getByTestId("feed-card-drill-card-5-terminal-popover");
+    expect(popoverEl.innerHTML).not.toContain("captured");
+    expect(popoverEl.innerHTML).not.toContain("snapshot");
+  });
+
+  it("AC-3 source guard: FocusedTerminal has Terminal unavailable error branch", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../src/components/terminal/FocusedTerminal.tsx"),
+      "utf-8",
+    );
+    expect(src).toContain("Terminal unavailable");
+    expect(src).toContain("setError");
+    expect(src).toContain("[disconnected - reconnecting...]");
   });
 });
