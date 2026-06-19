@@ -86,7 +86,7 @@ import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
 import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { NodeCmuxService } from "./domain/node-cmux-service.js";
-import { createApp, type AppDeps } from "./server.js";
+import { createAppWithWebSocket, type AppDeps } from "./server.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -1303,8 +1303,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const periodicSnapshotScheduler = new PeriodicSnapshotScheduler({ db, snapshotCapture, snapshotRepo });
   deps.periodicSnapshotScheduler = periodicSnapshotScheduler;
 
-  deps.enableNodeWebSocket = true;
-  const { app, injectWebSocket } = createApp(deps);
+  const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
   return { app, db, deps, contextMonitor, injectWebSocket };
 }
