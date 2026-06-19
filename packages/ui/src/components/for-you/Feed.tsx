@@ -25,10 +25,12 @@ import {
 } from "../../lib/feed-classifier.js";
 import {
   attentionItemToFeedCard,
+  needsInputSeatToFeedCard,
   eventDerivedSeqsForPrune,
   isQueueDerivedFeedCard,
   mergeAttentionIntoFeed,
 } from "../../lib/attention-feed.js";
+import { useNeedsInputSeats } from "../../hooks/useNeedsInputSeats.js";
 import {
   useQueueItemMap,
   useSliceDetails,
@@ -256,13 +258,19 @@ export function Feed() {
     () => (attentionQuery.data ?? []).map(attentionItemToFeedCard),
     [attentionQuery.data],
   );
+  const needsInputQuery = useNeedsInputSeats();
+  const needsInputCards = useMemo<FeedCardModel[]>(
+    () => (needsInputQuery.data ?? []).map(needsInputSeatToFeedCard),
+    [needsInputQuery.data],
+  );
   const eventDerivedCards = useMemo(() => classifyFeed(events).slice(0, HISTORY_LIMIT), [events]);
-  // OPR.0.3.3.20 — manage-by-exception: band-sort the merged output so ALL
-  // decision cards (incl. event-only action-required) sit above non-decision
-  // noise, newest-first within each band.
+  const allAttention = useMemo(
+    () => [...queueDerivedAttention, ...needsInputCards],
+    [queueDerivedAttention, needsInputCards],
+  );
   const rawCards = useMemo(
-    () => sortFeedByDecisionBand(mergeAttentionIntoFeed(eventDerivedCards, queueDerivedAttention)),
-    [eventDerivedCards, queueDerivedAttention],
+    () => sortFeedByDecisionBand(mergeAttentionIntoFeed(eventDerivedCards, allAttention)),
+    [eventDerivedCards, allAttention],
   );
   // OPR.0.3.2.20 — useDismissedSeqs auto-prunes by min-seq across
   // currentSeqs. Queue-derived synthetic cards carry seq=-1, which
