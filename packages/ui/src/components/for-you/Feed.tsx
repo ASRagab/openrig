@@ -28,6 +28,7 @@ import {
   needsInputSeatToFeedCard,
   eventDerivedSeqsForPrune,
   isQueueDerivedFeedCard,
+  isSyntheticFeedCard,
   mergeAttentionIntoFeed,
 } from "../../lib/attention-feed.js";
 import { useNeedsInputSeats } from "../../hooks/useNeedsInputSeats.js";
@@ -292,14 +293,13 @@ export function Feed() {
   const { dismissedIds, dismiss: dismissId, undismiss: undismissId } = useDismissedCardIds(rawCardIds);
   const [pendingUndo, setPendingUndo] = useState<{ kind: "seq"; seq: number } | { kind: "id"; id: string } | null>(null);
 
-  // Routes a dismiss call: queue-derived synthetic cards
-  // (isQueueDerivedFeedCard) use the string-keyed dismissedIds set;
+  // Routes a dismiss call: synthetic cards (queue-attention-* and
+  // activity-needs-input-*) use the string-keyed dismissedIds set;
   // event-derived cards continue using the seq-keyed dismissedSeqs
-  // set. Avoids collision on the synthetic seq=-1 (banked guard
-  // verdict qitem-20260518190827 BLOCKER 2).
+  // set. Avoids collision on the synthetic seq=-1.
   const handleDismiss = useCallback(
     (card: FeedCardModel) => {
-      if (isQueueDerivedFeedCard(card)) {
+      if (isSyntheticFeedCard(card)) {
         dismissId(card.id);
         setPendingUndo({ kind: "id", id: card.id });
       } else {
@@ -346,7 +346,7 @@ export function Feed() {
     );
     const lensFiltered = lens === "all" ? subscribed : subscribed.filter((c) => c.kind === lens);
     return lensFiltered.filter((c) => {
-      if (isQueueDerivedFeedCard(c)) return !dismissedIds.has(c.id);
+      if (isSyntheticFeedCard(c)) return !dismissedIds.has(c.id);
       return !dismissedSeqs.has(c.source.seq);
     });
   }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds]);

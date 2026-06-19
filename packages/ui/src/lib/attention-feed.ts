@@ -124,18 +124,19 @@ export function mergeAttentionIntoFeed(
  * re-verify-2 qitem-20260518192210 CLEANUP-1).
  */
 export const QUEUE_DERIVED_CARD_ID_PREFIX = "queue-attention-";
+export const ACTIVITY_NEEDS_INPUT_CARD_ID_PREFIX = "activity-needs-input-";
+
+export function isSyntheticFeedCard(card: FeedCard): boolean {
+  return card.id.startsWith(QUEUE_DERIVED_CARD_ID_PREFIX)
+    || card.id.startsWith(ACTIVITY_NEEDS_INPUT_CARD_ID_PREFIX);
+}
 
 export function isQueueDerivedFeedCard(card: FeedCard): boolean {
   return card.id.startsWith(QUEUE_DERIVED_CARD_ID_PREFIX);
 }
 
-/**
- * Filter rawCards to ONLY event-derived cards' seqs for useDismissedSeqs.
- * Queue-derived cards (synthetic seq=-1) are excluded; their dismissal
- * lives in useDismissedCardIds.
- */
 export function eventDerivedSeqsForPrune(rawCards: FeedCard[]): number[] {
-  return rawCards.filter((c) => !isQueueDerivedFeedCard(c)).map((c) => c.source.seq);
+  return rawCards.filter((c) => !isSyntheticFeedCard(c)).map((c) => c.source.seq);
 }
 
 function qitemIdFromCard(card: FeedCard): string | null {
