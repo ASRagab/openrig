@@ -26,6 +26,28 @@ The orchestration pod is responsible for:
 - dispatching implementation, design, QA, and review work
 - watching for idle agents, blocked agents, and coordination gaps
 
+## Monitoring & intervention — keep the RIG self-running, not the ORCHESTRATOR busy
+
+**North star:** your goal is a **self-running rig, not a busy orchestrator.** Two anti-patterns keep you busy while the rig fails to learn to run itself — **over-watching** (hyper-monitoring) and **over-doing** (picking up agents' slack). Both are governed by judgment below, not by a rule for every case. (This section supersedes any "check regularly / every monitoring cycle / 2+ monitoring cycles / watch for idle" phrasing elsewhere in this skill — read those as watchdog-clocked, cheap-first sweeps under these principles.)
+
+### A. Monitoring intensity — proportional to stakes, bounded to the window
+**Principle:** monitoring intensity tracks **stakes × how likely you are to need to intervene, bounded to the window where that's true.** Spend tight attention only where it changes what you do, only as long as the risk lasts, then return to default. (Same evidence-not-cadence rule the `watchdog` skill applies to intervention *level*, applied to *intensity*.) **Self-test: "Can I name the stakes AND the condition that ends this close-watch?"** If not, you're hyper-monitoring.
+
+**Default (almost always) — token-efficient.** Steady-state your job is the **idle-without-handoff exception**: the queue handles normal handoff; you catch the agent who finished + went idle without closing/handing off.
+- **Status lives in the queue, not panes** (`status-not-chat-orchestrator`): `rig ps --nodes --json` + `rig queue` are your status source; do NOT reconstruct fleet-state by capturing panes (pane `rig capture` is high-bandwidth *within your own pod* — that's fine; it is not how you track cross-pod/fleet state).
+- **The watchdog is your clock** (`watchdog`): configure `rig watchdog` to wake you (~3 min); between wakes, idle (zero tokens) — no self-run sleep-loop re-reading panes at steady-state. Prefer one workflow-watchdog + targeted exception handling over many per-seat nag loops.
+- **On each wake — cheap sweep:** `rig ps --nodes --json` + `rig queue` first; ONLY for a seat that looks idle/suspicious, `rig capture <session>` last few lines (never a full pane, never huge chunks); **active owner → no-op.**
+
+**Close-monitoring — legitimate exception, deliberate + BOUNDED.** Some moments warrant tight/continuous attention — a seat doing something high-stakes, novel, or fragile where you may need to feed context, hand-hold, or intervene fast; a delicate gate; a recovery in flight. Switch in **on purpose** on a nameable trigger; **exit the instant the condition clears** (time- *and* event-bounded); don't let it bleed into steady-state. Worked example (slice-17): close through compaction-recovery / QA-runtime-proof / merge-gate; back off to queue+watchdog once the owner is active + the qitem in-progress. The anti-pattern is not tight monitoring — it's **unbounded** tight monitoring (an ambient sleep-loop with no nameable end-condition). That is what burns the shared account.
+
+### B. Intervention — correct + re-teach, don't silently substitute
+When you DO catch a dropped potato, your default is to **teach the agent the protocol, not do it for them.** Agents load the hot-potato / queue-handoff protocol and are supposed to hand off on their own; you are the **belt-and-suspenders** for when one doesn't (skill not loaded, fell out of context, or just got it wrong).
+- **Default = correction:** name what happened + what to do — e.g. "you finished X but went idle without handing off; close the qitem to `<next-seat>` via `rig queue …`. On finishing you queue-handoff, you don't idle." The agent does the handoff and learns; next time it's automatic.
+- **Why not just cover for them:** silently picking up the slack every time **trains agents that violating the protocol is free** — you become a permanent manual-coordination crutch and the rig never learns to run itself. A constantly-busy orchestrator is a symptom of a broken teaching loop, not a hardworking one.
+- **Exception = bridge / pick up slack:** only when re-teaching has repeatedly failed for that agent, or the moment is genuinely time-critical — and even then, correct afterward. The exception, never the default.
+
+Over time, corrections compound → agents internalize the protocol → the rig runs smoothly → you do very little. That is the goal. Full protocol: `watchdog` + `status-not-chat-orchestrator` + `queue-handoff`.
+
 If there is more than one orchestrator, divide the load:
 
 **Lead** owns:
