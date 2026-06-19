@@ -5,6 +5,7 @@ export interface AgentActivitySummary {
   reason: string;
   evidenceSource: string;
   sampledAt: string;
+  eventAt?: string | null;
   evidence?: string | null;
   staleness?: number | null;
   stale?: boolean;
