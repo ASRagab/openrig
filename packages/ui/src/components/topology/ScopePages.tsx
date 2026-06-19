@@ -32,6 +32,24 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 // degrades to table view by default on mobile (graph is too dense for
 // phone screens)").
 import { useShellViewport } from "../../hooks/useShellViewport.js";
+import { useNodeInventory } from "../../hooks/useNodeInventory.js";
+import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
+
+function ActivityRollupBar({ rigId }: { rigId: string }) {
+  const { data: nodes } = useNodeInventory(rigId);
+  if (!nodes || nodes.length === 0) return null;
+  const rollup = computeActivityRollup(
+    nodes.map((n) => ({ activity: n.agentActivity, terminalActive: n.terminalActive })),
+  );
+  return (
+    <div
+      data-testid="activity-rollup-bar"
+      className="px-6 py-2 font-mono text-[10px] text-stone-600 border-b border-outline-variant bg-white/30"
+    >
+      {formatRollupLabel(rollup)}
+    </div>
+  );
+}
 // V1 polish slice Phase 5.2: HostScopePage graph view-mode replaces
 // the prior placeholder with the multi-rig single-canvas component
 // (rig-collapse affordance; default-all-collapsed; auto-expand on URL).
@@ -159,6 +177,7 @@ export function RigScopePage() {
         />
       }
     >
+      <ActivityRollupBar rigId={rigId} />
       {effectiveActive === "graph" ? (
         <div className="flex-1 min-h-0 relative">
           <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />

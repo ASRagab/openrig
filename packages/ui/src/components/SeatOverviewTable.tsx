@@ -40,6 +40,7 @@ import {
 import {
   getActivityLabel,
   getActivityStateWithSource,
+  getTimeInState,
   type ActivityState,
 } from "../lib/activity-visuals.js";
 import type { TopologyActivityVisual } from "../lib/topology-activity.js";
@@ -83,6 +84,8 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
   const activityIsActive = activityVisual
     ? activityVisual.state === "active"
     : fallbackActivityState === "running";
+  const timeInState = getTimeInState(data.agentActivity);
+  const gradeLabel = fallbackActivitySource !== "hook" && fallbackActivitySource !== "none" ? " (activity-grade)" : "";
 
   const contextPercentage =
     data.contextUsage?.availability === "known" &&
@@ -110,7 +113,7 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
           : "text-stone-700"
       }
     >
-      {activityLabel}
+      {activityLabel}{timeInState ? ` ${timeInState.label}` : ""}{gradeLabel}
     </span>
   );
 
