@@ -310,10 +310,12 @@ describe("Whoami CLI", () => {
     expect(output).toContain("delegates_to");
   });
 
-  it("--json carries the additive peersNote; peers[] name/shape unchanged; no roster field", async () => {
+  it("--full --json carries the additive peersNote; peers[] name/shape unchanged; no roster field", async () => {
+    // OPR.0.4.0.27: the FULL peer shape now lives behind --full (bare --json is
+    // the compact recovery projection).
     process.env["OPENRIG_NODE_ID"] = "node-1";
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "whoami", "--json"]);
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--full", "--json"]);
     });
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.peersNote).toContain("roster excluding self");
@@ -383,5 +385,73 @@ describe("Whoami CLI", () => {
     expect(output).toContain("daemon unreachable — topology and peer info unavailable.");
     expect(output).toContain("dev-impl@my-rig");
     expect(exitCode).toBeUndefined();
+  });
+
+  // --- OPR.0.4.0.27 compact-default whoami ---
+
+  it("AC-1/AC-3: --json default is the compact recovery allowlist (exact keys), omitting heavy fields", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-1", "--json"]);
+    });
+    const json = JSON.parse(logs.join("")) as Record<string, any>;
+    // identity = EXACTLY the 8 recovery keys.
+    expect(Object.keys(json.identity).sort()).toEqual(
+      ["logicalId", "memberId", "nodeId", "podId", "podNamespace", "rigName", "runtime", "sessionName"],
+    );
+    // recovery essentials present.
+    expect(json.resolvedBy).toBe("node_id");
+    expect(json.identity.rigName).toBe("my-rig");
+    expect(json.identity.nodeId).toBe("node-1");
+    expect(json.identity.sessionName).toBe("dev-impl@my-rig");
+    expect(json.peers[0].sessionName).toBe("dev-qa@my-rig");
+    expect(json.peersNote).toBeTruthy();
+    expect(json.edges.outgoing[0].to.sessionName).toBe("dev-qa@my-rig");
+    expect(json.transcript.path).toContain("dev-impl@my-rig");
+    // heavy/verbose fields OMITTED.
+    expect(json.contextUsage).toBeUndefined();
+    expect(json.commands).toBeUndefined();
+    expect(json.workspace).toBeUndefined();
+    expect(json.runtimeContext).toBeUndefined();
+    expect(json.identity.cwd).toBeUndefined();
+    expect(json.identity.agentRef).toBeUndefined();
+    expect(json.identity.rigId).toBeUndefined();
+    // peers dropped their verbose sub-fields.
+    expect(json.peers[0].podId).toBeUndefined();
+    expect(json.peers[0].memberId).toBeUndefined();
+  });
+
+  it("AC-2: --full --json reproduces the complete payload", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-1", "--json", "--full"]);
+    });
+    const json = JSON.parse(logs.join("")) as Record<string, any>;
+    expect(json.commands).toBeDefined();
+    expect(json.identity.cwd).toBe("/tmp");
+    expect(json.identity.agentRef).toBe("local:agents/impl");
+    expect(json.identity.rigId).toBe("rig-1");
+    expect(json.peers[0].podId).toBe("pod-dev-123");
+  });
+
+  it("compact human output omits the Context line; --full keeps it", async () => {
+    const compact = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-1"]);
+    });
+    expect(compact.logs.join("\n")).not.toContain("Context:");
+    expect(compact.logs.join("\n")).toContain("my-rig"); // identity still rendered
+
+    const full = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-1", "--full"]);
+    });
+    expect(full.logs.join("\n")).toContain("Context:");
+  });
+
+  it("AC-6: --help teaches --full / --verbose", () => {
+    let out = "";
+    const cmd = whoamiCommand(runningDeps(port));
+    cmd.configureOutput({ writeOut: (s) => { out += s; } });
+    cmd.outputHelp();
+    const help = out.replace(/\s+/g, " ");
+    expect(help).toContain("--full");
+    expect(help).toContain("--verbose");
   });
 });

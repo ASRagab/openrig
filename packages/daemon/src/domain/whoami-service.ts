@@ -152,7 +152,7 @@ export class WhoamiService {
     this.contextUsageStore = deps.contextUsageStore ?? null;
   }
 
-  resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string }): WhoamiResult | null {
+  resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string; compact?: boolean }): WhoamiResult | null {
     let nodeRow: NodeRow | undefined;
     let resolvedBy: "node_id" | "session_name";
     let currentSessionName: string | null;
@@ -311,15 +311,19 @@ export class WhoamiService {
     const sendExamples = reachablePeers.slice(0, 3).map((p) => `rig send ${p.sessionName} 'message' --verify`);
     const captureExamples = reachablePeers.slice(0, 3).map((p) => `rig capture ${p.sessionName}`);
 
-    // Context usage
-    const contextUsage = this.contextUsageStore && currentSessionName
+    // Context usage. OPR.0.4.0.27: compact whoami SKIPS the contextUsageStore
+    // lookup entirely (the every-boot token win + the daemon compute skip);
+    // --full keeps it.
+    const contextUsage = (!query.compact && this.contextUsageStore && currentSessionName)
       ? this.contextUsageStore.getForNode(nodeRow.id, currentSessionName)
       : undefined;
 
     // PL-012: runtime-specific context block. Codex/Claude Code surface
     // additional debug-friendly detail; terminal seats have no
-    // conversation context and report null.
-    const runtimeContext = this.computeRuntimeContext(nodeRow.id, identity.runtime, contextUsage);
+    // conversation context and report null. OPR.0.4.0.27: skipped when compact.
+    const runtimeContext = query.compact
+      ? undefined
+      : this.computeRuntimeContext(nodeRow.id, identity.runtime, contextUsage);
 
     // PL-007: workspace block resolved from RigSpec.workspace. activeRepo
     // resolves per-rig default first; envOverride lets per-session
