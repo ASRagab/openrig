@@ -14,11 +14,14 @@ import {
   CLOSE_REASONS,
   MISSION_TEMPLATE_KINDS,
   SLICE_TEMPLATE_KINDS,
+  STAGE_VALUES,
   ScopeCliError,
   type CloseReason,
   type MissionTemplateKind,
+  type SliceInfo,
   type SliceTemplateKind,
   type SliceState,
+  type Stage,
 } from "../lib/scope/types.js";
 import {
   DEFAULT_PROJECT_PREFIX,
@@ -28,6 +31,7 @@ import {
   sliceIdFromMission,
 } from "../lib/scope/dot-id.js";
 import {
+  ensureMissionId,
   ensureMissionIdPersisted,
   findMission,
   findSlice,
@@ -57,6 +61,7 @@ import {
   PROGRESS_STATUSES,
   setProgressRow,
 } from "../lib/scope/progress-edit.js";
+import { deriveScopeTrust } from "../lib/scope/trust.js";
 
 // ---------------------------------------------------------------------
 // Shared helpers
@@ -120,6 +125,17 @@ function getOpts(cmd: Command): RootOpts {
     walker = walker.parent;
   }
   return {};
+}
+
+/** FR-5: a one-line human render of the derived stage. Shows the declared
+ *  stage, and (when a weak `verified` downgrades it) the effective stage +
+ *  why. Derived at read time; nothing is written. */
+function formatTrustLine(trust: ReturnType<typeof deriveScopeTrust>): string {
+  const declared = trust.declaredStage || "—";
+  if (trust.downgraded) {
+    return `  stage: ${declared} (effective: ${trust.effectiveStage} — ${trust.verified.status})\n`;
+  }
+  return `  stage: ${declared}\n`;
 }
 
 // ---------------------------------------------------------------------
@@ -192,6 +208,8 @@ function buildSliceShowCommand(): Command {
         const readme = slice.readmePath ? fs.readFileSync(slice.readmePath, "utf8") : null;
         const children = fs.readdirSync(slice.absPath, { withFileTypes: true })
           .map((e) => ({ name: e.name, kind: e.isDirectory() ? "dir" : "file" as const }));
+        // FR-5: derive read-time trust from (stage x verified) — NEVER stored.
+        const trust = deriveScopeTrust(slice.frontmatter);
         const payload = {
           ok: true,
           slice: {
@@ -201,6 +219,7 @@ function buildSliceShowCommand(): Command {
             status: slice.status,
             path: slice.absPath,
             frontmatter: slice.frontmatter,
+            trust,
             readme,
             children,
           },
@@ -211,6 +230,7 @@ function buildSliceShowCommand(): Command {
           out.write(`Slice: ${slice.missionName}/${slice.name}\n`);
           out.write(`  id: ${slice.id ?? "—"}\n`);
           out.write(`  status: ${slice.status ?? "—"}\n`);
+          out.write(formatTrustLine(trust));
           out.write(`  path: ${slice.absPath}\n`);
           out.write(`  children: ${children.length}\n`);
           if (readme) {
@@ -541,6 +561,8 @@ function buildMissionShowCommand(): Command {
         const slices = listSlices(mission, "all").map((s) => ({
           name: s.name, id: s.id, status: s.status, nn: s.nn,
         }));
+        // FR-5: derive read-time trust from (stage x verified) — NEVER stored.
+        const trust = deriveScopeTrust(mission.frontmatter);
         const payload = {
           ok: true,
           mission: {
@@ -550,6 +572,7 @@ function buildMissionShowCommand(): Command {
             activeSliceCount: mission.activeSliceCount,
             closedSliceCount: mission.closedSliceCount,
             frontmatter: mission.frontmatter,
+            trust,
             readme,
             slices,
           },
@@ -559,6 +582,7 @@ function buildMissionShowCommand(): Command {
         } else {
           out.write(`Mission: ${mission.name}\n`);
           out.write(`  id: ${mission.id ?? "—"}\n`);
+          out.write(formatTrustLine(trust));
           out.write(`  active slices: ${mission.activeSliceCount}\n`);
           out.write(`  closed slices: ${mission.closedSliceCount}\n`);
           out.write(`  path: ${mission.absPath}\n`);
@@ -1056,9 +1080,276 @@ function backfillScopeProgress(scopeDir: string, level: "mission" | "slice"): Ba
   return { scope: level, name, created: true, reason: "backfilled", path: progressPath };
 }
 
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — stage + verified verbs (deterministic §2 maturity edits)
+// ---------------------------------------------------------------------
+
+/** Validate a stage against the §2 enum, rejecting invented values. */
+function validateStage(raw: string): Stage {
+  if (!STAGE_VALUES.includes(raw as Stage)) {
+    throw new ScopeCliError({
+      fact: `Invalid stage "${raw}".`,
+      consequence: "Stage not changed.",
+      action: `Use one of: ${STAGE_VALUES.join(" | ")}.`,
+    });
+  }
+  return raw as Stage;
+}
+
+/** Surgically set `stage` (+ `superseded-by` when superseded) on a scope
+ *  README, enforcing the §2 superseded-needs-successor rule. */
+function applyStage(readmePath: string, stage: Stage, successor: unknown): void {
+  const updates: Record<string, unknown> = { stage };
+  if (stage === "superseded") {
+    const id = typeof successor === "string" ? successor.trim() : "";
+    if (!id) {
+      throw new ScopeCliError({
+        fact: "stage 'superseded' requires a successor.",
+        consequence: "Stage not changed (a superseded scope must name what replaces it, per scope-and-versioning §2).",
+        action: "Re-run with --successor <id>, e.g. --successor OPR.0.4.1.7.",
+      });
+    }
+    updates["superseded-by"] = id;
+  }
+  updateFrontmatter(readmePath, updates);
+}
+
+/** `retired` is an exit, not a rung — warn (do not block). */
+function warnRetired(stage: Stage): void {
+  if (stage === "retired") {
+    process.stderr.write("Warning: stage 'retired' means do-not-use (an exit, not a maturity rung).\n");
+  }
+}
+
+/** Validate a --against provenance: mandatory, non-empty, non-whitespace
+ *  (the §2 "no bare timestamp" rule). Returns the trimmed source. */
+function validateAgainst(raw: unknown): string {
+  const source = typeof raw === "string" ? raw.trim() : "";
+  if (!source) {
+    throw new ScopeCliError({
+      fact: "--against provenance is empty or missing.",
+      consequence: "verified not stamped — scope-and-versioning §2 forbids a bare timestamp without a named source.",
+      action: 'Provide what it was verified against, e.g. --against "runtime (npm+tag+origin)".',
+    });
+  }
+  return source;
+}
+
+function buildSliceStageCommand(): Command {
+  return new Command("stage")
+    .description(`Set a slice's epistemic stage (${STAGE_VALUES.join(" | ")}); superseded needs --successor`)
+    .argument("<slice-path>", "Slice path (absolute, relative, or NN-slug)")
+    .argument("<new-stage>", `New stage: ${STAGE_VALUES.join(" | ")}`)
+    .option("--successor <id>", "Successor scope id — REQUIRED when new-stage is superseded")
+    .option("--mission <name>", "Hint mission when slice-path is just NN-slug")
+    .option("--json", "Machine-readable output")
+    .action(async (slicePath: string, newStage: string, opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const stage = validateStage(newStage);
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const slice = findSlice(missionsRoot, slicePath, opts.mission ?? null);
+        if (!slice.readmePath) {
+          throw new ScopeCliError({
+            fact: `Slice ${slice.name} has no README.md.`,
+            consequence: "Stage is a frontmatter field on the README; nothing to write.",
+            action: "Create the slice README (rig scope slice create) before setting its stage.",
+          });
+        }
+        applyStage(slice.readmePath, stage, opts.successor);
+        warnRetired(stage);
+        const supersededBy = stage === "superseded" ? String(opts.successor).trim() : undefined;
+        emit(out, { ok: true, scope: { tier: "slice", mission: slice.missionName, name: slice.name, id: slice.id, stage, ...(supersededBy ? { supersededBy } : {}) } }, json, [
+          `Set ${slice.missionName}/${slice.name} stage: ${stage}`,
+          ...(supersededBy ? [`  superseded-by: ${supersededBy}`] : []),
+        ]);
+      } catch (err) {
+        fail(err, json, out);
+      }
+    });
+}
+
+function buildMissionStageCommand(): Command {
+  return new Command("stage")
+    .description(`Set a mission's epistemic stage (${STAGE_VALUES.join(" | ")}); superseded needs --successor`)
+    .argument("<mission>", "Mission name")
+    .argument("<new-stage>", `New stage: ${STAGE_VALUES.join(" | ")}`)
+    .option("--successor <id>", "Successor scope id — REQUIRED when new-stage is superseded")
+    .option("--json", "Machine-readable output")
+    .action(async (missionName: string, newStage: string, opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const stage = validateStage(newStage);
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const mission = findMission(missionsRoot, missionName);
+        if (!mission.readmePath) {
+          throw new ScopeCliError({
+            fact: `Mission ${mission.name} has no README.md.`,
+            consequence: "Stage is a frontmatter field on the README; nothing to write.",
+            action: "Create the mission README before setting its stage.",
+          });
+        }
+        applyStage(mission.readmePath, stage, opts.successor);
+        warnRetired(stage);
+        const supersededBy = stage === "superseded" ? String(opts.successor).trim() : undefined;
+        emit(out, { ok: true, scope: { tier: "mission", name: mission.name, id: mission.id, stage, ...(supersededBy ? { supersededBy } : {}) } }, json, [
+          `Set ${mission.name} stage: ${stage}`,
+          ...(supersededBy ? [`  superseded-by: ${supersededBy}`] : []),
+        ]);
+      } catch (err) {
+        fail(err, json, out);
+      }
+    });
+}
+
+function buildSliceVerifiedCommand(): Command {
+  return new Command("verified")
+    .description("Stamp a slice's verified line: <today> against <source> (provenance mandatory; overwrites the prior line)")
+    .argument("<slice-path>", "Slice path (absolute, relative, or NN-slug)")
+    .option("--against <source>", "What it was verified against — MANDATORY (no bare timestamps)")
+    .option("--mission <name>", "Hint mission when slice-path is just NN-slug")
+    .option("--json", "Machine-readable output")
+    .action(async (slicePath: string, opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const source = validateAgainst(opts.against);
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const slice = findSlice(missionsRoot, slicePath, opts.mission ?? null);
+        if (!slice.readmePath) {
+          throw new ScopeCliError({
+            fact: `Slice ${slice.name} has no README.md.`,
+            consequence: "verified is a frontmatter field on the README; nothing to write.",
+            action: "Create the slice README before stamping verified.",
+          });
+        }
+        const verified = `${todayDateISO()} against ${source}`;
+        updateFrontmatter(slice.readmePath, { verified });
+        emit(out, { ok: true, scope: { tier: "slice", mission: slice.missionName, name: slice.name, id: slice.id, verified } }, json, [
+          `Stamped ${slice.missionName}/${slice.name} verified: ${verified}`,
+        ]);
+      } catch (err) {
+        fail(err, json, out);
+      }
+    });
+}
+
+function buildMissionVerifiedCommand(): Command {
+  return new Command("verified")
+    .description("Stamp a mission's verified line: <today> against <source> (provenance mandatory; overwrites the prior line)")
+    .argument("<mission>", "Mission name")
+    .option("--against <source>", "What it was verified against — MANDATORY (no bare timestamps)")
+    .option("--json", "Machine-readable output")
+    .action(async (missionName: string, opts, command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        const source = validateAgainst(opts.against);
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        const mission = findMission(missionsRoot, missionName);
+        if (!mission.readmePath) {
+          throw new ScopeCliError({
+            fact: `Mission ${mission.name} has no README.md.`,
+            consequence: "verified is a frontmatter field on the README; nothing to write.",
+            action: "Create the mission README before stamping verified.",
+          });
+        }
+        const verified = `${todayDateISO()} against ${source}`;
+        updateFrontmatter(mission.readmePath, { verified });
+        emit(out, { ok: true, scope: { tier: "mission", name: mission.name, id: mission.id, verified } }, json, [
+          `Stamped ${mission.name} verified: ${verified}`,
+        ]);
+      } catch (err) {
+        fail(err, json, out);
+      }
+    });
+}
+
+// OPR.0.4.1.6 FR-4 — frontmatter-conformance backfill (extends `repair`).
+// `repair` historically backfilled a missing PROGRESS.md only; per the
+// convention's "consolidate, do not invent" it now ALSO conforms the mandatory
+// scope-and-versioning §1/§2 frontmatter (id / stage / verified) in the SAME
+// idempotent verb, rather than adding a parallel `reconcile`.
+
+interface FrontmatterConformResult {
+  /** Minted+written id, or null if already present / unmintable. */
+  idAdded: string | null;
+  /** Added stage, or null if already present. */
+  stageAdded: string | null;
+  /** Added verified placeholder, or null if already present. */
+  verifiedAdded: string | null;
+  changed: boolean;
+}
+
+/** Map a legacy `status:` to a §4 migration stage. Default `wip` when absent
+ *  or unmapped (the safe floor). */
+function mapLegacyStatusToStage(status: unknown): string {
+  const s = typeof status === "string" ? status.toLowerCase().trim() : "";
+  if (s === "placeholder") return "wip";
+  if (s === "draft" || s === "draft-for-comms") return "wip";
+  if (s === "active" || s === "in-flight") return "established";
+  if (s.startsWith("shipped") || s.startsWith("closed")) return "established";
+  if (s === "ready-for-mission" || s === "ready-for-orch-dispatch") return "provisional";
+  return "wip";
+}
+
+/** Idempotently conform a scope README's mandatory frontmatter. Only ADDS
+ *  absent fields — never clobbers an existing id/stage/verified. `mintId` is
+ *  called only when `id` is absent (it may persist a parent id per §1 lazy
+ *  adoption). */
+function conformReadmeFrontmatter(readmePath: string, mintId: () => string | null): FrontmatterConformResult {
+  const fm = readFrontmatter(readmePath);
+  const updates: Record<string, unknown> = {};
+
+  let idAdded: string | null = null;
+  const hasId = typeof fm.id === "string" && fm.id.length > 0;
+  if (!hasId) {
+    const minted = mintId();
+    if (minted) { idAdded = minted; updates.id = minted; }
+  }
+
+  let stageAdded: string | null = null;
+  if (!fm.stage) {
+    stageAdded = mapLegacyStatusToStage(fm.status);
+    updates.stage = stageAdded;
+  }
+
+  let verifiedAdded: string | null = null;
+  if (!fm.verified) {
+    verifiedAdded = `${todayDateISO()} against backfill (rig scope repair)`;
+    updates.verified = verifiedAdded;
+  }
+
+  const changed = Object.keys(updates).length > 0;
+  if (changed) updateFrontmatter(readmePath, updates);
+  return { idAdded, stageAdded, verifiedAdded, changed };
+}
+
+/** Mint a slice's id from its (persisted) parent mission id + NN — the §1
+ *  lazy parent-ID adoption site. Null when the folder has no NN. */
+function mintSliceIdClosure(slice: SliceInfo, missionsRoot: string): () => string | null {
+  return () => {
+    if (slice.nn == null) return null;
+    const mission = findMission(missionsRoot, slice.missionName);
+    const missionId = ensureMissionIdPersisted(mission, missionsRoot);
+    return sliceIdFromMission(missionId, slice.nn);
+  };
+}
+
+function conformLines(scope: string, r: FrontmatterConformResult): string[] {
+  if (!r.changed) return [`  frontmatter: conformant (no change)`];
+  const parts: string[] = [];
+  if (r.idAdded) parts.push(`id=${r.idAdded}`);
+  if (r.stageAdded) parts.push(`stage=${r.stageAdded}`);
+  if (r.verifiedAdded) parts.push(`verified=${r.verifiedAdded}`);
+  return [`  frontmatter conformed: ${parts.join(", ")}`];
+}
+
 function buildSliceRepairCommand(): Command {
   return new Command("repair")
-    .description("Backfill a missing PROGRESS.md for a slice (idempotent; skips readme-only and existing rails)")
+    .description("Backfill a slice's missing PROGRESS.md + conform mandatory frontmatter (id/stage/verified); idempotent")
     .argument("<slice-path>", "Slice path (absolute, relative, or NN-slug)")
     .option("--mission <name>", "Hint mission when slice-path is just NN-slug")
     .option("--json", "Machine-readable output")
@@ -1069,9 +1360,13 @@ function buildSliceRepairCommand(): Command {
         const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
         const slice = findSlice(missionsRoot, slicePath, opts.mission ?? null);
         const result = backfillScopeProgress(slice.absPath, "slice");
-        emit(out, { ok: true, result }, json, [
+        const frontmatter = slice.readmePath
+          ? conformReadmeFrontmatter(slice.readmePath, mintSliceIdClosure(slice, missionsRoot))
+          : { idAdded: null, stageAdded: null, verifiedAdded: null, changed: false };
+        emit(out, { ok: true, result, frontmatter }, json, [
           `${result.created ? "Backfilled" : "Skipped"} ${slice.name}: ${result.reason}`,
           ...(result.path ? [`  path: ${result.path}`] : []),
+          ...conformLines("slice", frontmatter),
         ]);
       } catch (err) {
         fail(err, json, out);
@@ -1081,7 +1376,7 @@ function buildSliceRepairCommand(): Command {
 
 function buildMissionRepairCommand(): Command {
   return new Command("repair")
-    .description("Backfill missing PROGRESS.md for a mission and its slices (idempotent; skips readme-only)")
+    .description("Backfill missing PROGRESS.md + conform mandatory frontmatter (id/stage/verified) for a mission and its slices; idempotent")
     .argument("<mission>", "Mission name")
     .option("--json", "Machine-readable output")
     .action(async (missionName: string, opts, command) => {
@@ -1099,10 +1394,28 @@ function buildMissionRepairCommand(): Command {
             results.push(backfillScopeProgress(path.join(slicesDir, entry.name), "slice"));
           }
         }
+
+        // FR-4: conform mandatory frontmatter — mission first (mints+persists
+        // the mission id), then each slice (child ids derive from the now-
+        // persisted parent id).
+        const conformed: Array<{ scope: "mission" | "slice"; name: string; frontmatter: FrontmatterConformResult }> = [];
+        if (mission.readmePath) {
+          const fm = conformReadmeFrontmatter(mission.readmePath, () => ensureMissionId(mission, missionsRoot));
+          conformed.push({ scope: "mission", name: mission.name, frontmatter: fm });
+        }
+        const freshMission = findMission(missionsRoot, mission.name);
+        for (const slice of listSlices(freshMission, "all")) {
+          if (!slice.readmePath) continue;
+          const fm = conformReadmeFrontmatter(slice.readmePath, mintSliceIdClosure(slice, missionsRoot));
+          conformed.push({ scope: "slice", name: slice.name, frontmatter: fm });
+        }
+
         const created = results.filter((r) => r.created);
-        emit(out, { ok: true, mission: mission.name, created, results }, json, [
-          `Repaired ${mission.name}: ${created.length} PROGRESS.md backfilled`,
-          ...created.map((r) => `  + ${r.scope}/${r.name}`),
+        const fmChanged = conformed.filter((c) => c.frontmatter.changed);
+        emit(out, { ok: true, mission: mission.name, created, results, conformed }, json, [
+          `Repaired ${mission.name}: ${created.length} PROGRESS.md backfilled, ${fmChanged.length} frontmatter conformed`,
+          ...created.map((r) => `  + PROGRESS ${r.scope}/${r.name}`),
+          ...fmChanged.map((c) => `  ~ frontmatter ${c.scope}/${c.name}`),
         ]);
       } catch (err) {
         fail(err, json, out);
@@ -1128,6 +1441,8 @@ export function scopeCommand(): Command {
   slice.addCommand(buildSliceMoveCommand());
   slice.addCommand(buildSliceProgressCommand());
   slice.addCommand(buildSliceRepairCommand());
+  slice.addCommand(buildSliceStageCommand());
+  slice.addCommand(buildSliceVerifiedCommand());
   cmd.addCommand(slice);
 
   const mission = new Command("mission").description("Mission-tier commands");
@@ -1136,6 +1451,8 @@ export function scopeCommand(): Command {
   mission.addCommand(buildMissionCreateCommand());
   mission.addCommand(buildMissionProgressCommand());
   mission.addCommand(buildMissionRepairCommand());
+  mission.addCommand(buildMissionStageCommand());
+  mission.addCommand(buildMissionVerifiedCommand());
   cmd.addCommand(mission);
   cmd.addCommand(buildAuditCommand());
 
