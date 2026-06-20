@@ -454,7 +454,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("-A, --all-rigs", "Cross-rig breadth (like 'kubectl get --all-namespaces')")
     .option("--full", "Show complete per-item fields (body, chain-of-record)")
     .option("--mine", "Scope to items where you are destination or source")
-    .option("-o <format>", "Output format: json, wide")
+    .option("-o <format>", "Output format: json")
     .option("--destination <session>", "Filter by destination session")
     .option("--source <session>", "Filter by source session")
     .option("--state <state>", "Filter by state (comma-separated for multiple)")
@@ -469,7 +469,7 @@ Four orthogonal axes (docker/kubectl pattern):
   -a, --all         Include closed/done history (state axis)
   -A, --all-rigs    Cross-rig breadth (scope axis)
   --full            Include body + chain-of-record (field axis)
-  -o json|wide      Output encoding (default: compact table)
+  -o json            JSON output (compact; --full -o json for complete)
 
 Active states: pending, in-progress, blocked.
 History (-a adds): done, canceled, handed-off, failed, denied.
@@ -484,8 +484,8 @@ Examples:
   rig queue list -A                       Active items across ALL rigs
   rig queue list -a -A                    Everything across all rigs
   rig queue list --full                   Active items with body/chain
-  rig queue list -o json                  Compact JSON (no body)
-  rig queue list --full -o json           Complete JSON (with body)
+  rig queue list -o json                  Compact JSON (same as --json)
+  rig queue list --full -o json           Complete JSON (with body/chain)
   rig queue list --mine                   Items where you are source or destination
   rig queue list --state pending          Only pending items in your rig
   rig queue list --full --all --all-rigs  Full firehose (pre-0.4.0 default)`)
