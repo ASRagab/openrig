@@ -90,6 +90,14 @@ interface RestoreCheckResult {
   hostInfra: HostInfraAssertion;
   recovery: RecoveryPlan;
   counts: { red: number; yellow: number; green: number };
+  // OPR.0.4.0.29 FR-8 — ready-confidence breakdown by the 5 real-enum classes.
+  classCounts?: {
+    ready: number;
+    ready_with_caveats: number;
+    not_ready: number;
+    attention_required: number;
+    unknown: number;
+  };
   checks: CheckEntry[];
   repairPacket: RepairStep[] | null;
 }
@@ -333,6 +341,14 @@ function printCompact(result: RestoreCheckResult): void {
   console.log(`${result.counts.green} green | ${result.counts.yellow} yellow | ${result.counts.red} red`);
   const readinessLabel = result.readiness.status.replace(/_/g, " ");
   console.log(`READINESS: ${readinessLabel}`);
+  // FR-8: ready-confidence breakdown by class (the 5 real-enum classes).
+  if (result.classCounts) {
+    const cc = result.classCounts;
+    console.log(
+      `CLASSES: ${cc.ready} ready | ${cc.ready_with_caveats} ready_with_caveats | ` +
+      `${cc.not_ready} not_ready | ${cc.attention_required} attention_required | ${cc.unknown} unknown`
+    );
+  }
 
   if (result.rigs && result.rigs.length > 0) {
     console.log();

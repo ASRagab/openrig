@@ -104,4 +104,44 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
     expect(result.rigs[0]!.rigName).toBe("test-rig");
     expect(result.rigs[0]!.expectedNodes).toBe(2);
   });
+
+  // OPR.0.4.0.29 FR-8 / AC-7 — ready-confidence breakdown by the 5 real-enum classes.
+  it("AC-7: classCounts breaks seats into the 5 real-enum classes (no invented status)", () => {
+    const makeAttentionNode = (logicalId: string): NodeInventoryEntry => ({
+      logicalId,
+      canonicalSessionName: `${logicalId.replace(".", "-")}@test-rig`,
+      sessionStatus: "running",
+      startupStatus: "attention_required",
+      cwd: "/project",
+      latestError: "Awaiting operator",
+    } as NodeInventoryEntry);
+
+    const nodes = [
+      makeReadyNode("dev.impl"),
+      makeReadyNode("dev.qa"),
+      makeNotReadyNode("dev.design"),
+      makeAttentionNode("dev.synth"),
+    ];
+    const result = new RestoreCheckService(makeDeps(nodes)).check({ compact: true });
+
+    // Exactly the 5 real-enum class keys — no fresh-primed/awaiting-decision invented status.
+    expect(Object.keys(result.classCounts).sort()).toEqual(
+      ["attention_required", "not_ready", "ready", "ready_with_caveats", "unknown"],
+    );
+    expect(result.classCounts.ready).toBe(2);
+    expect(result.classCounts.attention_required).toBe(1);
+    expect(result.classCounts.not_ready).toBe(1);
+    // The breakdown accounts for every seat.
+    const total = Object.values(result.classCounts).reduce((a, b) => a + b, 0);
+    expect(total).toBe(4);
+  });
+
+  it("AC-7: per-rig classCounts sum to the fleet-wide classCounts", () => {
+    const result = new RestoreCheckService(
+      makeDeps([makeReadyNode("dev.impl"), makeNotReadyNode("dev.qa")]),
+    ).check({});
+    const rigSum = result.rigs.reduce((a, r) => a + Object.values(r.classCounts).reduce((x, y) => x + y, 0), 0);
+    const fleetSum = Object.values(result.classCounts).reduce((a, b) => a + b, 0);
+    expect(rigSum).toBe(fleetSum);
+  });
 });

@@ -46,6 +46,20 @@ export interface ContinuityAssertion {
   unprovenCapabilities: string[];
 }
 
+// OPR.0.4.0.29 FR-8 — ready-confidence breakdown by the 5 REAL-enum seat
+// classes. Each derives from a real primitive (no invented status): ready /
+// ready_with_caveats / not_ready come from the seat readiness checks;
+// attention_required from node.startupStatus; unknown is the indeterminate
+// remainder. (The fresh-primed/awaiting-decision SPLIT of ready_with_caveats is
+// the deferred/escalated follow-on — NOT emitted here.)
+export interface ReadinessClassCounts {
+  ready: number;
+  ready_with_caveats: number;
+  not_ready: number;
+  attention_required: number;
+  unknown: number;
+}
+
 export interface RigRestoreRollup {
   rigId: string;
   rigName: string;
@@ -55,6 +69,7 @@ export interface RigRestoreRollup {
   runningReadyNodes: number;
   blockedNodes: number;
   caveatNodes: number;
+  classCounts: ReadinessClassCounts;
   blockingChecks: CheckEntry[];
   caveatChecks: CheckEntry[];
 }
@@ -125,6 +140,8 @@ export interface RestoreCheckResult {
   hostInfra: HostInfraAssertion;
   recovery: RecoveryPlan;
   counts: { red: number; yellow: number; green: number };
+  /** OPR.0.4.0.29 FR-8 — fleet-wide ready-confidence breakdown by class. */
+  classCounts: ReadinessClassCounts;
   checks: CheckEntry[];
   repairPacket: RepairStep[] | null;
 }
@@ -1179,6 +1196,14 @@ export class RestoreCheckService {
       },
       continuity,
       rigs,
+      // FR-8: fleet-wide ready-confidence breakdown = sum of the per-rig class counts.
+      classCounts: rigs.reduce<ReadinessClassCounts>((acc, r) => ({
+        ready: acc.ready + r.classCounts.ready,
+        ready_with_caveats: acc.ready_with_caveats + r.classCounts.ready_with_caveats,
+        not_ready: acc.not_ready + r.classCounts.not_ready,
+        attention_required: acc.attention_required + r.classCounts.attention_required,
+        unknown: acc.unknown + r.classCounts.unknown,
+      }), { ready: 0, ready_with_caveats: 0, not_ready: 0, attention_required: 0, unknown: 0 }),
       hostInfra: result.verdict === "unknown"
         ? {
             status: "unknown",
@@ -1366,17 +1391,28 @@ export class RestoreCheckService {
     let runningReadyNodes = 0;
     let blockedNodes = 0;
     let caveatNodes = 0;
+    // FR-8: per-seat class breakdown (each seat counts toward exactly one class).
+    const classCounts: ReadinessClassCounts = { ready: 0, ready_with_caveats: 0, not_ready: 0, attention_required: 0, unknown: 0 };
 
     for (const node of input.nodes) {
       const session = node.canonicalSessionName ?? node.logicalId;
       const nodeChecks = input.checks.filter((check) => check.check.startsWith(`seat.${session}.`));
       const hasBlocking = nodeChecks.some((check) => check.status === "red");
       const hasCaveat = nodeChecks.some((check) => check.status === "yellow");
-      if (node.canonicalSessionName && node.sessionStatus === "running" && node.startupStatus === "ready") {
-        runningReadyNodes += 1;
-      }
+      const runningReady = Boolean(node.canonicalSessionName) && node.sessionStatus === "running" && node.startupStatus === "ready";
+      if (runningReady) runningReadyNodes += 1;
       if (hasBlocking) blockedNodes += 1;
       else if (hasCaveat) caveatNodes += 1;
+
+      // FR-8 class derivation (precedence; each from a real primitive):
+      //   attention_required ← node.startupStatus; ready ← running/ready;
+      //   not_ready ← a red seat check; ready_with_caveats ← a yellow seat check;
+      //   unknown ← indeterminate remainder.
+      if (node.startupStatus === "attention_required") classCounts.attention_required += 1;
+      else if (runningReady) classCounts.ready += 1;
+      else if (hasBlocking) classCounts.not_ready += 1;
+      else if (hasCaveat) classCounts.ready_with_caveats += 1;
+      else classCounts.unknown += 1;
     }
 
     let verdict: Verdict;
@@ -1401,6 +1437,7 @@ export class RestoreCheckService {
       runningReadyNodes,
       blockedNodes,
       caveatNodes,
+      classCounts,
       blockingChecks,
       caveatChecks,
     };

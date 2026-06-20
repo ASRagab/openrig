@@ -505,3 +505,22 @@ describe("OPR.0.4.0.29 — --ready is compact + ready detail (not a no-op, not t
     expect(full.requestedPaths[0]).not.toContain("compact=1");
   });
 });
+
+describe("OPR.0.4.0.29 FR-8 — class breakdown render", () => {
+  let logs: string[];
+  beforeEach(() => {
+    logs = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    process.exitCode = undefined;
+  });
+
+  it("compact human output renders the 5-class CLASSES line when classCounts is present", async () => {
+    const { deps } = makeDeps({ result: { classCounts: { ready: 3, ready_with_caveats: 1, not_ready: 2, attention_required: 0, unknown: 0 } } });
+    await restoreCheckCommand(deps).parseAsync(["node", "rig"]);
+    const output = logs.join("\n");
+    expect(output).toContain("CLASSES:");
+    expect(output).toContain("3 ready");
+    expect(output).toContain("2 not_ready");
+  });
+});

@@ -178,6 +178,7 @@ restoreCheckRoutes.get("/", (c) => {
         verdict: result.verdict,
         readiness: result.readiness,
         counts: result.counts,
+        classCounts: result.classCounts,
         rigs: result.rigs.map((r) => ({
           rigId: r.rigId,
           rigName: r.rigName,
