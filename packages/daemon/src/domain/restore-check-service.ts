@@ -1393,6 +1393,13 @@ export class RestoreCheckService {
     let caveatNodes = 0;
     // FR-8: per-seat class breakdown (each seat counts toward exactly one class).
     const classCounts: ReadinessClassCounts = { ready: 0, ready_with_caveats: 0, not_ready: 0, attention_required: 0, unknown: 0 };
+    // unknown/no-snapshot derives from the REAL snapshot primitive: the
+    // rig-level `rig.<name>.snapshot` yellow check (no snapshot found / could
+    // not check). A rig with no snapshot cannot be restored, so its seats'
+    // restore-readiness is unknown (not "ready"), per FR-8/AC-7.
+    const rigNoSnapshot = input.checks.some(
+      (check) => check.check === `rig.${input.rig.name}.snapshot` && check.status === "yellow",
+    );
 
     for (const node of input.nodes) {
       const session = node.canonicalSessionName ?? node.logicalId;
@@ -1405,10 +1412,11 @@ export class RestoreCheckService {
       else if (hasCaveat) caveatNodes += 1;
 
       // FR-8 class derivation (precedence; each from a real primitive):
-      //   attention_required ← node.startupStatus; ready ← running/ready;
-      //   not_ready ← a red seat check; ready_with_caveats ← a yellow seat check;
-      //   unknown ← indeterminate remainder.
+      //   attention_required ← node.startupStatus; unknown ← no-snapshot
+      //   (rig can't restore); ready ← running/ready; not_ready ← a red seat
+      //   check; ready_with_caveats ← a yellow seat check; unknown ← remainder.
       if (node.startupStatus === "attention_required") classCounts.attention_required += 1;
+      else if (rigNoSnapshot) classCounts.unknown += 1;
       else if (runningReady) classCounts.ready += 1;
       else if (hasBlocking) classCounts.not_ready += 1;
       else if (hasCaveat) classCounts.ready_with_caveats += 1;

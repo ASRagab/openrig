@@ -144,4 +144,12 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
     const fleetSum = Object.values(result.classCounts).reduce((a, b) => a + b, 0);
     expect(rigSum).toBe(fleetSum);
   });
+
+  it("AC-7: a no-snapshot rig's running/ready seats count as unknown, not ready (real snapshot primitive)", () => {
+    const deps: RestoreCheckDeps = { ...makeDeps([makeReadyNode("dev.impl"), makeReadyNode("dev.qa")]), hasSnapshot: () => false };
+    const result = new RestoreCheckService(deps).check({ compact: true });
+    // Without a snapshot the rig cannot be restored -> its ready seats are unknown.
+    expect(result.classCounts.ready).toBe(0);
+    expect(result.classCounts.unknown).toBe(2);
+  });
 });
