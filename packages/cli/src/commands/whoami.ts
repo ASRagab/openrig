@@ -16,6 +16,8 @@ interface WhoamiCliOptions {
   allHosts?: boolean;
   hosts?: string;
   json?: boolean;
+  full?: boolean;
+  verbose?: boolean;
 }
 
 export interface WhoamiDeps extends StatusDeps {
@@ -63,6 +65,40 @@ interface WhoamiResult {
     usedPercentage?: number | null;
     remainingPercentage?: number | null;
     contextWindowSize?: number | null;
+  };
+}
+
+/**
+ * OPR.0.4.0.27 — project the full whoami payload to the identity-recovery
+ * ALLOWLIST (not a denylist: a future payload field defaults to --full and
+ * cannot silently re-bloat the every-boot path). Carries exactly the fields the
+ * boot + compaction-restore recovery contract treats as ground truth.
+ */
+function projectCompactWhoami(data: Record<string, unknown>): Record<string, unknown> {
+  const id = (data["identity"] ?? {}) as Record<string, unknown>;
+  const peers = Array.isArray(data["peers"]) ? (data["peers"] as unknown[]) : [];
+  const transcript = (data["transcript"] ?? {}) as Record<string, unknown>;
+  return {
+    resolvedBy: data["resolvedBy"],
+    identity: {
+      rigName: id["rigName"],
+      nodeId: id["nodeId"],
+      logicalId: id["logicalId"],
+      podId: id["podId"],
+      podNamespace: id["podNamespace"],
+      memberId: id["memberId"],
+      sessionName: id["sessionName"],
+      runtime: id["runtime"],
+    },
+    peers: peers.map((p) => {
+      const peer = (p ?? {}) as Record<string, unknown>;
+      return { logicalId: peer["logicalId"], sessionName: peer["sessionName"], runtime: peer["runtime"] };
+    }),
+    // KEEP: openrig-user SKILL.md documents peersNote as a required recovery field.
+    peersNote: data["peersNote"],
+    // edges already carry only kind + to/from {logicalId, sessionName}.
+    edges: data["edges"],
+    transcript: { path: transcript["path"], tailCommand: transcript["tailCommand"] },
   };
 }
 
@@ -168,9 +204,19 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
     .option("--all-hosts", "Fan out to all registered HTTP hosts")
     .option("--hosts <ids>", "Fan out to specific hosts (comma-separated)")
-    .option("--json", "JSON output for agents")
+    .option("--json", "JSON output for agents (compact identity-recovery projection by default)")
+    .option("--full", "Show the complete whoami payload (contextUsage, commands, runtimeContext, workspace, all sub-fields)")
+    .option("--verbose", "Alias for --full")
+    .addHelpText("after", `
+By default rig whoami is COMPACT: identity (rig/pod/member/session/runtime),
+peers (with sessionName for 'rig send'), edges, and the transcript path — the
+boot + compaction-restore recovery essentials. Use --full / --verbose for the
+complete payload (contextUsage, command examples, runtime token detail,
+workspace block). The compact form omits the Context line; use 'rig context' or
+'rig whoami --full' for usage.`)
     .action(async (opts: WhoamiCliOptions) => {
       const deps = getDeps();
+      const full = Boolean(opts.full || opts.verbose);
 
       if (opts.allHosts || opts.hosts) {
         await runFanOutWhoami(opts, deps);
@@ -209,11 +255,20 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
       else params.set("sessionName", source.sessionName!);
       const targetRepo = readOpenRigEnv("OPENRIG_TARGET_REPO", "RIGGED_TARGET_REPO");
       if (targetRepo) params.set("targetRepo", targetRepo);
+      // Compact by default (the every-boot recovery call); --full opts out so
+      // the daemon also skips the contextUsage/runtimeContext compute.
+      if (!full) params.set("compact", "1");
 
       const res = await client.get<Record<string, unknown>>(`/api/whoami?${params.toString()}`);
 
       if (opts.json) {
-        console.log(JSON.stringify(res.data, null, 2));
+        if (full || res.status >= 400) {
+          // --full: today's complete payload (parity). Errors: pass through.
+          console.log(JSON.stringify(res.data, null, 2));
+        } else {
+          // Compact default: the identity-recovery ALLOWLIST projection.
+          console.log(JSON.stringify(projectCompactWhoami(res.data)));
+        }
         if (res.status >= 400) process.exitCode = 1;
         return;
       }
@@ -278,12 +333,15 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
         console.log(`  ${data.transcript.tailCommand}`);
       }
 
-      // Context usage
-      const ctx = data.contextUsage;
-      if (ctx && ctx.availability === "known") {
-        console.log(`Context:    ${ctx.usedPercentage}% used (${ctx.remainingPercentage}% remaining, ${ctx.contextWindowSize} window)`);
-      } else {
-        console.log("Context:    unknown");
+      // Context usage — OPR.0.4.0.27: shown only in --full (compact omits the
+      // contextUsage payload entirely; use 'rig context' or 'rig whoami --full').
+      if (full) {
+        const ctx = data.contextUsage;
+        if (ctx && ctx.availability === "known") {
+          console.log(`Context:    ${ctx.usedPercentage}% used (${ctx.remainingPercentage}% remaining, ${ctx.contextWindowSize} window)`);
+        } else {
+          console.log("Context:    unknown");
+        }
       }
     });
 

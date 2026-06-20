@@ -9,6 +9,10 @@ export function whoamiRoutes(): Hono {
     const nodeId = c.req.query("nodeId");
     const sessionName = c.req.query("sessionName");
     const targetRepo = c.req.query("targetRepo");
+    // OPR.0.4.0.27: the CLI opts into compact (skips contextUsage/runtimeContext
+    // compute). A direct /api/whoami with NO compact param stays FULL (API
+    // back-compat for external consumers).
+    const compact = c.req.query("compact") === "1";
 
     if (!nodeId && !sessionName) {
       return c.json({
@@ -21,6 +25,7 @@ export function whoamiRoutes(): Hono {
         nodeId: nodeId ?? undefined,
         sessionName: sessionName ?? undefined,
         targetRepoOverride: targetRepo ?? undefined,
+        compact,
       });
 
       if (!result) {

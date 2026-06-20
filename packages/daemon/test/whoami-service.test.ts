@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -238,5 +238,43 @@ describe("WhoamiService", () => {
     const result = svc.resolve({ nodeId: node.id });
     expect(result).not.toBeNull();
     expect(result!.runtimeContext).toBeNull();
+  });
+
+  // --- OPR.0.4.0.27 AC-4: compact skips the contextUsage/runtimeContext compute ---
+
+  const sampleContextUsage = {
+    availability: "known",
+    totalInputTokens: 10,
+    totalOutputTokens: 5,
+    sampledAt: "2026-06-20T00:00:00Z",
+  };
+
+  it("AC-4: compact resolve does NOT call the contextUsageStore lookup and omits contextUsage/runtimeContext", () => {
+    const getForNode = vi.fn(() => sampleContextUsage as never);
+    const svcWithCtx = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore: { getForNode } as never });
+    const { nodeA } = seedRig();
+
+    const result = svcWithCtx.resolve({ nodeId: nodeA.id, compact: true });
+
+    expect(result).not.toBeNull();
+    // The look-above win: the per-call contextUsageStore lookup is never performed.
+    expect(getForNode).not.toHaveBeenCalled();
+    expect(result!.contextUsage).toBeUndefined();
+    expect(result!.runtimeContext).toBeUndefined();
+  });
+
+  it("AC-4 back-compat: full (no compact) performs the contextUsage lookup and builds runtimeContext", () => {
+    const getForNode = vi.fn(() => sampleContextUsage as never);
+    const svcWithCtx = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore: { getForNode } as never });
+    const { nodeA } = seedRig();
+
+    const result = svcWithCtx.resolve({ nodeId: nodeA.id });
+
+    expect(result).not.toBeNull();
+    expect(getForNode).toHaveBeenCalledTimes(1);
+    expect(result!.contextUsage).toEqual(sampleContextUsage);
+    // nodeA is claude-code -> runtimeContext is built (not skipped).
+    expect(result!.runtimeContext).not.toBeNull();
+    expect(result!.runtimeContext?.runtime).toBe("claude-code");
   });
 });
