@@ -484,8 +484,12 @@ Default frontier source: use 'rig queue list' for pending work items.
 
 Compact defaults: 'rig ps --nodes' shows a compact summary per node
 (rig, session, lifecycle, activity state, reason when attention, queue counts).
-Use '--full' (or '--verbose') for the complete per-node payload including
-contextUsage, recoveryGuidance, resume commands, and agent references.
+Use '--full' (or '--verbose') for the complete per-node LIST payload
+(contextUsage scalars, resume commands, agent references). Note (OPR.0.4.0.26):
+the node-list payload intentionally carries recoveryGuidance: null and
+contextUsage.currentUsage: null even with --full; fetch the full recovery
+guidance and currentUsage from the single-node detail
+(/api/rigs/:rigId/nodes/:logicalId) or 'rig whoami'.
 
 Compact field set (--nodes default): rigName, canonicalSessionName,
 lifecycleState, agentActivity.state, agentActivity.reason (when attention),
@@ -505,7 +509,7 @@ Examples:
   rig ps --filter name-prefix=demo                Filter by rig-name prefix
   rig ps --nodes                                  Per-node compact summary (human; truncated to ${HUMAN_NODE_BUDGET})
   rig ps --nodes --json                           Per-node compact summary (JSON; bare array)
-  rig ps --nodes --json --full                    Complete per-node payload (same as pre-0.4.0 default)
+  rig ps --nodes --json --full                    Complete per-node LIST payload (guidance/currentUsage relocated to node detail)
   rig ps --nodes --json --rig openrig-build       Compact nodes filtered to one rig
   rig ps --nodes --json --session dev1-impl@myrig Filter to a single session
   rig ps --nodes --json --limit 50                Bounded per-node JSON envelope

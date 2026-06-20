@@ -845,3 +845,22 @@ describe("Ps CLI", () => {
     });
   });
 });
+
+describe("OPR.0.4.0.26 — rig ps help reflects the slimmed node-list contract", () => {
+  it("no longer advertises the pre-0.4.0 complete node payload (recoveryGuidance/currentUsage relocated)", () => {
+    // Capture the FULL rendered help (the addHelpText "after" block is only in
+    // outputHelp, not helpInformation). Normalize whitespace so commander's
+    // line-wrapping doesn't split tokens.
+    let out = "";
+    const cmd = psCommand();
+    cmd.configureOutput({ writeOut: (s) => { out += s; } });
+    cmd.outputHelp();
+    const help = out.replace(/\s+/g, " ");
+    // The now-false pre-0.4.0 promises are gone.
+    expect(help).not.toContain("same as pre-0.4.0 default");
+    expect(help).not.toContain("recoveryGuidance, resume commands");
+    // The new node-list contract is documented in-CLI (AC-4).
+    expect(help).toContain("recoveryGuidance: null");
+    expect(help).toContain("contextUsage.currentUsage: null");
+  });
+});
