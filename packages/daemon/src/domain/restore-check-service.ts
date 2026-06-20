@@ -133,6 +133,7 @@ export interface RestoreCheckOpts {
   rig?: string;
   noQueue?: boolean;
   noHooks?: boolean;
+  compact?: boolean;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -318,6 +319,10 @@ export class RestoreCheckService {
         const readinessCheck = this.checkSeatReadiness(node);
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
+
+        if (opts.compact && readinessCheck.status === "green") {
+          continue;
+        }
 
         const startupContextCheck = this.checkStartupContext(node);
         if ("unknownChecks" in startupContextCheck) {

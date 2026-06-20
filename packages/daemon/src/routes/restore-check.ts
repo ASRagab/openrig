@@ -169,7 +169,7 @@ restoreCheckRoutes.get("/", (c) => {
     };
 
     const service = new RestoreCheckService(serviceDeps);
-    const result = service.check({ rig: rigFilter, noQueue, noHooks });
+    const result = service.check({ rig: rigFilter, noQueue, noHooks, compact });
 
     if (compact) {
       const compactResult = {

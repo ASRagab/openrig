@@ -1,172 +1,107 @@
-import { describe, it, expect } from "vitest";
-import { Hono } from "hono";
-import { restoreCheckRoutes } from "../src/routes/restore-check.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry, type RestoreCheckResult } from "../src/domain/restore-check-service.js";
 
-function makeApp(result: Record<string, unknown>) {
-  const app = new Hono();
-  app.use("*", async (c, next) => {
-    c.set("rigRepo" as never, {
-      db: { prepare: () => ({ all: () => [], get: () => undefined }) },
-      listRigs: () => [],
-    });
-    c.set("snapshotRepo" as never, {
-      listSnapshots: () => [],
-      getLatestSnapshot: () => null,
-    });
-    await next();
-  });
-
-  const mockService = {
-    check: () => result,
-  };
-  const routes = new Hono();
-  routes.get("/", (c) => {
-    const compact = c.req.query("compact") === "1";
-    if (compact) {
-      const r = result as {
-        verdict: string;
-        readiness: unknown;
-        counts: unknown;
-        rigs: Array<Record<string, unknown>>;
-        checks: Array<{ status: string }>;
-        recovery: Record<string, unknown>;
-      };
-      return c.json({
-        verdict: r.verdict,
-        readiness: r.readiness,
-        counts: r.counts,
-        rigs: r.rigs.map((rig) => ({
-          rigId: rig.rigId,
-          rigName: rig.rigName,
-          status: rig.status,
-          verdict: rig.verdict,
-          expectedNodes: rig.expectedNodes,
-          runningReadyNodes: rig.runningReadyNodes,
-          blockedNodes: rig.blockedNodes,
-          caveatNodes: rig.caveatNodes,
-        })),
-        checks: r.checks.filter((ch) => ch.status !== "green"),
-        recovery: {
-          status: r.recovery.status,
-          summary: r.recovery.summary,
-          actions: r.recovery.actions,
-          blocked: r.recovery.blocked,
-        },
-      });
-    }
-    return c.json(result);
-  });
-  app.route("/api/restore-check", routes);
-  return app;
+function makeReadyNode(logicalId: string): NodeInventoryEntry {
+  return {
+    logicalId,
+    canonicalSessionName: `${logicalId.replace(".", "-")}@test-rig`,
+    sessionStatus: "running",
+    startupStatus: "ready",
+    cwd: "/project",
+    latestError: null,
+    tmuxAttachCommand: `tmux attach -t ${logicalId.replace(".", "-")}@test-rig`,
+  } as NodeInventoryEntry;
 }
 
-const FULL_RESULT = {
-  verdict: "restorable_with_caveats",
-  readiness: { status: "ready_with_caveats", reason: "some_caveats", blockingRigCount: 0, caveatRigCount: 1, unknownRigCount: 0 },
-  continuity: { status: "not_proven", evidence: "...", provenCapabilities: [], unprovenCapabilities: ["resume"] },
-  rigs: [
-    {
-      rigId: "rig-1", rigName: "openrig-build", status: "ready", verdict: "restorable",
-      expectedNodes: 7, runningReadyNodes: 7, blockedNodes: 0, caveatNodes: 0,
-      blockingChecks: [], caveatChecks: [],
-    },
-    {
-      rigId: "rig-2", rigName: "openrig-comms", status: "ready_with_caveats", verdict: "restorable_with_caveats",
-      expectedNodes: 5, runningReadyNodes: 4, blockedNodes: 0, caveatNodes: 1,
-      blockingChecks: [], caveatChecks: [{ check: "seat.caveat", status: "yellow", evidence: "stale", remediation: "refresh" }],
-    },
-  ],
-  hostInfra: { status: "declared", evidence: "Host autostart detected" },
-  recovery: { status: "not_needed", summary: "No recovery needed", actions: [], blocked: [], unknown: [] },
-  counts: { red: 0, yellow: 1, green: 10 },
-  checks: [
-    { check: "daemon.reachable", status: "green", evidence: "OK", remediation: "" },
-    { check: "seat.ready.impl", status: "green", evidence: "running+ready", remediation: "" },
-    { check: "seat.caveat.editor", status: "yellow", evidence: "stale snapshot", remediation: "rig snapshot" },
-  ],
-  repairPacket: null,
-};
+function makeNotReadyNode(logicalId: string): NodeInventoryEntry {
+  return {
+    logicalId,
+    canonicalSessionName: `${logicalId.replace(".", "-")}@test-rig`,
+    sessionStatus: "exited",
+    startupStatus: "failed",
+    cwd: "/project",
+    latestError: "Startup failed",
+  } as NodeInventoryEntry;
+}
 
-describe("OPR.0.4.0.29 — restore-check compact route", () => {
-  it("AC-1: compact response is materially smaller than full", async () => {
-    const app = makeApp(FULL_RESULT);
+function makeDeps(nodes: NodeInventoryEntry[]): RestoreCheckDeps {
+  return {
+    listRigs: () => [{ rigId: "rig-1", name: "test-rig" }],
+    getNodeInventory: () => nodes,
+    getStartupContext: () => ({ status: "missing" as const, evidence: "no context" }),
+    hasSnapshot: () => true,
+    getLatestSnapshot: () => ({ id: "snap-1", kind: "full" }),
+    probeDaemonHealth: () => ({ healthy: true, evidence: "OK" }),
+    exists: () => false,
+    readFile: () => "",
+  };
+}
 
-    const fullRes = await app.request("/api/restore-check");
-    const compactRes = await app.request("/api/restore-check?compact=1");
+describe("OPR.0.4.0.29 — restore-check compact via service", () => {
+  it("AC-1: compact produces fewer checks than full", () => {
+    const nodes = [
+      makeReadyNode("dev.impl"),
+      makeReadyNode("dev.qa"),
+      makeReadyNode("dev.guard"),
+      makeNotReadyNode("dev.design"),
+    ];
 
-    const fullBody = await fullRes.text();
-    const compactBody = await compactRes.text();
+    const service = new RestoreCheckService(makeDeps(nodes));
+    const full = service.check({ compact: false });
+    const compact = service.check({ compact: true });
 
-    expect(compactBody.length).toBeLessThan(fullBody.length);
-    expect(JSON.parse(compactBody).verdict).toBe("restorable_with_caveats");
+    expect(compact.checks.length).toBeLessThan(full.checks.length);
+    expect(compact.rigs.length).toBe(full.rigs.length);
   });
 
-  it("AC-2: full response preserves all fields", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check");
-    const body = JSON.parse(await res.text());
+  it("AC-3: compact skips per-seat detail for ready seats (FR-3/AC-4)", () => {
+    const nodes = [
+      makeReadyNode("dev.impl"),
+      makeReadyNode("dev.qa"),
+      makeNotReadyNode("dev.design"),
+    ];
 
-    expect(body.continuity).toBeDefined();
-    expect(body.hostInfra).toBeDefined();
-    expect(body.repairPacket).toBeDefined();
-    expect(body.checks.length).toBe(3);
-    expect(body.rigs[0].blockingChecks).toBeDefined();
+    const service = new RestoreCheckService(makeDeps(nodes));
+    const compact = service.check({ compact: true });
+    const full = service.check({ compact: false });
+
+    const compactSeatChecks = compact.checks.filter((c) => c.check.startsWith("seat."));
+    const fullSeatChecks = full.checks.filter((c) => c.check.startsWith("seat."));
+    expect(compactSeatChecks.length).toBeLessThan(fullSeatChecks.length);
+
+    const notReadyCheck = compact.checks.find((c) => c.status === "red" && c.check.includes("readiness"));
+    expect(notReadyCheck).toBeDefined();
+    expect(notReadyCheck!.evidence).toContain("not running/ready");
   });
 
-  it("AC-3: compact excludes green checks, keeps yellow/red", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check?compact=1");
-    const body = JSON.parse(await res.text());
-
-    expect(body.checks.every((ch: { status: string }) => ch.status !== "green")).toBe(true);
-    expect(body.checks.length).toBe(1);
-    expect(body.checks[0].status).toBe("yellow");
-  });
-
-  it("AC-4: compact rig entries omit blockingChecks/caveatChecks detail", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check?compact=1");
-    const body = JSON.parse(await res.text());
-
-    for (const rig of body.rigs) {
-      expect(rig.blockingChecks).toBeUndefined();
-      expect(rig.caveatChecks).toBeUndefined();
-      expect(rig.rigName).toBeDefined();
-      expect(rig.status).toBeDefined();
-      expect(rig.expectedNodes).toBeDefined();
-    }
-  });
-
-  it("AC-7: readiness classes derive from real enums (no invented status)", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check?compact=1");
-    const body = JSON.parse(await res.text());
+  it("AC-7: readiness classes derive from real enums", () => {
+    const nodes = [makeReadyNode("dev.impl"), makeNotReadyNode("dev.qa")];
+    const service = new RestoreCheckService(makeDeps(nodes));
+    const result = service.check({});
 
     const validStatuses = new Set(["ready", "ready_with_caveats", "not_ready", "unknown"]);
-    for (const rig of body.rigs) {
+    expect(validStatuses.has(result.readiness.status)).toBe(true);
+    for (const rig of result.rigs) {
       expect(validStatuses.has(rig.status)).toBe(true);
     }
-    expect(body.readiness.status).toBeDefined();
-    expect(validStatuses.has(body.readiness.status)).toBe(true);
   });
 
-  it("AC-8: per-rig grouping shows mixed states", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check?compact=1");
-    const body = JSON.parse(await res.text());
+  it("AC-5: no compact option = full result (back-compat)", () => {
+    const nodes = [makeReadyNode("dev.impl")];
+    const service = new RestoreCheckService(makeDeps(nodes));
+    const result = service.check({});
 
-    expect(body.rigs.length).toBe(2);
-    expect(body.rigs[0].status).toBe("ready");
-    expect(body.rigs[1].status).toBe("ready_with_caveats");
+    const seatChecks = result.checks.filter((c) => c.check.startsWith("seat.") || c.check.includes("startup_context") || c.check.includes("transcript") || c.check.includes("resume"));
+    expect(seatChecks.length).toBeGreaterThan(1);
   });
 
-  it("AC-5: daemon back-compat — no compact param returns full result", async () => {
-    const app = makeApp(FULL_RESULT);
-    const res = await app.request("/api/restore-check");
-    const body = JSON.parse(await res.text());
+  it("AC-8: per-rig grouping shows rig rollup", () => {
+    const nodes = [makeReadyNode("dev.impl"), makeNotReadyNode("dev.qa")];
+    const service = new RestoreCheckService(makeDeps(nodes));
+    const result = service.check({});
 
-    expect(body.checks.length).toBe(3);
-    expect(body.continuity).toBeDefined();
-    expect(body.hostInfra).toBeDefined();
+    expect(result.rigs.length).toBe(1);
+    expect(result.rigs[0]!.rigName).toBe("test-rig");
+    expect(result.rigs[0]!.expectedNodes).toBe(2);
   });
 });

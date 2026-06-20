@@ -193,7 +193,7 @@ Examples:
 
       try {
         const params = new URLSearchParams();
-        if (!opts.full) params.set("compact", "1");
+        if (!opts.full && !opts.ready) params.set("compact", "1");
         if (opts.rig) params.set("rig", opts.rig);
         if (opts.queue === false) params.set("noQueue", "true");
         if (opts.hooks === false) params.set("noHooks", "true");
