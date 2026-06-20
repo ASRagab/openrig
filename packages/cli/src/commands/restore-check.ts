@@ -125,11 +125,30 @@ Exit codes:
   const getDepsF = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   cmd
-    .option("--json", "JSON output for agents")
+    .option("--json", "JSON output (compact summary by default; use --full --json for complete detail)")
+    .option("--full", "Show complete per-seat detail (today's default)")
+    .option("--ready", "Show ready-seat detail in addition to not-ready")
     .option("--rig <name>", "Check one rig only")
     .option("--no-queue", "Skip queue file checks")
     .option("--no-hooks", "Skip hook checks")
-    .action(async (opts: { json?: boolean; rig?: string; queue?: boolean; hooks?: boolean }) => {
+    .addHelpText("after", `
+Default: compact summary with per-rig readiness counts and NOT-READY seats only.
+Ready seats are counted but their detail is omitted to save tokens.
+
+Use --full for today's complete per-seat detail (all checks, repair packet, etc.).
+Use --ready to include ready-seat detail alongside not-ready.
+Use --full --json for the complete JSON firehose.
+
+Readiness classes: ready, ready_with_caveats, not_ready, attention_required, unknown.
+
+Examples:
+  rig restore-check                       Compact summary (counts + not-ready)
+  rig restore-check --json                Compact JSON summary
+  rig restore-check --full                Complete per-seat detail
+  rig restore-check --full --json         Complete JSON (the firehose)
+  rig restore-check --ready               Include ready seats in output
+  rig restore-check --rig my-rig          Check one rig only`)
+    .action(async (opts: { json?: boolean; full?: boolean; ready?: boolean; rig?: string; queue?: boolean; hooks?: boolean }) => {
       const deps = getDepsF();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (status.state !== "running" || status.healthy === false) {
@@ -174,6 +193,7 @@ Exit codes:
 
       try {
         const params = new URLSearchParams();
+        if (!opts.full) params.set("compact", "1");
         if (opts.rig) params.set("rig", opts.rig);
         if (opts.queue === false) params.set("noQueue", "true");
         if (opts.hooks === false) params.set("noHooks", "true");
@@ -222,8 +242,10 @@ Exit codes:
 
         if (opts.json) {
           console.log(JSON.stringify(result, null, 2));
-        } else {
+        } else if (opts.full) {
           printHuman(result);
+        } else {
+          printCompact(result);
         }
 
         // Exit codes: 0 for restorable/restorable_with_caveats; 1 for not_restorable; 2 for unknown
@@ -298,6 +320,54 @@ function printHuman(result: RestoreCheckResult): void {
   } else if (result.counts.yellow > 0) {
     console.log();
     console.log("Restorable with caveats. Yellow items are non-blocking but worth reviewing.");
+  }
+}
+
+function printCompact(result: RestoreCheckResult): void {
+  const verdictLabel = result.verdict.replace(/_/g, " ").toUpperCase();
+  console.log(`RESTORE CHECK — ${verdictLabel}`);
+  console.log(`${result.counts.green} green | ${result.counts.yellow} yellow | ${result.counts.red} red`);
+  const readinessLabel = result.readiness.status.replace(/_/g, " ");
+  console.log(`READINESS: ${readinessLabel}`);
+
+  if (result.rigs && result.rigs.length > 0) {
+    console.log();
+    console.log(`${"RIG".padEnd(24)} ${"STATUS".padEnd(18)} ${"READY".padEnd(9)} ${"BLOCKED".padEnd(8)} CAVEATS`);
+    for (const rig of result.rigs) {
+      console.log(
+        `${rig.rigName.slice(0, 24).padEnd(24)} ${rig.status.padEnd(18)} ` +
+        `${`${rig.runningReadyNodes}/${rig.expectedNodes}`.padEnd(9)} ${String(rig.blockedNodes).padEnd(8)} ${rig.caveatNodes}`
+      );
+    }
+  }
+
+  const notReadyChecks = result.checks.filter((ch) => ch.status !== "green");
+  if (notReadyChecks.length > 0) {
+    console.log();
+    for (const check of notReadyChecks) {
+      const sym = STATUS_SYMBOLS[check.status] ?? "?";
+      console.log(`  ${sym} ${check.check}: ${check.evidence}`);
+      if (check.remediation) {
+        console.log(`    Fix: ${check.remediation}`);
+      }
+    }
+  }
+
+  if (result.recovery && result.recovery.status !== "not_needed") {
+    console.log();
+    console.log(`RECOVERY: ${result.recovery.status.replace(/_/g, " ").toUpperCase()}`);
+    console.log(result.recovery.summary);
+    for (const action of result.recovery.actions) {
+      console.log(`  Action: ${action.command}`);
+    }
+    for (const issue of result.recovery.blocked) {
+      console.log(`  Blocked: ${issue.reason}`);
+    }
+  }
+
+  if (result.counts.red > 0) {
+    console.log();
+    console.log("Use --full for complete detail. Use --ready to include ready-seat info.");
   }
 }
 
