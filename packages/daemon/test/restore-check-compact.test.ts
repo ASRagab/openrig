@@ -116,13 +116,25 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
       latestError: "Awaiting operator",
     } as NodeInventoryEntry);
 
+    // The two ready seats are GENUINELY clean (nodeId + ok startup context +
+    // present files via exists:true + healthy daemon) so they count as plain
+    // `ready` — keeping real coverage of the ready class. (Caveat detection in
+    // default compact is covered by the two dedicated tests below; a bare
+    // makeReadyNode with a missing startup context is ready_with_caveats, not
+    // ready, and default compact now detects that.)
     const nodes = [
-      makeReadyNode("dev.impl"),
-      makeReadyNode("dev.qa"),
+      { ...makeReadyNode("dev.impl"), nodeId: "node-impl" } as NodeInventoryEntry,
+      { ...makeReadyNode("dev.qa"), nodeId: "node-qa" } as NodeInventoryEntry,
       makeNotReadyNode("dev.design"),
       makeAttentionNode("dev.synth"),
     ];
-    const result = new RestoreCheckService(makeDeps(nodes)).check({ compact: true });
+    const deps: RestoreCheckDeps = {
+      ...makeDeps(nodes),
+      exists: () => true,
+      probeDaemonHealth: () => ({ healthy: true, evidence: "Daemon running" }),
+      getStartupContext: () => ({ status: "ok" as const, runtime: null, resolvedStartupFiles: [], projectionEntries: [] }),
+    };
+    const result = new RestoreCheckService(deps).check({ compact: true });
 
     // Exactly the 5 real-enum class keys — no fresh-primed/awaiting-decision invented status.
     expect(Object.keys(result.classCounts).sort()).toEqual(
@@ -189,5 +201,33 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
     expect(rig.caveatNodes).toBe(1);
     expect(result.classCounts.ready_with_caveats).toBe(1);
     expect(result.classCounts.ready).toBe(0);
+  });
+
+  // OPR.0.4.0.29 code-review BLOCKING forward-fix (qitem-...52809188): the DEFAULT
+  // compact path the QA proof actually ran (rig restore-check, NOT --ready). Default
+  // compact omits ready-seat DETAIL from the emitted output (token-safe), but the
+  // summary must STILL detect the caveat -- a snapshot-backed running/ready seat with
+  // a missing startup context is ready_with_caveats, not ready. The includeReady test
+  // above is necessary but insufficient: it masks the default-compact detail skip.
+  it("AC-7: DEFAULT compact (no includeReady) still counts a running/ready seat's yellow caveat as ready_with_caveats", () => {
+    // nodeId set so the real getStartupContext-missing path produces the yellow
+    // startup-context caveat. Clean deps so it is the ONLY non-green seat signal.
+    const caveatNode = { ...makeReadyNode("dev.impl"), nodeId: "node-caveat" } as NodeInventoryEntry;
+    const deps: RestoreCheckDeps = {
+      ...makeDeps([caveatNode]),
+      hasSnapshot: () => true,
+      exists: () => true,
+      probeDaemonHealth: () => ({ healthy: true, evidence: "Daemon running" }),
+      getStartupContext: () => ({ status: "missing" as const, evidence: "Persisted startup context missing" }),
+    };
+    const result = new RestoreCheckService(deps).check({ compact: true });
+
+    const rig = result.rigs.find((r) => r.rigName === "test-rig")!;
+    expect(rig.status).toBe("ready_with_caveats");
+    expect(rig.caveatNodes).toBe(1);
+    expect(result.classCounts.ready_with_caveats).toBe(1);
+    expect(result.classCounts.ready).toBe(0);
+    // Token-safe: default compact does NOT dump the ready seat's detail rows.
+    expect(result.checks.some((c) => c.check.endsWith(".startup-context"))).toBe(false);
   });
 });

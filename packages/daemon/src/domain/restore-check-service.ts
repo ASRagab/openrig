@@ -340,12 +340,15 @@ export class RestoreCheckService {
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
-        // Compact skips per-seat detail assembly for ready (green) seats — the
-        // token win. `--ready` (includeReady) opts back IN to ready-seat detail
-        // while staying compact (OPR.0.4.0.29 FR-2 corrective).
-        if (opts.compact && !opts.includeReady && readinessCheck.status === "green") {
-          continue;
-        }
+        // OPR.0.4.0.29: default compact OMITS ready-seat detail from the EMITTED
+        // output (the token win), but it must NOT skip COMPUTING the per-seat
+        // caveat/blocking signals — the rig rollup (status + classCounts) needs
+        // them to count a running/ready seat with a real yellow caveat as
+        // ready_with_caveats (and a failed seat as not_ready). So compute the
+        // detail for every seat and feed it to the rollup (rigChecks); emit it to
+        // the top-level `checks` only when NOT skipping (full, --ready/includeReady,
+        // or a non-ready seat). A probe error still surfaces honest unknown.
+        const omitReadyDetail = opts.compact && !opts.includeReady && readinessCheck.status === "green";
 
         const startupContextCheck = this.checkStartupContext(node);
         if ("unknownChecks" in startupContextCheck) {
@@ -354,26 +357,15 @@ export class RestoreCheckService {
             ...startupContextCheck.unknownChecks,
           ]);
         }
-        checks.push(startupContextCheck.check);
-        rigChecks.push(startupContextCheck.check);
+        const seatDetail: CheckEntry[] = [startupContextCheck.check];
+        seatDetail.push(this.checkTranscript(rig.name, node));
+        seatDetail.push(this.checkResumePath(node));
+        if (!opts.noQueue) seatDetail.push(this.checkQueueFile(rig.name, node));
+        if (!opts.noHooks) seatDetail.push(this.checkHooks(node));
 
-        const transcriptCheck = this.checkTranscript(rig.name, node);
-        checks.push(transcriptCheck);
-        rigChecks.push(transcriptCheck);
-
-        const resumeCheck = this.checkResumePath(node);
-        checks.push(resumeCheck);
-        rigChecks.push(resumeCheck);
-
-        if (!opts.noQueue) {
-          const queueCheck = this.checkQueueFile(rig.name, node);
-          checks.push(queueCheck);
-          rigChecks.push(queueCheck);
-        }
-        if (!opts.noHooks) {
-          const hooksCheck = this.checkHooks(node);
-          checks.push(hooksCheck);
-          rigChecks.push(hooksCheck);
+        for (const detailCheck of seatDetail) {
+          rigChecks.push(detailCheck);
+          if (!omitReadyDetail) checks.push(detailCheck);
         }
       }
 
