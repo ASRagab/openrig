@@ -93,8 +93,10 @@ describe("rig context", () => {
   });
 
   it("JSON output includes seats array + summary with correct fields", async () => {
+    // The full per-seat fields (urgency/freshness/status) live on --full --json
+    // after OPR.0.4.0.30 (bare --json is the slim projection).
     const cmd = contextCommand(makeDeps());
-    await cmd.parseAsync(["node", "rig", "--json"]);
+    await cmd.parseAsync(["node", "rig", "--full", "--json"]);
 
     const json = JSON.parse(logs.join(""));
     expect(json.seats).toBeInstanceOf(Array);
@@ -174,7 +176,7 @@ describe("rig context", () => {
 
   it("low + fresh = ok; low + stale = stale (never ok)", async () => {
     const cmd = contextCommand(makeDeps());
-    await cmd.parseAsync(["node", "rig", "--json"]);
+    await cmd.parseAsync(["node", "rig", "--full", "--json"]);
 
     const json = JSON.parse(logs.join(""));
     const stale = json.seats.find((s: { session: string }) => s.session === "dev-synth@test-rig");
@@ -185,7 +187,7 @@ describe("rig context", () => {
 
   it("unknown seats have honest unknown status", async () => {
     const cmd = contextCommand(makeDeps());
-    await cmd.parseAsync(["node", "rig", "--json"]);
+    await cmd.parseAsync(["node", "rig", "--full", "--json"]);
 
     const json = JSON.parse(logs.join(""));
     const unknown = json.seats.find((s: { session: string }) => s.session === "dev-qa@test-rig");
@@ -251,5 +253,75 @@ describe("rig context", () => {
     // Should have the same structure as non-refresh output
     expect(json.summary.total).toBeDefined();
     expect(process.exitCode).toBeUndefined();
+  });
+
+  // --- OPR.0.4.0.30: compact --json default + --full ---
+
+  const COMPACT_KEYS = ["session", "rig", "runtime", "usedPercentage", "contextWindowSize", "staleness", "displayStatus"];
+  const FULL_ONLY_KEYS = ["logicalId", "remainingPercentage", "urgency", "freshness", "status", "source", "availability", "sampledAt", "fresh"];
+
+  it("AC-3: bare --json emits EXACTLY the 7 compact keys per seat (full-only keys absent)", async () => {
+    const cmd = contextCommand(makeDeps());
+    await cmd.parseAsync(["node", "rig", "--json"]);
+    const json = JSON.parse(logs.join(""));
+    expect(json.seats.length).toBe(3);
+    for (const seat of json.seats) {
+      expect(Object.keys(seat).sort()).toEqual([...COMPACT_KEYS].sort());
+      for (const k of FULL_ONLY_KEYS) expect(seat[k]).toBeUndefined();
+    }
+    expect(json.summary).toBeDefined();
+  });
+
+  it("AC-2/AC-3: --full --json emits the complete 16-field Seat[]", async () => {
+    const cmd = contextCommand(makeDeps());
+    await cmd.parseAsync(["node", "rig", "--full", "--json"]);
+    const json = JSON.parse(logs.join(""));
+    for (const seat of json.seats) {
+      for (const k of [...COMPACT_KEYS, ...FULL_ONLY_KEYS]) expect(k in seat).toBe(true);
+    }
+  });
+
+  it("AC-1: bare --json is non-pretty and smaller than --full --json", async () => {
+    const compactCmd = contextCommand(makeDeps());
+    await compactCmd.parseAsync(["node", "rig", "--json"]);
+    const compactOut = logs.join("");
+    logs.length = 0;
+    const fullCmd = contextCommand(makeDeps());
+    await fullCmd.parseAsync(["node", "rig", "--full", "--json"]);
+    const fullOut = logs.join("");
+    // Non-pretty compact vs pretty-printed full.
+    expect(compactOut).not.toContain("\n");
+    expect(fullOut).toContain("\n");
+    expect(compactOut.length).toBeLessThan(fullOut.length);
+  });
+
+  it("AC-4: compact default preserves every visible seat + summary", async () => {
+    const cmd = contextCommand(makeDeps());
+    await cmd.parseAsync(["node", "rig", "--json"]);
+    const json = JSON.parse(logs.join(""));
+    const sessions = json.seats.map((s: { session: string }) => s.session).sort();
+    expect(sessions).toEqual(["dev-impl@test-rig", "dev-qa@test-rig", "dev-synth@test-rig"]);
+    expect(json.summary.total).toBe(3);
+  });
+
+  it("AC-2: --full human widens the table (remaining/source/freshness); default omits them", async () => {
+    const fullCmd = contextCommand(makeDeps());
+    await fullCmd.parseAsync(["node", "rig", "--full"]);
+    const fullOut = logs.join("\n");
+    expect(fullOut).toContain("remaining");
+    expect(fullOut).toContain("freshness");
+    expect(fullOut).toContain("claude_statusline_json"); // a source value renders
+
+    logs.length = 0;
+    const defCmd = contextCommand(makeDeps());
+    await defCmd.parseAsync(["node", "rig"]);
+    const defOut = logs.join("\n");
+    expect(defOut).not.toContain("freshness"); // default header unchanged
+    expect(defOut).not.toContain("claude_statusline_json");
+  });
+
+  it("AC-5: --help teaches --full", async () => {
+    const cmd = contextCommand(makeDeps());
+    expect(cmd.helpInformation()).toContain("--full");
   });
 });
