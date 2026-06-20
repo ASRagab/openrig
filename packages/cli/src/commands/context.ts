@@ -151,16 +151,19 @@ Examples:
   rig context --rig openrig-pm   Show one rig
   rig context --threshold 80     Show seats at or above 80% (plus unknown + stale)
   rig context --refresh          Re-sample context before displaying
-  rig context --json             JSON output for agents`);
+  rig context --json             Compact JSON (slim per-seat projection, non-pretty)
+  rig context --full --json      Complete per-seat payload (all fields; lossless)
+  rig context --full             Widened human table (adds remaining/source/freshness)`);
 
   const getDepsF = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   cmd
-    .option("--json", "JSON output for agents")
+    .option("--json", "Compact JSON for agents (use --full --json for the complete payload)")
+    .option("--full", "Include every field: --full --json is the complete Seat[]; --full widens the human table")
     .option("--rig <name>", "Show one rig only")
     .option("--threshold <pct>", "Show seats at or above this percentage")
     .option("--refresh", "Re-sample context usage before displaying")
-    .action(async (opts: { json?: boolean; rig?: string; threshold?: string; refresh?: boolean }) => {
+    .action(async (opts: { json?: boolean; full?: boolean; rig?: string; threshold?: string; refresh?: boolean }) => {
       const deps = getDepsF();
 
       // Strict threshold validation — reject non-integer input
@@ -245,22 +248,49 @@ Examples:
         };
 
         if (opts.json) {
-          console.log(JSON.stringify({ seats, summary }, null, 2));
+          if (opts.full) {
+            // --full --json: the complete Seat[] + summary. Lossless parity
+            // with the pre-0.4.0.30 --json output (pretty-printed). This is
+            // the ONLY full-payload surface.
+            console.log(JSON.stringify({ seats, summary }, null, 2));
+          } else {
+            // Compact default (OPR.0.4.0.30): a slim, non-pretty actionable
+            // projection — exactly the columns the human table shows. The
+            // other Seat fields move to --full --json.
+            const compactSeats = seats.map((s) => ({
+              session: s.session,
+              rig: s.rig,
+              runtime: s.runtime,
+              usedPercentage: s.usedPercentage,
+              contextWindowSize: s.contextWindowSize,
+              staleness: s.staleness,
+              displayStatus: s.displayStatus,
+            }));
+            console.log(JSON.stringify({ seats: compactSeats, summary }));
+          }
           return;
         }
 
         // Human-readable output
         const title = opts.rig ? `CONTEXT USAGE - ${opts.rig}` : "CONTEXT USAGE - all rigs";
         console.log(title);
-        console.log(
-          `${"seat".padEnd(42)} ${"runtime".padEnd(12)} ${"context".padStart(7)} ${"window".padStart(8)} ${"sampled".padStart(10)}  status`
-        );
+        // Default table is unchanged; --full appends remaining/source/freshness
+        // columns (a defined additive widening, not multi-line).
+        const baseHeader = `${"seat".padEnd(42)} ${"runtime".padEnd(12)} ${"context".padStart(7)} ${"window".padStart(8)} ${"sampled".padStart(10)}  ${opts.full ? "status".padEnd(16) : "status"}`;
+        console.log(opts.full
+          ? `${baseHeader}  ${"remaining".padStart(9)}  ${"source".padEnd(22)}  freshness`
+          : baseHeader);
         for (const seat of seats) {
           const context = seat.usedPercentage == null ? "?" : `${seat.usedPercentage}%`;
           const window = seat.contextWindowSize == null ? "?" : String(seat.contextWindowSize);
-          console.log(
-            `${seat.session.slice(0, 42).padEnd(42)} ${seat.runtime.slice(0, 12).padEnd(12)} ${context.padStart(7)} ${window.padStart(8)} ${seat.staleness.padStart(10)}  ${seat.displayStatus}`
-          );
+          const baseRow = `${seat.session.slice(0, 42).padEnd(42)} ${seat.runtime.slice(0, 12).padEnd(12)} ${context.padStart(7)} ${window.padStart(8)} ${seat.staleness.padStart(10)}  ${opts.full ? seat.displayStatus.padEnd(16) : seat.displayStatus}`;
+          if (opts.full) {
+            const remaining = seat.remainingPercentage == null ? "?" : `${seat.remainingPercentage}%`;
+            const source = seat.source ?? "\u2014";
+            console.log(`${baseRow}  ${remaining.padStart(9)}  ${source.padEnd(22)}  ${seat.freshness}`);
+          } else {
+            console.log(baseRow);
+          }
         }
         console.log();
         console.log(
