@@ -485,15 +485,19 @@ Examples:
     }) => {
       const deps = getDeps();
       const isAll = opts.all || opts.allRigs;
+      const hasExplicitScope = !!(opts.as || opts.destination || opts.source);
       const params = new URLSearchParams();
 
-      if (!isAll) {
-        const callerScope = opts.as ?? readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
+      if (!isAll && !hasExplicitScope) {
+        const callerScope = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
         if (callerScope) {
           params.set("as", callerScope);
         }
       }
-      if (!opts.full) {
+      if (opts.as) {
+        params.set("as", opts.as);
+      }
+      if (!opts.full && !isAll) {
         params.set("compact", "1");
       }
       if (opts.destination) params.set("destinationSession", opts.destination);
