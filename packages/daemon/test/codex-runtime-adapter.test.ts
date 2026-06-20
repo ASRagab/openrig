@@ -139,7 +139,7 @@ describe("Codex runtime adapter", () => {
   it("checkReady returns false when the pane has fallen back to a shell prompt", async () => {
     const tmux = mockTmux({
       getPaneCommand: vi.fn(async () => "zsh"),
-      capturePaneContent: vi.fn(async () => "mschwarz@host rigged %"),
+      capturePaneContent: vi.fn(async () => "user@example.test rigged %"),
     });
     const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs() });
 

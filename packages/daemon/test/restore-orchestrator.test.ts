@@ -753,7 +753,7 @@ describe("RestoreOrchestrator", () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
     (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue(
-      "No conversation found with session ID: missing-session\nmschwarz@host %"
+      "No conversation found with session ID: missing-session\nuser@example.test %"
     );
     const claude = new ClaudeResumeAdapter(tmux, { pollMs: 0, maxWaitMs: 0, sleep: async () => {} });
     const orch = createOrchestrator({ tmux, claude });

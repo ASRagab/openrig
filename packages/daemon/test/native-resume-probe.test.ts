@@ -61,7 +61,7 @@ describe("native resume probe", () => {
       assessNativeResumeProbe({
         runtime: "claude-code",
         paneCommand: "zsh",
-        paneContent: "No conversation found with session ID: abc123\nmschwarz@host %",
+        paneContent: "No conversation found with session ID: abc123\nuser@example.test %",
       })
     ).toEqual({
       status: "failed",
@@ -411,7 +411,7 @@ describe("native resume probe", () => {
       assessNativeResumeProbe({
         runtime: "codex",
         paneCommand: "zsh",
-        paneContent: "mschwarz@host %",
+        paneContent: "user@example.test %",
       })
     ).toEqual({
       status: "failed",
@@ -431,7 +431,7 @@ describe("native resume probe", () => {
     expect(
       isProbeShellReady({
         paneCommand: "zsh",
-        paneContent: "mschwarz@mike-air rigged % ",
+        paneContent: "user@example.test rigged % ",
       })
     ).toBe(true);
 

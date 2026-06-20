@@ -136,7 +136,7 @@ describe("ClaudeResumeAdapter", () => {
 
     it("returns retry_fresh when Claude prints no conversation found and drops back to shell", async () => {
       const getPaneCommand = vi.fn(async () => "zsh");
-      const capturePaneContent = vi.fn(async () => "No conversation found with session ID: abc123\nmschwarz@host %");
+      const capturePaneContent = vi.fn(async () => "No conversation found with session ID: abc123\nuser@example.test %");
       const adapter = new ClaudeResumeAdapter(
         mockTmux({ getPaneCommand, capturePaneContent }),
         { pollMs: 0, maxWaitMs: 0, sleep: async () => {} }

@@ -61,7 +61,7 @@ describe("Claude Code runtime adapter", () => {
   it("checkReady returns false when the pane has fallen back to a shell prompt", async () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
-    (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue("mschwarz@host rigged %");
+    (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue("user@example.test rigged %");
     const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs() });
 
     const result = await adapter.checkReady(makeBinding());
@@ -384,7 +384,7 @@ describe("Claude Code runtime adapter", () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
     (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue(
-      "No conversation found with session ID: abc-123\nmschwarz@host %"
+      "No conversation found with session ID: abc-123\nuser@example.test %"
     );
     const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
 

@@ -77,10 +77,10 @@ describe("TranscriptStore", () => {
   describe("stripAnsi", () => {
     it("removes ANSI escape sequences from spike doc examples", () => {
       const store = new TranscriptStore({ transcriptsRoot: tmpDir });
-      const raw = "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m  \x1b[0m\x1b[27m\x1b[24m\x1b[Jmschwarz@mike-air /tmp % \x1b[K\x1b[?2004hecho 'test'\x1b[?2004l";
+      const raw = "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m  \x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test /tmp % \x1b[K\x1b[?2004hecho 'test'\x1b[?2004l";
       const stripped = store.stripAnsi(raw);
       expect(stripped).not.toContain("\x1b[");
-      expect(stripped).toContain("mschwarz@mike-air /tmp %");
+      expect(stripped).toContain("user@example.test /tmp %");
       expect(stripped).toContain("echo 'test'");
     });
 
@@ -96,9 +96,9 @@ describe("TranscriptStore", () => {
 
     it("removes shell redraw noise from real transcript capture", () => {
       const store = new TranscriptStore({ transcriptsRoot: tmpDir });
-      const raw = "printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                               \r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Jmschwarz@mike-air rigged % \x1b[K\x1b[?2004hp\bprintf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'";
+      const raw = "printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                               \r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test rigged % \x1b[K\x1b[?2004hp\bprintf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'";
       const stripped = store.stripAnsi(raw);
-      expect(stripped).toContain("mschwarz@mike-air rigged %");
+      expect(stripped).toContain("user@example.test rigged %");
       expect(stripped).toContain("printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'");
       expect(stripped).not.toContain("pprintf");
       expect(stripped).not.toContain("\b");
@@ -163,7 +163,7 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
         filePath,
-        "mschwarz@mike-air rigged % echo SEND_ALPHA_OK\nSEND_ALPHA_OK\nmschwarz@mike-air rigged % \n",
+        "user@example.test rigged % echo SEND_ALPHA_OK\nSEND_ALPHA_OK\nuser@example.test rigged % \n",
       );
 
       const result = store.readTail("my-rig", "dev@my-rig", 5);
@@ -177,7 +177,7 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
         filePath,
-        "echo OPS_SHELL_READY\n%\nmschwarz@mike-air rigged % \nmschwarz@mike-air rigged % echo RIG_BROADCAST_OK\nRIG_BROADCAST_OK\n",
+        "echo OPS_SHELL_READY\n%\nuser@example.test rigged % \nuser@example.test rigged % echo RIG_BROADCAST_OK\nRIG_BROADCAST_OK\n",
       );
 
       const result = store.readTail("my-rig", "dev@my-rig", 10);
@@ -191,7 +191,7 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
         filePath,
-        "mschwarz@mike-air rigged % echo ACK\nACK\nmschwarz@mike-air rigged % \n",
+        "user@example.test rigged % echo ACK\nACK\nuser@example.test rigged % \n",
       );
 
       const result = store.readTail("my-rig", "dev@my-rig", 5);
@@ -205,7 +205,7 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
         filePath,
-        "echo DEV_ALPHA_READY\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m\r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Jmschwarz@mike-air rigged % \x1b[K\x1b[?2004hecho DEV_ALPHA_READY\x1b[?2004l\r\r\nDEV_ALPHA_READY\n",
+        "echo DEV_ALPHA_READY\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m\r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test rigged % \x1b[K\x1b[?2004hecho DEV_ALPHA_READY\x1b[?2004l\r\r\nDEV_ALPHA_READY\n",
       );
 
       const result = store.readTail("my-rig", "dev@my-rig", 10);
@@ -455,7 +455,7 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
         filePath,
-        "printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                                \r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Jmschwarz@mike-air rigged % \x1b[K\x1b[?2004hprintf 'TRACK_A_GROWTH_LINE\\\\n'\n",
+        "printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                                \r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test rigged % \x1b[K\x1b[?2004hprintf 'TRACK_A_GROWTH_LINE\\\\n'\n",
       );
 
       const result = store.grep("my-rig", "dev@my-rig", "TRACK_A_GROWTH_LINE");
@@ -488,15 +488,15 @@ describe("TranscriptStore", () => {
       const filePath = store.getTranscriptPath("noisy-rig", "dev@noisy-rig");
       // 8 prompt noise lines + 2 real lines
       const lines = [
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
         "KEEP_ONE",
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
-        "mschwarz@mike-air rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
+        "user@example.test rigged % ",
         "KEEP_TWO",
       ];
       writeFileSync(filePath, lines.join("\n") + "\n");
