@@ -161,4 +161,33 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
     expect(result.classCounts.unknown).toBe(1);
     expect(result.classCounts.ready).toBe(0);
   });
+
+  // OPR.0.4.0.29 QA-blocking forward-fix (qa-blocking-1f7b1282): the
+  // restore-proof-caveat repro. A snapshot-backed, running/ready seat whose
+  // startup context is MISSING is a real yellow caveat. The per-rig status +
+  // caveatNodes already report it; classCounts must follow the caveat too —
+  // ready_with_caveats wins over plain ready (but still loses to
+  // attention/not_ready/no-snapshot, which are asserted above).
+  it("AC-7: a running/ready seat with a real yellow caveat counts as ready_with_caveats, not ready", () => {
+    // makeReadyNode is running+ready; with a missing startup context its
+    // seat.<session>.startup-context check is yellow (buildStartupContextAvailabilityCheck).
+    // includeReady forces the ready-seat detail to assemble (the --ready path the QA proof used).
+    // exists:true + a healthy daemon clears the unrelated rig/host red checks
+    // (spec-present, daemon.reachable, transcript/queue files) so the ONLY
+    // non-green signal is the real startup-context caveat — isolating the bug.
+    const deps: RestoreCheckDeps = {
+      ...makeDeps([makeReadyNode("dev.impl")]),
+      hasSnapshot: () => true,
+      exists: () => true,
+      probeDaemonHealth: () => ({ healthy: true, evidence: "Daemon running" }),
+      getStartupContext: () => ({ status: "missing" as const, evidence: "Persisted startup context missing" }),
+    };
+    const result = new RestoreCheckService(deps).check({ compact: true, includeReady: true });
+
+    const rig = result.rigs.find((r) => r.rigName === "test-rig")!;
+    expect(rig.status).toBe("ready_with_caveats");
+    expect(rig.caveatNodes).toBe(1);
+    expect(result.classCounts.ready_with_caveats).toBe(1);
+    expect(result.classCounts.ready).toBe(0);
+  });
 });
