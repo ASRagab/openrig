@@ -134,6 +134,9 @@ export interface RestoreCheckOpts {
   noQueue?: boolean;
   noHooks?: boolean;
   compact?: boolean;
+  /** OPR.0.4.0.29 FR-2: in compact mode, still assemble ready-seat detail so
+   *  `--ready` shows ready seats without dropping to the full firehose. */
+  includeReady?: boolean;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -320,7 +323,10 @@ export class RestoreCheckService {
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
-        if (opts.compact && readinessCheck.status === "green") {
+        // Compact skips per-seat detail assembly for ready (green) seats — the
+        // token win. `--ready` (includeReady) opts back IN to ready-seat detail
+        // while staying compact (OPR.0.4.0.29 FR-2 corrective).
+        if (opts.compact && !opts.includeReady && readinessCheck.status === "green") {
           continue;
         }
 

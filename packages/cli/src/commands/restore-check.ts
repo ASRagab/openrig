@@ -193,7 +193,11 @@ Examples:
 
       try {
         const params = new URLSearchParams();
-        if (!opts.full && !opts.ready) params.set("compact", "1");
+        // Compact by default; --full opts out. --ready stays COMPACT and adds
+        // ready-seat detail (ready=1) IN ADDITION to the not-ready rows — it is
+        // NOT the full firehose (OPR.0.4.0.29 FR-2 / forward-fix corrective).
+        if (!opts.full) params.set("compact", "1");
+        if (opts.ready) params.set("ready", "1");
         if (opts.rig) params.set("rig", opts.rig);
         if (opts.queue === false) params.set("noQueue", "true");
         if (opts.hooks === false) params.set("noHooks", "true");
@@ -341,10 +345,12 @@ function printCompact(result: RestoreCheckResult): void {
     }
   }
 
-  const notReadyChecks = result.checks.filter((ch) => ch.status !== "green");
-  if (notReadyChecks.length > 0) {
+  // The route already scopes `checks` to the right set: not-ready only by
+  // default, or all seats (including ready detail) when --ready (ready=1).
+  // Render exactly what it returned — do not re-filter here.
+  if (result.checks.length > 0) {
     console.log();
-    for (const check of notReadyChecks) {
+    for (const check of result.checks) {
       const sym = STATUS_SYMBOLS[check.status] ?? "?";
       console.log(`  ${sym} ${check.check}: ${check.evidence}`);
       if (check.remediation) {
