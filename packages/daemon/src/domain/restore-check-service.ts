@@ -1411,14 +1411,20 @@ export class RestoreCheckService {
       if (hasBlocking) blockedNodes += 1;
       else if (hasCaveat) caveatNodes += 1;
 
-      // FR-8 class derivation (precedence; each from a real primitive):
-      //   attention_required ← node.startupStatus; unknown ← no-snapshot
-      //   (rig can't restore); ready ← running/ready; not_ready ← a red seat
-      //   check; ready_with_caveats ← a yellow seat check; unknown ← remainder.
+      // FR-8 class derivation (precedence; each from a real primitive).
+      // attention/not_ready WIN FIRST (a failed/attention seat is surfaced even
+      // in a no-snapshot rig); no-snapshot then overrides ONLY ready/caveat (a
+      // clean seat in an unrestorable rig is unknown):
+      //   attention_required ← node.startupStatus
+      //   not_ready          ← a red seat check (failed/down)
+      //   unknown            ← no-snapshot (rig can't restore)
+      //   ready              ← running/ready
+      //   ready_with_caveats ← a yellow seat check
+      //   unknown            ← indeterminate remainder
       if (node.startupStatus === "attention_required") classCounts.attention_required += 1;
+      else if (hasBlocking) classCounts.not_ready += 1;
       else if (rigNoSnapshot) classCounts.unknown += 1;
       else if (runningReady) classCounts.ready += 1;
-      else if (hasBlocking) classCounts.not_ready += 1;
       else if (hasCaveat) classCounts.ready_with_caveats += 1;
       else classCounts.unknown += 1;
     }

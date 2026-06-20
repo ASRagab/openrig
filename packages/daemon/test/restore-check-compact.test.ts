@@ -152,4 +152,13 @@ describe("OPR.0.4.0.29 — restore-check compact via service", () => {
     expect(result.classCounts.ready).toBe(0);
     expect(result.classCounts.unknown).toBe(2);
   });
+
+  it("AC-7: no-snapshot does NOT hide failed seats (not_ready wins over no-snapshot)", () => {
+    const deps: RestoreCheckDeps = { ...makeDeps([makeReadyNode("dev.impl"), makeNotReadyNode("dev.qa")]), hasSnapshot: () => false };
+    const result = new RestoreCheckService(deps).check({ compact: true });
+    // The failed seat stays not_ready (surfaced); only the clean seat -> unknown.
+    expect(result.classCounts.not_ready).toBe(1);
+    expect(result.classCounts.unknown).toBe(1);
+    expect(result.classCounts.ready).toBe(0);
+  });
 });
