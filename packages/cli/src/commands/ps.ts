@@ -557,7 +557,7 @@ Exit codes:
   cmd
     .option("--json", "JSON output for agents")
     .option("--nodes", "Show per-node detail for all rigs")
-    .option("--full", "Show complete per-node payload (default is compact summary)")
+    .option("--full", "Show all node-list fields per node (uncompacted rows; recoveryGuidance/currentUsage live on the node detail, not the list)")
     .option("--verbose", "Alias for --full")
     .option("--limit <n>", "Limit number of entries (rigs or nodes)")
     .option("--fields <list>", "Comma-separated field list to project (JSON only)")

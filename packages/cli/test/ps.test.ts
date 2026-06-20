@@ -856,9 +856,10 @@ describe("OPR.0.4.0.26 — rig ps help reflects the slimmed node-list contract",
     cmd.configureOutput({ writeOut: (s) => { out += s; } });
     cmd.outputHelp();
     const help = out.replace(/\s+/g, " ");
-    // The now-false pre-0.4.0 promises are gone.
+    // The now-false pre-0.4.0 promises are gone (after-text AND the --full option row).
     expect(help).not.toContain("same as pre-0.4.0 default");
     expect(help).not.toContain("recoveryGuidance, resume commands");
+    expect(help).not.toContain("Show complete per-node payload");
     // The new node-list contract is documented in-CLI (AC-4).
     expect(help).toContain("recoveryGuidance: null");
     expect(help).toContain("contextUsage.currentUsage: null");
