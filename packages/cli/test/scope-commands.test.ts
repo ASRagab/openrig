@@ -735,3 +735,295 @@ describe("rig scope audit edge cases (guard BLOCKING fixes)", () => {
     expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "id_convention_violation" || f.kind === "slice_naming_convention")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-1 stage verb (deterministic maturity)
+// ---------------------------------------------------------------------
+
+describe("rig scope <tier> stage (OPR.0.4.1.6 FR-1)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => { substrate = seedSubstrate(); });
+  afterEach(() => { fs.rmSync(substrate.root, { recursive: true, force: true }); });
+
+  const sliceReadme = () => path.join(substrate.missionsRoot, "release-0.3.2", "slices", "01-existing", "README.md");
+
+  it("AC-1: sets stage surgically, preserving id + other fields", async () => {
+    const r = await run(["slice", "stage", "01-existing", "provisional", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(sliceReadme());
+    expect(fm.stage).toBe("provisional");
+    expect(fm.id).toBe("OPR.0.3.2.1"); // untouched
+    expect(fm.status).toBe("active");  // untouched
+  });
+
+  it("AC-1: rejects an invalid stage value and names the valid enum", async () => {
+    const r = await run(["slice", "stage", "01-existing", "shape", "--mission", "release-0.3.2"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/wip.*provisional.*established.*canonical.*superseded.*retired/s);
+    expect(readFrontmatter(sliceReadme()).stage).toBeUndefined(); // not written
+  });
+
+  it("AC-1: superseded WITHOUT --successor is rejected (names the rule)", async () => {
+    const r = await run(["slice", "stage", "01-existing", "superseded", "--mission", "release-0.3.2"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/successor/i);
+    expect(readFrontmatter(sliceReadme()).stage).toBeUndefined();
+  });
+
+  it("AC-1: superseded WITH --successor sets stage + records the successor", async () => {
+    const r = await run(["slice", "stage", "01-existing", "superseded", "--successor", "OPR.0.3.2.7", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(sliceReadme());
+    expect(fm.stage).toBe("superseded");
+    expect(fm["superseded-by"]).toBe("OPR.0.3.2.7");
+  });
+
+  it("retired sets the stage and warns (exit 0)", async () => {
+    const r = await run(["slice", "stage", "01-existing", "retired", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    expect(readFrontmatter(sliceReadme()).stage).toBe("retired");
+  });
+
+  it("mission stage sets the mission README stage", async () => {
+    const r = await run(["mission", "stage", "release-0.3.2", "established", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(path.join(substrate.missionsRoot, "release-0.3.2", "README.md"));
+    expect(fm.stage).toBe("established");
+    expect(fm.id).toBe("OPR.0.3.2");
+  });
+});
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-2 verified verb (provenance-stamped freshness)
+// ---------------------------------------------------------------------
+
+describe("rig scope <tier> verified (OPR.0.4.1.6 FR-2)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => { substrate = seedSubstrate(); });
+  afterEach(() => { fs.rmSync(substrate.root, { recursive: true, force: true }); });
+
+  const sliceReadme = () => path.join(substrate.missionsRoot, "release-0.3.2", "slices", "01-existing", "README.md");
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  it("AC-2: stamps verified: <today> against <source>, preserving id", async () => {
+    const r = await run(["slice", "verified", "01-existing", "--against", "runtime (npm+tag)", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(sliceReadme());
+    expect(fm.verified).toBe(`${today()} against runtime (npm+tag)`);
+    expect(fm.id).toBe("OPR.0.3.2.1");
+  });
+
+  it("AC-2: rejects empty/whitespace --against (no bare timestamps)", async () => {
+    const r = await run(["slice", "verified", "01-existing", "--against", "   ", "--mission", "release-0.3.2"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/against|provenance|source/i);
+    expect(readFrontmatter(sliceReadme()).verified).toBeUndefined();
+  });
+
+  it("AC-2: rejects a missing --against entirely", async () => {
+    const r = await run(["slice", "verified", "01-existing", "--mission", "release-0.3.2"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(1);
+  });
+
+  it("AC-2: overwrites a prior verified line in place", async () => {
+    await run(["slice", "verified", "01-existing", "--against", "first source", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    await run(["slice", "verified", "01-existing", "--against", "second source", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const fm = readFrontmatter(sliceReadme());
+    expect(fm.verified).toBe(`${today()} against second source`);
+  });
+
+  it("mission verified stamps the mission README", async () => {
+    const r = await run(["mission", "verified", "release-0.3.2", "--against", "founder review", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    expect(readFrontmatter(path.join(substrate.missionsRoot, "release-0.3.2", "README.md")).verified).toBe(`${today()} against founder review`);
+  });
+});
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-4 repair frontmatter-conformance backfill
+// ---------------------------------------------------------------------
+
+describe("rig scope repair frontmatter conformance (OPR.0.4.1.6 FR-4)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => { substrate = seedSubstrate(); });
+  afterEach(() => { fs.rmSync(substrate.root, { recursive: true, force: true }); });
+
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  it("AC-4: backfills a missing id + stage + verified on a ghost slice (idempotent re-run)", async () => {
+    const ghost = path.join(substrate.missionsRoot, "release-0.3.2", "slices", "05-ghost");
+    writeFile(path.join(ghost, "README.md"), "---\nstatus: placeholder\n---\n# ghost\n");
+    const ghostReadme = path.join(ghost, "README.md");
+
+    const r1 = await run(["slice", "repair", "05-ghost", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    expect(r1.exitCode).toBe(0);
+    const fm1 = readFrontmatter(ghostReadme);
+    expect(fm1.id).toBe("OPR.0.3.2.5");                 // minted from parent + NN, registered
+    expect(fm1.stage).toBe("wip");                      // placeholder -> wip (migration map)
+    expect(fm1.verified).toBe(`${today()} against backfill (rig scope repair)`);
+
+    // Idempotent: a second run changes nothing.
+    await run(["slice", "repair", "05-ghost", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const fm2 = readFrontmatter(ghostReadme);
+    expect(fm2.id).toBe("OPR.0.3.2.5");
+    expect(fm2.stage).toBe("wip");
+    expect(fm2.verified).toBe(`${today()} against backfill (rig scope repair)`);
+  });
+
+  it("AC-4: does NOT clobber an existing real verified line", async () => {
+    const slice = path.join(substrate.missionsRoot, "release-0.3.2", "slices", "06-has-verified");
+    writeFile(path.join(slice, "README.md"), "---\nid: OPR.0.3.2.6\nstage: established\nverified: 2026-01-02 against runtime (npm+tag)\n---\n# v\n");
+    await run(["slice", "repair", "06-has-verified", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const fm = readFrontmatter(path.join(slice, "README.md"));
+    expect(fm.verified).toBe("2026-01-02 against runtime (npm+tag)"); // untouched
+    expect(fm.stage).toBe("established");                              // untouched
+  });
+
+  it("AC-4: mission repair conforms the mission README frontmatter too (lazy parent-id)", async () => {
+    // A mission whose README has no id/stage/verified, plus a ghost slice.
+    const m = path.join(substrate.missionsRoot, "backlog-new");
+    writeFile(path.join(m, "README.md"), "---\nmission: backlog-new\n---\n# new\n");
+    writeFile(path.join(m, "slices", "01-foo", "README.md"), "---\nstatus: active\n---\n# foo\n");
+    const r = await run(["mission", "repair", "backlog-new", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const mfm = readFrontmatter(path.join(m, "README.md"));
+    expect(typeof mfm.id).toBe("string");          // escape-band id minted
+    expect(mfm.stage).toBe("wip");
+    expect(mfm.verified).toBe(`${today()} against backfill (rig scope repair)`);
+    const sfm = readFrontmatter(path.join(m, "slices", "01-foo", "README.md"));
+    expect(typeof sfm.id).toBe("string");          // child id = parentId.1
+    expect(sfm.id).toBe(`${mfm.id}.1`);
+    expect(sfm.stage).toBe("established");          // active -> established (migration map)
+  });
+});
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-5 read-time-trust in show (DERIVE, never store)
+// ---------------------------------------------------------------------
+
+describe("rig scope show read-time trust (OPR.0.4.1.6 FR-5)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => { substrate = seedSubstrate(); });
+  afterEach(() => { fs.rmSync(substrate.root, { recursive: true, force: true }); });
+
+  const dAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  function seedSlice(name: string, fm: string): string {
+    const dir = path.join(substrate.missionsRoot, "release-0.3.2", "slices", name);
+    writeFile(path.join(dir, "README.md"), fm);
+    return path.join(dir, "README.md");
+  }
+
+  it("AC-5: established + STALE verified shows effectively provisional (derived)", async () => {
+    seedSlice("07-stale", `---\nid: OPR.0.3.2.7\nstage: established\nverified: ${dAgo(200)} against runtime\n---\n# stale\n`);
+    const r = await run(["slice", "show", "07-stale", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const p = JSON.parse(r.stdout);
+    expect(p.slice.trust.declaredStage).toBe("established");
+    expect(p.slice.trust.effectiveStage).toBe("provisional");
+    expect(p.slice.trust.downgraded).toBe(true);
+    expect(p.slice.trust.verified.status).toBe("stale_verified");
+  });
+
+  it("AC-5: established + FRESH verified stays established", async () => {
+    seedSlice("08-fresh", `---\nid: OPR.0.3.2.8\nstage: established\nverified: ${dAgo(5)} against runtime\n---\n# fresh\n`);
+    const r = await run(["slice", "show", "08-fresh", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const p = JSON.parse(r.stdout);
+    expect(p.slice.trust.effectiveStage).toBe("established");
+    expect(p.slice.trust.downgraded).toBe(false);
+    expect(p.slice.trust.verified.status).toBe("verified");
+  });
+
+  it("AC-5: established + SCAFFOLD provenance shows effectively provisional regardless of date", async () => {
+    seedSlice("09-scaffold", `---\nid: OPR.0.3.2.9\nstage: established\nverified: ${dAgo(1)} against scaffold (rig scope create)\n---\n# s\n`);
+    const r = await run(["slice", "show", "09-scaffold", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const p = JSON.parse(r.stdout);
+    expect(p.slice.trust.effectiveStage).toBe("provisional");
+    expect(p.slice.trust.verified.status).toBe("unverified_provenance");
+  });
+
+  it("AC-5: show DERIVES trust and does NOT write it back to disk (no stored composite)", async () => {
+    const readmePath = seedSlice("10-nowrite", `---\nid: OPR.0.3.2.10\nstage: canonical\nverified: ${dAgo(200)} against runtime\n---\n# n\n`);
+    const before = fs.readFileSync(readmePath, "utf8");
+    await run(["slice", "show", "10-nowrite", "--mission", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const after = fs.readFileSync(readmePath, "utf8");
+    expect(after).toBe(before); // byte-identical — nothing written back
+    const fm = readFrontmatter(readmePath);
+    expect(fm.trust).toBeUndefined();
+    expect(fm.effectiveStage).toBeUndefined();
+  });
+
+  it("mission show also derives read-time trust", async () => {
+    writeFile(
+      path.join(substrate.missionsRoot, "release-0.3.2", "README.md"),
+      `---\nid: OPR.0.3.2\nstage: canonical\nverified: ${dAgo(300)} against design\n---\n# release-0.3.2\n`,
+    );
+    const r = await run(["mission", "show", "release-0.3.2", "--json"], substrate.missionsRoot);
+    const p = JSON.parse(r.stdout);
+    expect(p.mission.trust.effectiveStage).toBe("provisional");
+    expect(p.mission.trust.downgraded).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-3 create regression-lock (already ships; guard the templates)
+// ---------------------------------------------------------------------
+
+describe("rig scope create regression-lock (OPR.0.4.1.6 FR-3)", () => {
+  let substrate: { root: string; missionsRoot: string };
+  beforeEach(() => { substrate = seedSubstrate(); });
+  afterEach(() => { fs.rmSync(substrate.root, { recursive: true, force: true }); });
+
+  const WELL_FORMED_VERIFIED = /^\d{4}-\d{2}-\d{2} against .+$/;
+
+  it("AC-3: fresh slice create writes id + stage + a well-formed verified line", async () => {
+    const r = await run(["slice", "create", "release-0.3.2", "new-feature", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(path.join(substrate.missionsRoot, "release-0.3.2", "slices", "02-new-feature", "README.md"));
+    expect(fm.id).toBe("OPR.0.3.2.2");
+    expect(fm.stage).toBe("wip");
+    expect(String(fm.verified)).toMatch(WELL_FORMED_VERIFIED);
+  });
+
+  it("AC-3: fresh mission create writes id + stage + a well-formed verified line", async () => {
+    const r = await run(["mission", "create", "release-0.5.0", "--json"], substrate.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const fm = readFrontmatter(path.join(substrate.missionsRoot, "release-0.5.0", "README.md"));
+    expect(typeof fm.id).toBe("string");
+    expect((fm.id as string).length).toBeGreaterThan(0);
+    expect(fm.stage).toBe("wip");
+    expect(String(fm.verified)).toMatch(WELL_FORMED_VERIFIED);
+  });
+});
+
+// ---------------------------------------------------------------------
+// OPR.0.4.1.6 — FR-6 help teaches the new verbs + enforcement rules
+// ---------------------------------------------------------------------
+
+describe("OPR.0.4.1.6 FR-6 — help", () => {
+  const renderHelp = (cmd: Command) => cmd.helpInformation().replace(/\s+/g, " ");
+
+  it("stage + verified verbs are registered on both tiers with descriptions", () => {
+    const cmd = scopeCommand();
+    for (const tierName of ["slice", "mission"]) {
+      const tier = cmd.commands.find((c) => c.name() === tierName)!;
+      const verbs = tier.commands.map((c) => c.name());
+      expect(verbs).toContain("stage");
+      expect(verbs).toContain("verified");
+      for (const verb of tier.commands) expect(verb.description()).toBeTruthy();
+    }
+  });
+
+  it("stage help teaches the superseded-needs-successor rule + the valid enum", () => {
+    const stage = scopeCommand().commands.find((c) => c.name() === "slice")!.commands.find((c) => c.name() === "stage")!;
+    const help = renderHelp(stage);
+    expect(help).toMatch(/superseded/i);
+    expect(help).toMatch(/successor/i);
+    expect(help).toMatch(/wip.*provisional.*established.*canonical/i);
+  });
+
+  it("verified help teaches provenance-mandatory", () => {
+    const verified = scopeCommand().commands.find((c) => c.name() === "slice")!.commands.find((c) => c.name() === "verified")!;
+    const help = renderHelp(verified);
+    expect(help).toMatch(/against|provenance|mandatory|source/i);
+  });
+});
