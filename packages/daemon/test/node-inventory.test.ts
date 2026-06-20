@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { getNodeInventory, getNodeDetail } from "../src/domain/node-inventory.js";
+import { getNodeInventory, getNodeDetail, getNodeInventoryWithContext, getNodeDetailWithContext } from "../src/domain/node-inventory.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import type { ContextUsage } from "../src/domain/types.js";
+import type { ContextUsageStore } from "../src/domain/context-usage-store.js";
 
 function seedPodAwareRig(db: Database.Database, opts?: { rigName?: string }) {
   const rigName = opts?.rigName ?? "test-rig";
@@ -164,14 +166,17 @@ describe("Node Inventory Projection", () => {
       resumeToken: "abc-123-def",
     });
 
-    const entries = getNodeInventory(db, "rig-1");
-    const entry = entries.find((e) => e.logicalId === "dev.impl");
-    expect(entry?.recoveryGuidance?.summary).toContain("native Claude resume");
-    expect(entry?.recoveryGuidance?.commands).toContain("claude --resume 'abc-123-def' --name 'dev-impl@test-rig'");
-    expect(entry?.recoveryGuidance?.commands).toContain("cd /project");
-    expect(entry?.recoveryGuidance?.commands).toContain("claude --resume");
-    expect(entry?.recoveryGuidance?.notes).toContain("Look for session name: dev-impl@test-rig");
-    expect(entry?.recoveryGuidance?.notes).toContain("Choose the full conversation option, not summary.");
+    // OPR.0.4.0.26: recoveryGuidance is relocated off the LIST onto the
+    // single-node detail path. The LIST entry no longer inlines it.
+    const entry = getNodeInventory(db, "rig-1").find((e) => e.logicalId === "dev.impl");
+    expect(entry?.recoveryGuidance).toBeNull();
+    const detail = getNodeDetail(db, "rig-1", "dev.impl");
+    expect(detail?.recoveryGuidance?.summary).toContain("native Claude resume");
+    expect(detail?.recoveryGuidance?.commands).toContain("claude --resume 'abc-123-def' --name 'dev-impl@test-rig'");
+    expect(detail?.recoveryGuidance?.commands).toContain("cd /project");
+    expect(detail?.recoveryGuidance?.commands).toContain("claude --resume");
+    expect(detail?.recoveryGuidance?.notes).toContain("Look for session name: dev-impl@test-rig");
+    expect(detail?.recoveryGuidance?.notes).toContain("Choose the full conversation option, not summary.");
   });
 
   it("recoveryGuidance for Codex without token uses workspace-local picker fallback", () => {
@@ -182,13 +187,14 @@ describe("Node Inventory Projection", () => {
     ).run("node-codex", "rig-2", "dev.qa", "codex", "/workspace/app", "pod-2", "local:agents/qa", "default", "qa", "1.0.0", "hash");
     seedSession(db, "node-codex", "dev-qa@test-rig");
 
-    const entries = getNodeInventory(db, "rig-2");
-    const entry = entries.find((e) => e.logicalId === "dev.qa");
+    const entry = getNodeInventory(db, "rig-2").find((e) => e.logicalId === "dev.qa");
     expect(entry?.resumeCommand).toBeNull();
-    expect(entry?.recoveryGuidance?.summary).toContain("codex resume --last with posture flags");
-    expect(entry?.recoveryGuidance?.commands).toEqual(["cd /workspace/app", "codex -a on-request -s danger-full-access resume --last"]);
-    expect(entry?.recoveryGuidance?.notes).toContain("Use workspace and recent prompt text to identify the right conversation.");
-    expect(entry?.recoveryGuidance?.notes).toContain("If the identity anchor was captured, the picker may include: dev-qa@test-rig");
+    expect(entry?.recoveryGuidance).toBeNull(); // relocated to detail
+    const detail = getNodeDetail(db, "rig-2", "dev.qa");
+    expect(detail?.recoveryGuidance?.summary).toContain("codex resume --last with posture flags");
+    expect(detail?.recoveryGuidance?.commands).toEqual(["cd /workspace/app", "codex -a on-request -s danger-full-access resume --last"]);
+    expect(detail?.recoveryGuidance?.notes).toContain("Use workspace and recent prompt text to identify the right conversation.");
+    expect(detail?.recoveryGuidance?.notes).toContain("If the identity anchor was captured, the picker may include: dev-qa@test-rig");
   });
 
   it("resumeCommand and recoveryGuidance preserve Codex config profile", () => {
@@ -202,13 +208,15 @@ describe("Node Inventory Projection", () => {
       resumeToken: "sess-456",
     });
 
-    const entries = getNodeInventory(db, "rig-2");
-    const entry = entries.find((e) => e.logicalId === "platform.mac-admin");
+    const entry = getNodeInventory(db, "rig-2").find((e) => e.logicalId === "platform.mac-admin");
 
     expect(entry?.codexConfigProfile).toBe("sysadmin");
     expect(entry?.resumeCommand).toBe("codex -p 'sysadmin' resume 'sess-456'");
-    expect(entry?.recoveryGuidance?.commands).toContain("codex -p 'sysadmin' resume 'sess-456'");
-    expect(entry?.recoveryGuidance?.notes).toContain("Preserve Codex config profile: sysadmin");
+    expect(entry?.recoveryGuidance).toBeNull(); // relocated to detail
+    const detail = getNodeDetail(db, "rig-2", "platform.mac-admin");
+    expect(detail?.codexConfigProfile).toBe("sysadmin");
+    expect(detail?.recoveryGuidance?.commands).toContain("codex -p 'sysadmin' resume 'sess-456'");
+    expect(detail?.recoveryGuidance?.notes).toContain("Preserve Codex config profile: sysadmin");
   });
 
   // Test 7: startupStatus reflects session startup_status column
@@ -753,5 +761,109 @@ describe("Node Inventory Projection", () => {
       const entries = getNodeInventory(db, "rig-1");
       expect(entries.find((e) => e.logicalId === "dev.impl")?.restoreOutcome).toBe("failed");
     });
+  });
+});
+
+// OPR.0.4.0.26 — node-LIST payload source dedupe. The LIST drops the heavy
+// per-node recoveryGuidance prose and the currentUsage blob; the full data
+// is RELOCATED (not deleted) onto the single-node detail / whoami path.
+describe("OPR.0.4.0.26 — node-list payload source dedupe", () => {
+  let db: Database.Database;
+  beforeEach(() => { db = createFullTestDb(); });
+  afterEach(() => { db.close(); });
+
+  // A quote-free marker inside the blob so substring checks survive JSON
+  // escaping when the value is serialized inside a larger payload.
+  const HEAVY_BLOB_MARKER = "ZZHEAVYCURRENTUSAGEBLOBZZ";
+  const HEAVY_CURRENT_USAGE = JSON.stringify({ model_context_window: 258400, blob: HEAVY_BLOB_MARKER + "x".repeat(4000) });
+
+  function fullUsage(): ContextUsage {
+    return {
+      availability: "known",
+      reason: null,
+      source: "codex_token_count_jsonl",
+      usedPercentage: 42,
+      remainingPercentage: 58,
+      contextWindowSize: 200000,
+      totalInputTokens: 1000,
+      totalOutputTokens: 2000,
+      currentUsage: HEAVY_CURRENT_USAGE,
+      transcriptPath: null,
+      sessionId: "sess-x",
+      sessionName: "dev-impl@test-rig",
+      sampledAt: "2026-06-20T00:00:00.000Z",
+      fresh: true,
+    };
+  }
+
+  // Stub store: returns the full usage for every node so we can observe the
+  // list-vs-detail split without persisting real samples.
+  function stubStore(): ContextUsageStore {
+    return {
+      getForNodes: (entries: Array<{ nodeId: string }>) =>
+        new Map(entries.map((e) => [e.nodeId, fullUsage()])),
+      getForNode: () => fullUsage(),
+      unknownUsage: () => ({ ...fullUsage(), availability: "unknown", reason: "no_data" }),
+    } as unknown as ContextUsageStore;
+  }
+
+  it("LIST omits recoveryGuidance (relocated to detail)", () => {
+    seedPodAwareRig(db);
+    seedSession(db, "node-1", "dev-impl@test-rig", { resumeToken: "abc-123-def" });
+
+    const listEntry = getNodeInventory(db, "rig-1").find((e) => e.logicalId === "dev.impl");
+    expect(listEntry?.recoveryGuidance).toBeNull();
+
+    const detail = getNodeDetail(db, "rig-1", "dev.impl");
+    expect(detail?.recoveryGuidance).not.toBeNull();
+    expect(detail?.recoveryGuidance?.summary).toBeTruthy();
+  });
+
+  it("LIST contextUsage drops currentUsage but keeps every scalar", () => {
+    seedPodAwareRig(db);
+    seedSession(db, "node-1", "dev-impl@test-rig");
+
+    const listEntry = getNodeInventoryWithContext(db, "rig-1", stubStore())
+      .find((e) => e.logicalId === "dev.impl");
+    const ctx = listEntry?.contextUsage;
+    // The heavy blob is gone from the LIST...
+    expect(ctx?.currentUsage).toBeNull();
+    // ...but the scalars the ring/table/filter consumers use are intact.
+    expect(ctx?.usedPercentage).toBe(42);
+    expect(ctx?.remainingPercentage).toBe(58);
+    expect(ctx?.contextWindowSize).toBe(200000);
+    expect(ctx?.totalInputTokens).toBe(1000);
+    expect(ctx?.totalOutputTokens).toBe(2000);
+    expect(ctx?.sampledAt).toBe("2026-06-20T00:00:00.000Z");
+    expect(ctx?.fresh).toBe(true);
+    expect(ctx?.source).toBe("codex_token_count_jsonl");
+    expect(ctx?.availability).toBe("known");
+  });
+
+  it("DETAIL contextUsage retains the full currentUsage (relocation, not loss)", () => {
+    seedPodAwareRig(db);
+    seedSession(db, "node-1", "dev-impl@test-rig");
+
+    const detail = getNodeDetailWithContext(db, "rig-1", "dev.impl", stubStore());
+    expect(detail?.contextUsage?.currentUsage).toBe(HEAVY_CURRENT_USAGE);
+    // Detail also carries full recoveryGuidance.
+    expect(detail?.recoveryGuidance).not.toBeNull();
+  });
+
+  it("AC-1: LIST JSON omits the heavy blobs; DETAIL JSON keeps them (slimmed + relocated)", () => {
+    seedPodAwareRig(db);
+    seedSession(db, "node-1", "dev-impl@test-rig", { resumeToken: "abc-123-def" });
+
+    const listJson = JSON.stringify(getNodeInventoryWithContext(db, "rig-1", stubStore()));
+    // The heavy currentUsage blob and the per-node guidance prose are NOT in
+    // the LIST payload — the two source hogs no longer dominate.
+    expect(listJson).not.toContain(HEAVY_BLOB_MARKER);
+    expect(listJson).not.toContain("Choose the full conversation option");
+    expect(listJson).toContain('"recoveryGuidance":null');
+
+    const detailJson = JSON.stringify(getNodeDetailWithContext(db, "rig-1", "dev.impl", stubStore()));
+    // The full data remains retrievable on the single-node DETAIL path.
+    expect(detailJson).toContain(HEAVY_BLOB_MARKER);
+    expect(detailJson).toContain("Choose the full conversation option");
   });
 });
