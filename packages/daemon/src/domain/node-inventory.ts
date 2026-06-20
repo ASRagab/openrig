@@ -419,13 +419,12 @@ export function getNodeInventory(db: Database.Database, rigId: string): NodeInve
       handoverAt: row.handover_at,
       tmuxAttachCommand: row.binding_attachment_type === "tmux" && row.session_name ? `tmux attach -t ${row.session_name}` : null,
       resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile),
-      recoveryGuidance: computeRecoveryGuidance({
-        runtime: row.runtime,
-        resumeToken: row.resume_token,
-        cwd: row.cwd,
-        sessionName: row.session_name,
-        codexConfigProfile: row.codex_config_profile,
-      }),
+      // OPR.0.4.0.26: recoveryGuidance is NOT inlined per node in the LIST
+      // payload. It duplicated ~47KB of templated prose across all nodes and
+      // no node-list consumer reads it. The full guidance is recomputed on
+      // the single-node detail path (getNodeDetail / GET
+      // /api/rigs/:rigId/nodes/:logicalId) — relocation, not loss.
+      recoveryGuidance: null,
       latestError: row.startup_status === "ready" ? null : getLatestError(db, rigId, row.node_id),
       // Extended fields
       model: row.model,
@@ -611,6 +610,16 @@ export function getNodeDetail(
 
   return {
     ...entry,
+    // OPR.0.4.0.26: the LIST omits recoveryGuidance to stay slim; the
+    // single-node detail recomputes the full guidance from the entry's
+    // resume fields (relocation of the per-node prose, not loss).
+    recoveryGuidance: computeRecoveryGuidance({
+      runtime: entry.runtime,
+      resumeToken: entry.resumeToken,
+      cwd: entry.cwd,
+      sessionName: entry.canonicalSessionName,
+      codexConfigProfile: entry.codexConfigProfile,
+    }),
     binding,
     startupFiles,
     startupActions,
@@ -650,7 +659,13 @@ export function getNodeInventoryWithContext(
 
   return entries.map((e) => {
     const nodeId = nodeIdByLogicalId.get(e.logicalId) ?? "";
-    return { ...e, contextUsage: contextMap.get(nodeId) ?? contextUsageStore.unknownUsage("no_data") };
+    const usage = contextMap.get(nodeId) ?? contextUsageStore.unknownUsage("no_data");
+    // OPR.0.4.0.26: drop the heavy `currentUsage` blob from the LIST
+    // contextUsage (a serialized per-node usage payload, ~79KB across a
+    // large fleet; no node-list consumer reads it). All scalars are kept so
+    // the ring/table/filter consumers are unaffected. The full currentUsage
+    // remains on the detail/whoami path (getNodeDetailWithContext, whoami).
+    return { ...e, contextUsage: { ...usage, currentUsage: null } };
   });
 }
 
