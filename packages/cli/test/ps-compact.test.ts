@@ -384,7 +384,7 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
     expect(helpOutput).toContain("--full");
     expect(helpOutput).toContain("--rig");
     expect(helpOutput).toContain("--session");
-    expect(helpOutput).toContain("rig queue");
+    expect(helpOutput).toContain("current-rig");
     expect(helpOutput).toContain("compact");
   });
 
