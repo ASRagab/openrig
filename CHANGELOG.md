@@ -33,6 +33,7 @@ Five read-commands flip from firehose-by-default to compact-by-default — close
 
 - **`rig skill audit`** (slice 10) — read-only audit of the skill cascade. Detects `missing` / `stale` / `self-referential` / `invalid-date` / `mirror-drift` across canonical → product mirror → hub cwd → installed plugin. False-green prevention: emits `unable-to-audit` exit `2` rather than reporting `clean` when evidence unavailable.
 - **`rig scope mission|slice progress`** (slice 33) — deterministic `PROGRESS.md` updates through the command surface rather than hand-edited markdown. `rig scope mission|slice create` now scaffold `PROGRESS.md` automatically.
+- **`rig scope mission|slice stage / verified / reconcile`** (slice 35) — maturity vocabulary from `conventions/scope-and-versioning` §2 enforced through commands. `stage <id> <new-stage>` sets `stage` (wip / provisional / established / canonical / superseded / retired); `superseded` REQUIRES `--successor`; invalid stages rejected. `verified <id> --against "<source>"` stamps `verified: <today> against <source>`; `--against` MANDATORY (bare timestamps rejected — the anti-stale keystone). `reconcile <id>` is the idempotent repair verb (backfills `PROGRESS.md` + conforms `id`/`stage`/`verified` frontmatter + repairs id-registration ghosts). `create` now writes mandatory `stage` (default `wip`) + a `verified` placeholder. `show` derives read-time effective-reliability projection from (stage × verified) — stale-`verified` `canonical` reported as effectively `provisional`. Composes with slice 33 to make `rig scope` the deterministic convention-enforcer.
 - **`rig seat clear-attention`** extended to derived projection staleness (slice 16) — reaches the second class of projection staleness (`restoreOutcome=failed` on a live ready session) that v0.3.4 couldn't.
 
 ### UI + Topology + Identity
@@ -54,7 +55,7 @@ Five read-commands flip from firehose-by-default to compact-by-default — close
 ### Known Limitations / Carry-Forward
 
 - **Plugin-lineage drift in `openrig-core`** — the openrig-core plugin skill lineage is divergent/stale; full re-sync is OPR.0.4.1.4 (rides 0.4.1). Boot-path layers (canonical + hub cwd) verified current in wrap-gate AC-3 sweep. `rig skill audit` (slice 10) is the runtime mechanism for future drift detection.
-- `rig ps --current-rig` default (slice 34) + `rig scope` stage / verified verbs (slice 35) pushed to 0.4.1.
+- `rig ps --current-rig` default (slice 34) pushed to 0.4.1. (Slice 35 — `rig scope` stage / verified / reconcile verbs — was RESTORED to 0.4.0 by founder direction during the wrap; see New Top-Level CLI Verbs section above.)
 
 ### What To STOP Using
 

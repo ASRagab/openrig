@@ -517,6 +517,25 @@ rig scope slice progress <slice-path> --status <state> --note <text>
 
 Replaces hand-editing `PROGRESS.md` with markdown. Writes the canonical structure the OpenRig PROGRESS UI page reads. `rig scope mission create` + `rig scope slice create` now scaffold `PROGRESS.md` automatically per `conventions/scope-and-versioning/README.md`.
 
+### `rig scope mission|slice stage / verified / reconcile` — deterministic maturity vocabulary (slice 35)
+
+```bash
+rig scope slice stage <slice> <new-stage>             # wip / provisional / established / canonical / superseded / retired
+rig scope slice stage <slice> superseded --successor <id>  # superseded REQUIRES --successor (rejected otherwise)
+rig scope mission stage <mission> <new-stage>         # same enum + rules at mission tier
+
+rig scope slice verified <slice> --against "<source>" # stamp `verified: <today> against <source>`; --against MANDATORY
+rig scope mission verified <mission> --against "<source>"
+
+rig scope slice reconcile <slice>                     # idempotent repair: backfill PROGRESS.md, conform id/stage/verified, repair ghosts
+rig scope mission reconcile <mission>                 # mission-tier idempotent repair
+
+rig scope slice show <slice>                          # derives read-time effective-reliability from (stage × verified)
+                                                      # — stale-`verified` `canonical` reported as effectively `provisional`
+```
+
+Composes with slice 33's `progress` + scaffolding to make `rig scope` the **deterministic enforcer** of `conventions/scope-and-versioning` §1 (dot-IDs) + §2 (maturity vocabulary). Agents update `stage` / `verified` / `id` through commands rather than hand-editing markdown and drifting. The `--against` MANDATORY rule on `verified` is the anti-stale keystone: bare timestamps are rejected because a bare timestamp is exactly what lets stale trackers lie while looking fresh. **STOP hand-editing the `stage` / `verified` / `id` fields in scope frontmatter; use the new verbs.** Existing missions / slices with `id:null` ghosts or missing `PROGRESS.md` are repaired idempotently via `reconcile`.
+
 ### `rig skill audit` — skill cascade provenance (slice 10)
 
 ```bash

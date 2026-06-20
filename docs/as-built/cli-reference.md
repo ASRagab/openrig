@@ -1110,6 +1110,9 @@ Two subcommand groups: `slice` and `mission`.
 - `show <slice-path> [--mission <name>] [--json]` — inspect a single slice (frontmatter + README + children). `slice-path` is absolute, relative-to-substrate, or `NN-slug`; `--mission` hints the mission when path is just `NN-slug`.
 - `create <mission> <slug> [--template <kind>] [--title <text>] [--json]` — create a new slice in a mission. `--template` default `placeholder`. **v0.4.0 (slice 33)**: scaffolds a canonical `PROGRESS.md` (the structure the OpenRig PROGRESS UI page parses) plus a convention-correct README with proper frontmatter per `conventions/scope-and-versioning/README.md`, for EVERY template. Fixes the v0.3.x bug where newly-created slices were missing `PROGRESS.md` entirely.
 - `progress <slice-path> [--mission <name>] [--status <state>] [--milestone <text>] [--owner <session>] [--note <text>] [--json]` — **v0.4.0 (slice 33)** new verb: append / set / update progress entries deterministically. Writes the canonical structure the OpenRig PROGRESS UI page reads. Replaces hand-editing `PROGRESS.md` with markdown.
+- `stage <slice-path> <new-stage> [--mission <name>] [--successor <id>] [--json]` — **v0.4.0 (slice 35)** new verb: set the slice's `stage` frontmatter (wip / provisional / established / canonical / superseded / retired) deterministically. `superseded` REQUIRES `--successor <id>` (rejected otherwise + records the successor); `retired` warns "do not use"; invalid stages rejected with the valid set named.
+- `verified <slice-path> --against "<source>" [--mission <name>] [--json]` — **v0.4.0 (slice 35)** new verb: stamp the slice's `verified` line with `verified: <today> against <source>`. `--against` is MANDATORY (bare timestamps rejected — the anti-stale keystone per `conventions/scope-and-versioning` §2). Overwrites the prior verified line.
+- `reconcile <slice-path> [--mission <name>] [--json]` — **v0.4.0 (slice 35)** new verb: idempotent repair. Backfills missing `PROGRESS.md`, conforms mandatory frontmatter (`id` / `stage` / `verified`), and repairs id-registration ghosts (`id:null` / doubled-prefix). Safe to re-run.
 - `ship <slice-path> <release-mission> [--mission <name>] [--json]` — ship a slice to a release mission (preserves git history).
 - `close <slice-path> [--note <text>] [--mission <name>] [--json]` — close a slice (move to `<mission>/closed/`, update status). `--note` is an optional closure note.
 - `move <slice-path> <dest-mission> [--mission <name>] [--json]` — move a slice between missions (re-numbers in destination).
@@ -1119,9 +1122,14 @@ Two subcommand groups: `slice` and `mission`.
 - `show <mission> [--json]` — inspect a single mission.
 - `create <name> [--template <kind>] [--id <dot-id>] [--title <text>] [--json]` — create a new mission (mints a stable dot-ID into frontmatter). `--template` auto-selects when name matches `release-X.Y.Z`; `--id` overrides name-pattern inference. **v0.4.0 (slice 33)**: scaffolds a canonical `PROGRESS.md` plus a convention-correct README with proper frontmatter, per `conventions/scope-and-versioning/README.md`. Fixes the v0.3.x bug where newly-created missions were missing `PROGRESS.md` entirely.
 - `progress <mission> [--status <state>] [--milestone <text>] [--owner <session>] [--note <text>] [--json]` — **v0.4.0 (slice 33)** new verb: append / set / update progress entries on a mission's `PROGRESS.md` deterministically. UI-valid by construction.
+- `stage <mission> <new-stage> [--successor <id>] [--json]` — **v0.4.0 (slice 35)** new verb: set the mission's `stage` frontmatter deterministically. Same enum + `--successor`-required-for-superseded rules as the slice variant.
+- `verified <mission> --against "<source>" [--json]` — **v0.4.0 (slice 35)** new verb: stamp the mission's `verified` line. `--against` MANDATORY.
+- `reconcile <mission> [--json]` — **v0.4.0 (slice 35)** new verb: idempotent mission-tier repair (backfills `PROGRESS.md`, conforms frontmatter, repairs ghosts).
+
+Convention compliance: `rig scope` together with slice 33 (`PROGRESS.md` + scaffolding) and slice 35 (`stage` / `verified` / `reconcile`) makes `rig scope` the **deterministic enforcer** of `conventions/scope-and-versioning` (§1 dot-IDs, §2 maturity vocabulary). Agents update the convention through commands rather than hand-editing markdown.
 
 Notes:
-- Surface source-verified against `packages/cli/src/commands/scope.ts` at `8d55ea60` (v0.4.0).
+- Surface source-verified against `packages/cli/src/commands/scope.ts` at `51554eee` (v0.4.0 post-slice-35).
 
 ## Skill Cascade Audit (v0.4.0)
 
