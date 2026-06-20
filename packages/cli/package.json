@@ -23,7 +23,7 @@
   "license": "Apache-2.0",
   "author": {
     "name": "mvschwarz",
-    "url": "https://openrig.dev"
+    "url": "https://esoteric.run"
   },
   "bin": {
     "rig": "dist/bin-wrapper.js"

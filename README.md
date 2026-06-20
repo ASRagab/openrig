@@ -157,7 +157,7 @@ Anthropic shipped Claude Managed Agents — a cloud-hosted, Claude-only runtime 
 ## Links
 
 - **Website**: [openrig.dev](https://openrig.dev)
-- **Blog**: [Why I Built OpenRig](https://openrig.dev/blog/why-i-built-openrig)
+- **Blog**: [Why I Built OpenRig](https://esoteric.run/blog/why-i-built-openrig)
 - **Docs**: [openrig.dev/docs](https://openrig.dev/docs)
 - **Open Specification**: [openrig.dev/specs](https://openrig.dev/specs)
 - **Twitter**: [@_feralmachine](https://twitter.com/_feralmachine)
