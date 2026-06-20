@@ -6,6 +6,7 @@ import type { StatusDeps } from "./status.js";
 import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
+import { readOpenRigEnv } from "../openrig-compat.js";
 
 interface PsEntry {
   rigId: string;
@@ -83,6 +84,12 @@ interface NodeEntry {
 // L3-followup: human-output budgets bound default terminal output for hosts
 // with realistic agent counts. `--full` opts out. JSON output remains
 // unbounded by default for back-compat (Decision C hybrid).
+function extractRigName(sessionName: string): string | undefined {
+  const atIdx = sessionName.lastIndexOf("@");
+  if (atIdx < 0 || atIdx === sessionName.length - 1) return undefined;
+  return sessionName.slice(atIdx + 1);
+}
+
 const HUMAN_RIG_BUDGET = 50;
 const HUMAN_NODE_BUDGET = 100;
 
@@ -178,6 +185,8 @@ interface PsCliOptions {
   allHosts?: boolean;
   hosts?: string;
   active?: boolean;
+  running?: boolean;
+  allRigs?: boolean;
   rig?: string;
   session?: string;
   /** OPR.0.3.3.19 - include archived rigs (default excludes them). Parity
@@ -402,6 +411,8 @@ function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, unknown
         : { state: n.agentActivity?.state ?? "unknown" },
       hasAssignedWork: n.hasAssignedWork,
       pendingWorkCount: n.pendingWorkCount,
+      resumeType: (n as Record<string, unknown>).resumeType ?? null,
+      resumeTokenPresent: Boolean((n as Record<string, unknown>).resumeToken),
     };
     if (attention && n.latestError) {
       compact.latestError = n.latestError;
@@ -564,6 +575,8 @@ Exit codes:
     .option("--summary", "Emit aggregate-only output (counts by status/lifecycle)")
     .option("--filter <key=value>", "Filter entries; supported keys: status, lifecycleState, name-prefix, name, agentActivity.state")
     .option("--active", "Shortcut for --filter agentActivity.state=running (PL-019)")
+    .option("--running", "Alias for --active")
+    .option("-A, --all-rigs", "Show all rigs (default is current rig only)")
     .option("--rig <name>", "Show only nodes belonging to the named rig")
     .option("--session <name>", "Show only the node matching this canonical session name")
     .option("--include-archived", "Include archived rigs (default hides them); parity with 'rig stream list --include-archived'")
@@ -572,6 +585,13 @@ Exit codes:
     .option("--hosts <ids>", "Fan out to specific hosts (comma-separated)")
     .action(async (opts: PsCliOptions) => {
       if (opts.verbose) opts.full = true;
+      if (opts.running) opts.active = true;
+      const isRemote = !!(opts.host || opts.allHosts || opts.hosts);
+      if (!opts.allRigs && !opts.rig && !isRemote) {
+        const sessionName = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
+        const callerRig = sessionName ? extractRigName(sessionName) : undefined;
+        if (callerRig) opts.rig = callerRig;
+      }
       const deps = getDepsF();
 
       if (opts.allHosts || opts.hosts) {
@@ -664,8 +684,12 @@ Exit codes:
 
       const all = res.data;
 
+      const rigScoped = opts.rig
+        ? all.filter((e) => (e.rigName ?? e.name) === opts.rig)
+        : all;
+
       // Apply CLI-side filter (Amendment A: prefer CLI shaping).
-      const filtered = parsedFilter ? applyRigFilter(all, parsedFilter) : all;
+      const filtered = parsedFilter ? applyRigFilter(rigScoped, parsedFilter) : rigScoped;
 
       // Summary mode short-circuits per-entry output.
       if (opts.summary) {
@@ -770,8 +794,12 @@ async function handleNodes(
     return;
   }
 
+  const effectiveRigs = opts.rig
+    ? rigRes.data.filter((r) => (r.rigName ?? r.name) === opts.rig)
+    : rigRes.data;
+
   const allNodes: NodeEntry[] = [];
-  for (const rig of rigRes.data) {
+  for (const rig of effectiveRigs) {
     const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, requestHeaders ? { headers: requestHeaders } : undefined);
     if (nodesRes.status >= 400) {
       console.error(`Warning: failed to fetch nodes for rig "${rig.rigName ?? rig.name}" (HTTP ${nodesRes.status}). List rigs with: rig ps`);
