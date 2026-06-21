@@ -78,6 +78,13 @@ interface NodeEntry {
     state?: "critical" | "warning" | "low" | "unknown";
     sampledAt: string | null;
   };
+  /** OPR.0.4.0.34 — resume summary from the daemon node-inventory. resumeToken
+   *  is the SECRET: surfaced as a present-boolean in compact, value only in --full. */
+  resumeType?: string | null;
+  resumeToken?: string | null;
+  /** OPR.0.4.0.34 — startup-completion timestamp; the compact `lastActivity`
+   *  fallback when no agentActivity sample exists. */
+  startupCompletedAt?: string | null;
   [key: string]: unknown;
 }
 
@@ -399,21 +406,40 @@ function needsAttention(node: NodeEntry): boolean {
     || node.agentActivity?.state === "needs_input";
 }
 
+// OPR.0.4.0.34 — the compact orch field set (PRD FR-4). Carries the
+// source-available identity + state + resume-summary fields an orchestrator
+// needs at a glance, WITHOUT leaking the resume token value or resumeCommand
+// (security). recoveryGuidance/currentUsage stay on the node detail (slice 26).
 function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, unknown>> {
   return nodes.map((n) => {
     const attention = needsAttention(n);
     const compact: Record<string, unknown> = {
+      // identity (rigId/rigName + logicalId + session) — disambiguates under -A.
+      rigId: n.rigId,
       rigName: n.rigName,
+      logicalId: n.logicalId,
       canonicalSessionName: n.canonicalSessionName,
+      // lifecycle + session/startup state.
+      sessionStatus: n.sessionStatus,
+      startupStatus: n.startupStatus,
       lifecycleState: n.lifecycleState,
+      // activity (state always; short reason only when attention — keep it lean).
       agentActivity: attention
         ? { state: n.agentActivity?.state ?? "unknown", reason: n.agentActivity?.reason }
         : { state: n.agentActivity?.state ?? "unknown" },
+      // work counts.
       hasAssignedWork: n.hasAssignedWork,
       pendingWorkCount: n.pendingWorkCount,
-      resumeType: (n as Record<string, unknown>).resumeType ?? null,
-      resumeTokenPresent: Boolean((n as Record<string, unknown>).resumeToken),
+      // resume summary — type + PRESENT boolean only (never the token value).
+      resumeType: n.resumeType ?? null,
+      resumeTokenPresent: Boolean(n.resumeToken),
+      // updated/age proxy. The node-list emits no dedicated `updatedAt`; the
+      // freshest signal is agentActivity.sampledAt, then startupCompletedAt,
+      // else null (documented FR-4 fallback — not a fabricated timestamp).
+      lastActivity: n.agentActivity?.sampledAt ?? n.startupCompletedAt ?? null,
     };
+    // held/attention reason (short) when present.
+    if (n.heldReason) compact.heldReason = n.heldReason;
     if (attention && n.latestError) {
       compact.latestError = n.latestError;
     }

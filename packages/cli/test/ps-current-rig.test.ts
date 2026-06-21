@@ -63,6 +63,8 @@ function makeNode(rigId: string, rigName: string, logicalId: string, opts?: {
   resumeType?: string;
   resumeToken?: string;
   resumeCommand?: string;
+  heldReason?: string;
+  startupCompletedAt?: string;
 }) {
   return {
     rigId,
@@ -83,6 +85,8 @@ function makeNode(rigId: string, rigName: string, logicalId: string, opts?: {
     pendingWorkCount: 0,
     resumeType: opts?.resumeType ?? null,
     resumeToken: opts?.resumeToken ?? null,
+    heldReason: opts?.heldReason ?? null,
+    startupCompletedAt: opts?.startupCompletedAt ?? null,
   };
 }
 
@@ -92,6 +96,8 @@ const NODES_BY_RIG: Record<string, unknown[]> = {
       resumeType: "codex_id",
       resumeToken: "019e376e-secret-token-do-not-leak",
       resumeCommand: "codex resume 019e376e-secret-token-do-not-leak",
+      heldReason: "operator hold",
+      startupCompletedAt: "2026-06-20T23:00:00.000Z",
     }),
     makeNode("rig-a", "openrig-delivery", "dev1.qa"),
     makeNode("rig-a", "openrig-delivery", "dev1.guard", { lifecycleState: "recoverable", sessionStatus: "detached" }),
@@ -219,6 +225,38 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
     expect(driver.resumeCommand).toBeUndefined();
     const output = logs.join("");
     expect(output).not.toContain("019e376e-secret-token-do-not-leak");
+  });
+
+  // OPR.0.4.0.34 guard fix-back: compact rows must carry the full FR-4 orch
+  // field set (source-available), not an underspecified subset.
+  it("FR-4: compact rows carry the orch field set (rigId/logicalId/sessionStatus/startupStatus/lastActivity/heldReason) with no secret leak", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
+    });
+    const nodes = JSON.parse(logs.join(""));
+    const driver = nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery");
+    expect(driver).toBeDefined();
+    // Required FR-4 orch identity + state fields, all present in the compact row.
+    for (const key of [
+      "rigId", "rigName", "logicalId", "canonicalSessionName",
+      "sessionStatus", "startupStatus", "lifecycleState",
+      "agentActivity", "hasAssignedWork", "pendingWorkCount",
+      "resumeType", "resumeTokenPresent", "lastActivity",
+    ]) {
+      expect(driver, `compact row missing FR-4 key: ${key}`).toHaveProperty(key);
+    }
+    expect(driver.rigId).toBe("rig-a");
+    expect(driver.logicalId).toBe("dev1.driver");
+    expect(driver.sessionStatus).toBe("running");
+    expect(driver.startupStatus).toBe("ready");
+    // updated/age proxy: agentActivity.sampledAt then startupCompletedAt then null.
+    expect(driver.lastActivity).toBe("2026-06-20T23:00:00.000Z");
+    // held/attention reason surfaced (short).
+    expect(driver.heldReason).toBe("operator hold");
+    // Secret absence holds even with the wider field set.
+    expect(driver.resumeToken).toBeUndefined();
+    expect(driver.resumeCommand).toBeUndefined();
   });
 
   // AC-4: --full includes the token value
