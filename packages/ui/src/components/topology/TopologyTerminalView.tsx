@@ -24,6 +24,7 @@ import { useNodeInventory, type NodeInventoryEntry } from "../../hooks/useNodeIn
 import { displayAgentName } from "../../lib/display-name.js";
 import { SessionPreviewPane } from "../preview/SessionPreviewPane.js";
 import { TerminalPreviewPopover } from "./TerminalPreviewPopover.js";
+import { SMOKED_STATIC_PLATE_CLASS } from "../terminal/ProgressiveTerminal.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { cn } from "../../lib/utils.js";
@@ -124,7 +125,14 @@ function SeatTerminalCard({ seat }: { seat: NodeInventoryEntry }) {
       <div className="relative z-0 min-h-0 flex items-start gap-2">
         {/* OPR.0.4.0.1 (FR-5): a SMALL static thumbnail keeps the 3-col grid an
             at-a-glance overview -- NOT widened to TUI width. */}
-        <div className="min-w-0 flex-1">
+        <div
+          data-testid={`terminal-grid-${seat.rigId}-${seat.logicalId}-thumb-plate`}
+          className={cn("min-w-0 flex-1 overflow-hidden", SMOKED_STATIC_PLATE_CLASS)}
+        >
+          {/* The grid is a TRULY BARE surface, so the static thumbnail carries the
+              SAME borderless smoked-glass plate as ProgressiveTerminal's static
+              view (shared SMOKED_STATIC_PLATE_CLASS) -- the compact-terminal
+              SessionPreviewPane is transparent and sits ON this smoke. */}
           <SessionPreviewPane
             sessionName={sessionName}
             lines={6}
