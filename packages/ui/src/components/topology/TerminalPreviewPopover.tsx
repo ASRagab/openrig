@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type React from "react";
 import { createPortal } from "react-dom";
+import { FocusedTerminal } from "../terminal/FocusedTerminal.js";
 import { ProgressiveTerminal } from "../terminal/ProgressiveTerminal.js";
 import { cn } from "../../lib/utils.js";
 import { ToolMark } from "../graphics/RuntimeMark.js";
@@ -48,6 +49,11 @@ interface TerminalPreviewPopoverProps {
    *  duplicate keyboard tab stop. Default true preserves the
    *  existing graph-view + table-view button rendering. */
   renderTrigger?: boolean;
+  /** OPR.0.4.0.1: when true, the popover renders the progressive default-static
+   *  -> click-to-go-live ProgressiveTerminal (the topology graph/table surfaces).
+   *  Default false keeps the always-live FocusedTerminal, preserving the
+   *  feed-card live-drill (out of this slice's 3-surface scope). */
+  progressive?: boolean;
 }
 
 function rectFromElement(el: HTMLElement | null): AnchorRect {
@@ -98,6 +104,7 @@ export function TerminalPreviewPopover({
   popoverClassName,
   testIdPrefix,
   renderTrigger = true,
+  progressive = false,
 }: TerminalPreviewPopoverProps) {
   const key = `${rigId ?? "unknown"}:${logicalId}`;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -184,10 +191,15 @@ export function TerminalPreviewPopover({
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* OPR.0.4.0.1: progressive-live (default-static -> click-to-go-live), and
-          a wider optimal terminal width per the styling finding. */}
+      {/* OPR.0.4.0.1: progressive surfaces show default-static -> click-to-go-live;
+          a wider optimal terminal width per the styling finding. Non-progressive
+          consumers (feed-card live drill) keep the always-live FocusedTerminal. */}
       <div className="h-[440px] w-[820px] max-w-[calc(100vw-2rem)]">
-        <ProgressiveTerminal sessionName={sessionName} terminalKey={key} testIdPrefix={testIdPrefix} />
+        {progressive ? (
+          <ProgressiveTerminal sessionName={sessionName} terminalKey={key} testIdPrefix={testIdPrefix} />
+        ) : (
+          <FocusedTerminal sessionName={sessionName} />
+        )}
       </div>
     </div>,
     document.body,
