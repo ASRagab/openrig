@@ -828,4 +828,79 @@ describe("TmuxAdapter", () => {
       expect(loadCmds[0]).not.toBe(loadCmds[1]);
     });
   });
+
+  // OPR.0.4.0.38 - net-new live-seed primitives lifted from the FR-4 seed work
+  // (.worktrees/opr-0.4.0.1-ff-interaction-model, on-disk-only). The broker
+  // seeds a new subscriber with the CURRENT VISIBLE SCREEN + cursor so a live
+  // terminal paints immediately instead of staying blank until next output.
+  describe("capturePaneScreen (visible screen, NOT scrollback)", () => {
+    it("calls `tmux capture-pane -p -t <pane>` with NO -S flag (scrollback would reintroduce row drift)", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("row a\nrow b\n");
+      const adapter = new TmuxAdapter(exec);
+
+      const out = await adapter.capturePaneScreen("%0");
+
+      expect(out).toBe("row a\nrow b\n");
+      expect(exec).toHaveBeenCalledOnce();
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '%0'");
+    });
+
+    it("shell-quotes a session-name target safely", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("x");
+      const adapter = new TmuxAdapter(exec);
+
+      await adapter.capturePaneScreen("dev-impl@my-rig");
+
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t 'dev-impl@my-rig'");
+    });
+
+    it("returns null on error (pane gone)", async () => {
+      const adapter = new TmuxAdapter(async () => { throw new Error("can't find pane"); });
+      expect(await adapter.capturePaneScreen("%0")).toBeNull();
+    });
+
+    it("returns null on empty output (nothing to seed)", async () => {
+      const adapter = new TmuxAdapter(mockExec({ "capture-pane": { stdout: "" } }));
+      expect(await adapter.capturePaneScreen("%0")).toBeNull();
+    });
+  });
+
+  describe("getPaneCursorPosition", () => {
+    const EXPECTED_CMD =
+      `tmux display-message -p -t '%0' "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}"`;
+
+    it("constructs the tab-delimited display-message command and parses {x,y,width,height}", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("4\t7\t120\t40\n");
+      const adapter = new TmuxAdapter(exec);
+
+      const pos = await adapter.getPaneCursorPosition("%0");
+
+      expect(exec.mock.calls[0]![0]).toBe(EXPECTED_CMD);
+      expect(pos).toEqual({ x: 4, y: 7, width: 120, height: 40 });
+    });
+
+    it("accepts a zero cursor origin (x=0,y=0 valid)", async () => {
+      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "0\t0\t80\t24\n" } }));
+      expect(await adapter.getPaneCursorPosition("%0")).toEqual({ x: 0, y: 0, width: 80, height: 24 });
+    });
+
+    it("returns null on error", async () => {
+      const adapter = new TmuxAdapter(mockExec({
+        "display-message": { error: new Error("can't find session") },
+      }));
+      expect(await adapter.getPaneCursorPosition("%0")).toBeNull();
+    });
+
+    it("returns null on unparseable / non-finite output", async () => {
+      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "garbage\n" } }));
+      expect(await adapter.getPaneCursorPosition("%0")).toBeNull();
+    });
+
+    it("returns null on out-of-range geometry (width<1 / negative coords)", async () => {
+      const zeroWidth = new TmuxAdapter(mockExec({ "display-message": { stdout: "1\t1\t0\t40\n" } }));
+      expect(await zeroWidth.getPaneCursorPosition("%0")).toBeNull();
+      const negX = new TmuxAdapter(mockExec({ "display-message": { stdout: "-1\t1\t80\t24\n" } }));
+      expect(await negX.getPaneCursorPosition("%0")).toBeNull();
+    });
+  });
 });

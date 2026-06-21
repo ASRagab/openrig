@@ -65,6 +65,19 @@ export interface TmuxPane {
   active: boolean;
 }
 
+/**
+ * Cursor coordinates plus pane geometry, used by the live-terminal seed
+ * (OPR.0.4.0.38). Coordinates are zero-based; geometry is the visible pane
+ * size. Lifted from the FR-4 seed work so a new subscriber can paint the
+ * current screen with the cursor in the right place and no row drift.
+ */
+export interface TmuxCursorPosition {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const SESSION_FORMAT = "#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}";
 const WINDOW_FORMAT = "#{window_index}\t#{window_name}\t#{window_panes}\t#{window_active}";
 const PANE_FORMAT = "#{pane_id}\t#{pane_index}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{pane_active}";
@@ -399,6 +412,45 @@ export class TmuxAdapter {
     try {
       const output = await this.exec(`tmux capture-pane -p -t ${shellQuote(paneId)} -S -${lines}`);
       return output || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Capture the currently VISIBLE pane screen (no scrollback). Returns null if
+   * unavailable. The live-terminal seed (OPR.0.4.0.38) must use the visible
+   * screen, NOT `-S -<lines>` scrollback: scrollback reintroduces the row drift
+   * the absolute-paint seed exists to eliminate.
+   */
+  async capturePaneScreen(paneId: string): Promise<string | null> {
+    try {
+      const output = await this.exec(`tmux capture-pane -p -t ${shellQuote(paneId)}`);
+      return output || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the current cursor coordinates and pane geometry. Coordinates are
+   * zero-based. Returns null if unavailable or if tmux yields non-finite /
+   * out-of-range values (x<0, y<0, width<1, height<1) so a bad read never
+   * produces a garbage seed.
+   */
+  async getPaneCursorPosition(paneId: string): Promise<TmuxCursorPosition | null> {
+    try {
+      const output = await this.exec(
+        `tmux display-message -p -t ${shellQuote(paneId)} "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}"`,
+      );
+      const [xRaw, yRaw, widthRaw, heightRaw] = output.trim().split("\t");
+      const x = Number.parseInt(xRaw ?? "", 10);
+      const y = Number.parseInt(yRaw ?? "", 10);
+      const width = Number.parseInt(widthRaw ?? "", 10);
+      const height = Number.parseInt(heightRaw ?? "", 10);
+      if (![x, y, width, height].every(Number.isFinite)) return null;
+      if (x < 0 || y < 0 || width < 1 || height < 1) return null;
+      return { x, y, width, height };
     } catch {
       return null;
     }
