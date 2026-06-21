@@ -307,3 +307,66 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     ws.close();
   }, 10000);
 });
+
+// OPR.0.4.0.38 - the detach-during-attach race (dev1-guard watchpoint #4): a
+// WebSocket that closes WHILE the async broker attach is still in flight must
+// not leave a phantom subscriber holding the pipe open.
+describe("terminal WebSocket detach-during-attach race", () => {
+  const RACE_PORT = 19880;
+  const RACE_TOKEN = "race-test-token";
+  let raceServer: ServerType;
+  const stopPipePaneCalls: string[] = [];
+  let capturedOutputPath: string | null = null;
+
+  beforeAll(async () => {
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("tmuxAdapter" as never, {
+        hasSession: async () => true,
+        setWindowOption: async () => ({ ok: true }),
+        resizeWindow: async () => ({ ok: true }),
+        // Slow pipe-start widens the attach window so the client close lands
+        // while attach is still pending.
+        startPipePane: async (_name: string, outputPath: string) => {
+          capturedOutputPath = outputPath;
+          await new Promise((r) => setTimeout(r, 120));
+          return { ok: true };
+        },
+        stopPipePane: async (name: string) => { stopPipePaneCalls.push(name); return { ok: true }; },
+        sendKeys: async () => ({ ok: true }),
+        sendText: async () => ({ ok: true }),
+        capturePaneScreen: async () => null,
+        getPaneCursorPosition: async () => null,
+      });
+      await next();
+    });
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: RACE_TOKEN });
+    raceServer = serve({ fetch: app.fetch, port: RACE_PORT, hostname: "127.0.0.1" });
+    injectWebSocket(raceServer);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  });
+
+  afterAll(() => {
+    raceServer?.close();
+  });
+
+  it("closing the WS mid-attach still tears the broker down (stops pipe, deletes temp - no leak)", async () => {
+    stopPipePaneCalls.length = 0;
+    capturedOutputPath = null;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${RACE_PORT}/api/terminal/race-session?token=${RACE_TOKEN}`);
+    // Close immediately on open - while the server's attach is still awaiting the
+    // 120ms startPipePane.
+    ws.onopen = () => { ws.close(); };
+    await new Promise<void>((resolve) => { ws.onclose = () => resolve(); });
+
+    // Once attach resolves, the route must re-detach the closed subscriber, which
+    // (being the last/only one) tears the broker down: stop pipe + unlink temp.
+    await vi.waitFor(() => {
+      expect(stopPipePaneCalls).toContain("race-session");
+      expect(capturedOutputPath).toBeTruthy();
+      expect(fs.existsSync(capturedOutputPath!)).toBe(false);
+    }, { timeout: 2000 });
+  }, 10000);
+});

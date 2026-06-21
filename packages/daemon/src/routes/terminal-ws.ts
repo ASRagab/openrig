@@ -71,6 +71,11 @@ export function registerTerminalWs(
       const sessionName = decodeURIComponent(c.req.param("sessionName")!);
       let broker: TerminalSessionBroker | null = null;
       let subscriber: TerminalSubscriber | null = null;
+      // The WebSocket can close DURING the async attach (before the broker
+      // reference resolves). Without this flag, onClose would find broker===null
+      // and skip detach, leaving a phantom subscriber + a leaked pipe once attach
+      // finally resolves. The flag lets onOpen re-detach after the fact.
+      let closed = false;
 
       return {
         async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
@@ -78,15 +83,20 @@ export function registerTerminalWs(
           if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
           // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
           // the seed, the fanout, honest session-death close, and cleanup.
-          subscriber = {
+          const sub: TerminalSubscriber = {
             send: (data: string) => { try { ws.send(data); } catch { /* closed socket */ } },
             close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
           };
-          broker = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, subscriber);
+          subscriber = sub;
+          const b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          broker = b;
+          // If the socket closed while attach was in flight, detach now so the
+          // broker does not retain a dead subscriber (detach is idempotent).
+          if (closed) b.detach(sub);
         },
 
         async onMessage(evt: { data: unknown }, _ws: unknown) {
-          if (!broker) return;
+          if (!broker || closed) return;
           const data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
           try {
@@ -103,11 +113,10 @@ export function registerTerminalWs(
         },
 
         async onClose() {
+          closed = true;
           if (broker && subscriber) {
             broker.detach(subscriber);
           }
-          broker = null;
-          subscriber = null;
         },
       };
     }),

@@ -329,3 +329,84 @@ describe("TerminalBrokerRegistry", () => {
     }, { timeout: 1000 });
   });
 });
+
+// ---- lifecycle hardening (dev1-guard watchpoints) ---------------------------
+
+describe("TerminalSessionBroker - lifecycle hardening", () => {
+  it("singleflight: CONCURRENT first attaches do not race into two pipes", async () => {
+    // A delayed startPipePane widens the race window so all three attaches are
+    // in flight together; the synchronous started-guard must still yield one pipe.
+    const startPipePane = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true as const };
+    });
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ startPipePane }), { pollMs: 10 }));
+    await Promise.all([broker.attach(makeSub()), broker.attach(makeSub()), broker.attach(makeSub())]);
+    expect(startPipePane).toHaveBeenCalledOnce();
+    expect(broker.subscriberCount).toBe(3);
+  });
+
+  it("fanout isolation: a throwing subscriber does not break others and is detached", async () => {
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 10 }));
+    const good = makeSub();
+    const bad: FakeSub = {
+      received: [],
+      closed: [],
+      send: () => { throw new Error("dead socket"); },
+      close: () => {},
+    };
+    await broker.attach(good);
+    await broker.attach(bad);
+    expect(broker.subscriberCount).toBe(2);
+
+    fs.appendFileSync(broker.pipeOutputPath!, "ISOLATION-DATA");
+    await vi.waitFor(() => {
+      expect(good.received.join("")).toContain("ISOLATION-DATA");
+      expect(broker.subscriberCount).toBe(1); // the throwing subscriber was detached
+    }, { timeout: 1000 });
+  });
+
+  it("last-detach unlinks even a NON-EMPTY pipe file (AC-7 no temp leak)", async () => {
+    const broker = new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 10 });
+    const a = makeSub();
+    await broker.attach(a);
+    const path = broker.pipeOutputPath!;
+    fs.appendFileSync(path, "real accumulated terminal output bytes");
+    expect(fs.statSync(path).size).toBeGreaterThan(0);
+
+    broker.detach(a);
+    await vi.waitFor(() => {
+      expect(fs.existsSync(path)).toBe(false);
+    }, { timeout: 1000 });
+  });
+
+  it("registry: CONCURRENT attaches to one session share ONE broker / ONE pipe", async () => {
+    const startPipePane = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true as const };
+    });
+    const reg = new TerminalBrokerRegistry(makeTmux({ startPipePane }), { pollMs: 10 });
+    const [b1, b2] = await Promise.all([
+      reg.attach("dev@rig", makeSub()),
+      reg.attach("dev@rig", makeSub()),
+    ]);
+    expect(b1).toBe(b2);
+    expect(reg.size).toBe(1);
+    expect(startPipePane).toHaveBeenCalledOnce();
+    b1.dispose();
+  });
+
+  it("registry: attach AFTER final-close creates a FRESH broker (no stale reuse)", async () => {
+    const reg = new TerminalBrokerRegistry(makeTmux(), { pollMs: 10 });
+    const sub1 = makeSub();
+    const first = await reg.attach("dev@rig", sub1);
+    first.detach(sub1);
+    await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: 1000 });
+
+    const sub2 = makeSub();
+    const second = await reg.attach("dev@rig", sub2);
+    expect(second).not.toBe(first);
+    expect(reg.size).toBe(1);
+    second.dispose();
+  });
+});

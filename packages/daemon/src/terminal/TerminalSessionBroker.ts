@@ -299,12 +299,19 @@ export class TerminalSessionBroker {
   }
 
   private fanout(data: string): void {
+    // One subscriber whose send throws must not break delivery to the others,
+    // and it should be detached cleanly (a throwing send means a dead socket).
+    let dead: TerminalSubscriber[] | null = null;
     for (const sub of this.subscribers) {
       try {
         sub.send(data);
       } catch {
-        // one bad subscriber must not break the fanout to the others
+        (dead ??= []).push(sub);
       }
+    }
+    // Detach AFTER the loop so we never mutate the set mid-iteration.
+    if (dead) {
+      for (const sub of dead) this.detach(sub);
     }
   }
 
