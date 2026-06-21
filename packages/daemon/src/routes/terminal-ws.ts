@@ -1,12 +1,12 @@
 import type { Hono } from "hono";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import * as crypto from "node:crypto";
-
-const PIPE_PANE_POLL_MS = 50;
-const MAX_OUTPUT_BUFFER = 64 * 1024;
+import {
+  TerminalBrokerRegistry,
+  type BrokerTmux,
+  type TerminalSessionBroker,
+  type TerminalSubscriber,
+} from "../terminal/TerminalSessionBroker.js";
 
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -50,6 +50,18 @@ export function registerTerminalWs(
     return c.json({ error: "unauthorized", hint: "Pass terminal token via Authorization header or ?token= query" }, 401);
   };
 
+  // One daemon-owned broker registry shared across every WebSocket connection,
+  // created lazily from the first connection's tmux adapter (a daemon
+  // singleton). This is what makes many viewers of one seat share ONE pipe and
+  // a fanned-out stream instead of fighting over per-connection pipes.
+  let registry: TerminalBrokerRegistry | null = null;
+  const getRegistry = (tmux: BrokerTmux): TerminalBrokerRegistry => {
+    if (!registry) {
+      registry = new TerminalBrokerRegistry(tmux, { livenessMs: opts.livenessIntervalMs });
+    }
+    return registry;
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).get(
     "/api/terminal/:sessionName",
@@ -57,92 +69,53 @@ export function registerTerminalWs(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (upgradeWebSocket as any)((c: any) => {
       const sessionName = decodeURIComponent(c.req.param("sessionName")!);
-      let pipeActive = false;
-      let outputPath: string | null = null;
-      let tailInterval: ReturnType<typeof setInterval> | null = null;
-      let livenessInterval: ReturnType<typeof setInterval> | null = null;
-      let lastSize = 0;
-      let inputQueue: Promise<void> = Promise.resolve();
-
-      const enqueueInput = (op: () => Promise<void>): Promise<void> => {
-        const run = inputQueue.then(op, op);
-        inputQueue = run.catch(() => {});
-        return run;
-      };
+      let broker: TerminalSessionBroker | null = null;
+      let subscriber: TerminalSubscriber | null = null;
+      // The WebSocket can close DURING the async attach (before the broker
+      // reference resolves). Without this flag, onClose would find broker===null
+      // and skip detach, leaving a phantom subscriber + a leaked pipe once attach
+      // finally resolves. The flag lets onOpen re-detach after the fact.
+      let closed = false;
 
       return {
         async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
           const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
           if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
-          const hasSession = await tmux.hasSession(sessionName);
-          if (!hasSession) { ws.close(1008, `session not found: ${sessionName}`); return; }
-
-          await tmux.setWindowOption(sessionName, "aggressive-resize", "on").catch(() => {});
-
-          outputPath = path.join(os.tmpdir(), `openrig-term-${sessionName.replace(/[^a-zA-Z0-9@-]/g, "_")}-${Date.now()}.log`);
-          fs.writeFileSync(outputPath, "", "utf-8");
-          const pipeResult = await tmux.startPipePane(sessionName, outputPath);
-          if (!pipeResult.ok) { ws.close(1011, `pipe-pane failed: ${pipeResult.message}`); return; }
-          pipeActive = true;
-
-          await tmux.sendKeys(sessionName, ["", ""]);
-
-          tailInterval = setInterval(() => {
-            if (!outputPath) return;
-            try {
-              const stat = fs.statSync(outputPath);
-              if (stat.size > lastSize) {
-                const fd = fs.openSync(outputPath, "r");
-                const buf = Buffer.alloc(Math.min(stat.size - lastSize, MAX_OUTPUT_BUFFER));
-                fs.readSync(fd, buf, 0, buf.length, lastSize);
-                fs.closeSync(fd);
-                lastSize = stat.size;
-                try { ws.send(buf.toString("utf-8")); } catch {}
-              }
-            } catch {}
-          }, PIPE_PANE_POLL_MS);
-
-          livenessInterval = setInterval(() => {
-            tmux.hasSession(sessionName).then((alive) => {
-              if (!alive) ws.close(1001, "tmux session terminated");
-            }).catch(() => {
-              ws.close(1011, "tmux session probe failed");
-            });
-          }, opts.livenessIntervalMs ?? 2000);
+          // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
+          // the seed, the fanout, honest session-death close, and cleanup.
+          const sub: TerminalSubscriber = {
+            send: (data: string) => { try { ws.send(data); } catch { /* closed socket */ } },
+            close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
+          };
+          subscriber = sub;
+          const b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          broker = b;
+          // If the socket closed while attach was in flight, detach now so the
+          // broker does not retain a dead subscriber (detach is idempotent).
+          if (closed) b.detach(sub);
         },
 
         async onMessage(evt: { data: unknown }, _ws: unknown) {
-          const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
-          if (!tmux) return;
+          if (!broker || closed) return;
           const data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
           try {
             const msg = JSON.parse(data) as Record<string, unknown>;
             if (msg.type === "keys" && Array.isArray(msg.keys)) {
-              const keys = msg.keys as string[];
-              await enqueueInput(async () => { await tmux.sendKeys(sessionName, keys); });
+              await broker.input({ type: "keys", keys: msg.keys as string[] });
             } else if (msg.type === "text" && typeof msg.text === "string") {
-              const text = msg.text;
-              await enqueueInput(async () => { await tmux.sendText(sessionName, text); });
-            } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-              const cols = msg.cols;
-              const rows = msg.rows;
-              await enqueueInput(async () => { await tmux.resizeWindow(sessionName, cols, rows); });
+              await broker.input({ type: "text", text: msg.text });
             }
-          } catch {}
+            // FR-7: there is intentionally NO resize branch. The broker owns the
+            // fixed canonical geometry; a client-driven resize is ignored so
+            // multiple viewers cannot shrink the shared pane.
+          } catch { /* ignore malformed frames */ }
         },
 
         async onClose() {
-          if (tailInterval) { clearInterval(tailInterval); tailInterval = null; }
-          if (livenessInterval) { clearInterval(livenessInterval); livenessInterval = null; }
-          const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
-          if (tmux && pipeActive) {
-            await tmux.stopPipePane(sessionName).catch(() => {});
-            pipeActive = false;
-          }
-          if (outputPath) {
-            try { fs.unlinkSync(outputPath); } catch {}
-            outputPath = null;
+          closed = true;
+          if (broker && subscriber) {
+            broker.detach(subscriber);
           }
         },
       };
