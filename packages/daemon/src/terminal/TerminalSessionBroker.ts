@@ -22,6 +22,15 @@ const MAX_OUTPUT_BUFFER = 64 * 1024;
 const DEFAULT_LIVENESS_MS = 2000;
 
 /**
+ * Bounded size of the broker-owned recent-output history ring (AC-5 / FR-4).
+ * Mirrors the 64KB per-read tail sizing: a session-level window of recent
+ * output, replayed to late subscribers so they share the scrollback the
+ * earlier subscribers have - NOT per-xterm local. Bounded so a long-lived
+ * session never accumulates unbounded memory.
+ */
+const MAX_HISTORY_BYTES = 64 * 1024;
+
+/**
  * Canonical fixed terminal geometry (FR-7). 120 cols is the styling slice's
  * measured live-plate width (~880px at fontSize 12, TerminalPreviewPopover).
  * 40 rows is a comfortable agent-TUI working area; subscribers fit/scroll/pan
@@ -62,6 +71,8 @@ export interface BrokerOptions {
   cols?: number;
   /** Canonical pane height. Default 40. */
   rows?: number;
+  /** Bounded size of the recent-output history ring in bytes. Default 64KB. */
+  maxHistoryBytes?: number;
   /** Called when the broker has no remaining subscribers (or open failed). */
   onEmpty?: (sessionName: string) => void;
 }
@@ -115,9 +126,14 @@ export class TerminalSessionBroker {
   private readonly livenessMs: number;
   private readonly cols: number;
   private readonly rows: number;
+  private readonly maxHistoryBytes: number;
   private readonly onEmpty?: (sessionName: string) => void;
 
   private readonly subscribers = new Set<TerminalSubscriber>();
+  // Broker-owned recent-output ring (AC-5): raw fanned-out bytes, bounded,
+  // replayed to late subscribers so their scrollback matches the earlier ones.
+  private history: string[] = [];
+  private historyBytes = 0;
   private outputPath: string | null = null;
   private pipeActive = false;
   private tailInterval: ReturnType<typeof setInterval> | null = null;
@@ -134,11 +150,17 @@ export class TerminalSessionBroker {
     this.livenessMs = opts.livenessMs ?? DEFAULT_LIVENESS_MS;
     this.cols = opts.cols ?? CANONICAL_COLS;
     this.rows = opts.rows ?? CANONICAL_ROWS;
+    this.maxHistoryBytes = opts.maxHistoryBytes ?? MAX_HISTORY_BYTES;
     this.onEmpty = opts.onEmpty;
   }
 
   get subscriberCount(): number {
     return this.subscribers.size;
+  }
+
+  /** Current size of the broker-owned history ring in bytes (bounded). */
+  get historyByteLength(): number {
+    return this.historyBytes;
   }
 
   /** The session-scoped pipe output file (one per session). Null until open. */
@@ -254,6 +276,16 @@ export class TerminalSessionBroker {
   }
 
   private async seed(sub: TerminalSubscriber): Promise<void> {
+    // AC-5: replay the broker-owned recent-output ring FIRST so the late
+    // subscriber's xterm builds the same scrollback the earlier subscribers
+    // have (raw bytes write into xterm's scrollback). The visible-screen seed
+    // then paints a cursor-correct current screen on top - screenSnapshotEscape
+    // opens with ESC[2J, which clears only the VISIBLE viewport, NOT the
+    // scrollback, so the recent scrolled-off output is preserved above. The
+    // first subscriber's ring is empty, so it gets only the visible seed.
+    if (this.historyBytes > 0) {
+      try { sub.send(this.history.join("")); } catch { /* dead subscriber */ }
+    }
     // Best-effort: a failed capture (or an adapter without the seed methods)
     // must never break the attach - the tail still streams live output.
     let snapshot: string | null = null;
@@ -299,6 +331,9 @@ export class TerminalSessionBroker {
   }
 
   private fanout(data: string): void {
+    // Feed the broker-owned ring from the SAME single tail that fans out, so
+    // late subscribers can replay the recent window before going live (AC-5).
+    this.appendHistory(data);
     // One subscriber whose send throws must not break delivery to the others,
     // and it should be detached cleanly (a throwing send means a dead socket).
     let dead: TerminalSubscriber[] | null = null;
@@ -312,6 +347,19 @@ export class TerminalSessionBroker {
     // Detach AFTER the loop so we never mutate the set mid-iteration.
     if (dead) {
       for (const sub of dead) this.detach(sub);
+    }
+  }
+
+  /** Append to the bounded ring, dropping oldest chunks past the byte cap. */
+  private appendHistory(data: string): void {
+    if (!data) return;
+    this.history.push(data);
+    this.historyBytes += Buffer.byteLength(data, "utf-8");
+    // Keep at least the most recent chunk so a single large burst is never
+    // fully discarded; otherwise drop oldest until within the cap.
+    while (this.historyBytes > this.maxHistoryBytes && this.history.length > 1) {
+      const dropped = this.history.shift()!;
+      this.historyBytes -= Buffer.byteLength(dropped, "utf-8");
     }
   }
 
@@ -379,6 +427,9 @@ export class TerminalSessionBroker {
       this.outputPath = null;
     }
     this.lastSize = 0;
+    // Clear the history ring so a torn-down broker leaks no retained output.
+    this.history = [];
+    this.historyBytes = 0;
   }
 
   private enqueueInput(op: () => Promise<void>): Promise<void> {

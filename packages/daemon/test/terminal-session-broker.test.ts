@@ -410,3 +410,54 @@ describe("TerminalSessionBroker - lifecycle hardening", () => {
     second.dispose();
   });
 });
+
+// ---- AC-5 / FR-4 broker-owned shared history ring ---------------------------
+// dev1-guard code-review BLOCKING: late subscribers must get the broker-owned
+// shared recent-output history (the bytes that scrolled off the first
+// subscriber), not only their own visible-screen capture + future fanout.
+describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
+  it("a LATE subscriber receives the broker-owned history that scrolled off the first subscriber", async () => {
+    const startPipePane = vi.fn(async () => ({ ok: true as const }));
+    // capturePaneScreen returns null so the ONLY path for B to see the
+    // scrolled-off output is the broker-owned ring (not its own visible seed).
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ startPipePane }), { pollMs: 10 }));
+    const a = makeSub();
+    await broker.attach(a);
+
+    fs.appendFileSync(broker.pipeOutputPath!, "HISTORY-A-SAW-THEN-SCROLLED-OFF");
+    await vi.waitFor(() => {
+      expect(a.received.join("")).toContain("HISTORY-A-SAW-THEN-SCROLLED-OFF");
+    }, { timeout: 1000 });
+
+    const b = makeSub();
+    await broker.attach(b);
+
+    // B must receive the broker-owned history even though its capturePaneScreen is null.
+    expect(b.received.join("")).toContain("HISTORY-A-SAW-THEN-SCROLLED-OFF");
+    // ...and still no second pipe (FR-1 preserved).
+    expect(startPipePane).toHaveBeenCalledOnce();
+  });
+
+  it("the history ring is bounded under sustained output", async () => {
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 5, maxHistoryBytes: 2048 }));
+    await broker.attach(makeSub());
+    const path = broker.pipeOutputPath!;
+    for (let i = 0; i < 20; i++) {
+      fs.appendFileSync(path, "Y".repeat(300)); // 300-byte chunks, each < the 2048 cap
+      await new Promise((r) => setTimeout(r, 8));
+    }
+    expect(broker.historyByteLength).toBeGreaterThan(0);
+    expect(broker.historyByteLength).toBeLessThanOrEqual(2048);
+  });
+
+  it("the history ring is cleared on final detach (no carry-over / leak)", async () => {
+    const broker = new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 10 });
+    const a = makeSub();
+    await broker.attach(a);
+    fs.appendFileSync(broker.pipeOutputPath!, "transient history");
+    await vi.waitFor(() => { expect(broker.historyByteLength).toBeGreaterThan(0); }, { timeout: 1000 });
+
+    broker.detach(a);
+    await vi.waitFor(() => { expect(broker.historyByteLength).toBe(0); }, { timeout: 1000 });
+  });
+});
