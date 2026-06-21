@@ -10,6 +10,18 @@
 
 import { createContext, useContext, useMemo, useRef, type ReactNode } from "react";
 import { LiveTerminalRegistry, MAX_LIVE_TERMINALS } from "./live-terminal-registry.js";
+import { useSettings } from "../../hooks/useSettings.js";
+
+/** OPR.0.4.0.1 — read the configured global cap
+ *  (ui.terminal.max_live_terminals), falling back to MAX_LIVE_TERMINALS when
+ *  unset/invalid. The 2 -> 3 change is a one-place config edit (AC-5). Mount
+ *  site: `<LiveTerminalProvider cap={useTerminalCap()}>`. */
+export function useTerminalCap(): number {
+  const { data } = useSettings();
+  const raw = data?.settings?.["ui.terminal.max_live_terminals"]?.value;
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 1 ? n : MAX_LIVE_TERMINALS;
+}
 
 export interface LiveTerminalContextValue {
   /** Mark a terminal live; evicts the oldest (reverting it to static) if over cap. */
