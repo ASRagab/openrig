@@ -66,9 +66,23 @@ export function ProgressiveTerminal({
       aria-label={`Make ${sessionName} terminal live (typeable)`}
       title="Click to go live (typeable)"
       onClick={goLive}
-      className={cn("block h-full w-full cursor-pointer text-left", className)}
+      className={cn(
+        // OPR.0.4.0.1 (FR-1/FR-2/FR-4): the static preview carries its OWN
+        // borderless smoked-glass plate so it reads as floating glass on the
+        // truly-bare surfaces (topology-tab / grid), matching the live look. The
+        // compact-terminal SessionPreviewPane variant (border-0 bg-transparent
+        // text-stone-50) sits ON this smoke. The live mode relies on
+        // FocusedTerminal's own tinted bg -> one tint per mode, no double-tint.
+        "block h-full w-full cursor-pointer text-left bg-stone-950/60 backdrop-blur-sm",
+        className,
+      )}
     >
-      <SessionPreviewPane sessionName={sessionName} lines={lines} testIdPrefix={`${testIdPrefix}-preview`} />
+      <SessionPreviewPane
+        sessionName={sessionName}
+        lines={lines}
+        variant="compact-terminal"
+        testIdPrefix={`${testIdPrefix}-preview`}
+      />
     </button>
   );
 }

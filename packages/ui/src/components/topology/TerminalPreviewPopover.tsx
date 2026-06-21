@@ -211,7 +211,12 @@ export function TerminalPreviewPopover({
       data-terminal-preview-surface=""
       data-reduced-motion={reducedMotion ? "true" : "false"}
       className={cn(
-        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] w-[calc(80ch+24px)] max-w-[calc(100vw-1rem)] overflow-hidden bg-stone-950/65 p-1.5 backdrop-blur-sm",
+        // OPR.0.4.0.1 (FR-4 de-dup): the terminal CONTENT now carries its own
+        // smoked-glass tint (FocusedTerminal bg / the static smoked plate), so the
+        // popover drops its redundant opaque smoked background to stay
+        // transparent-glassy (not double-tinted toward opaque). The backdrop-blur
+        // stays for the floating-plate effect over the page behind it.
+        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] w-[calc(80ch+24px)] max-w-[calc(100vw-1rem)] overflow-hidden p-1.5 backdrop-blur-sm",
         "cursor-default select-text font-mono text-[8px] text-stone-50",
         popoverClassName,
       )}
@@ -219,10 +224,14 @@ export function TerminalPreviewPopover({
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* OPR.0.4.0.1: progressive surfaces show default-static -> click-to-go-live;
-          a wider optimal terminal width per the styling finding. Non-progressive
-          consumers (feed-card live drill) keep the always-live FocusedTerminal. */}
-      <div className="h-[440px] w-[820px] max-w-[calc(100vw-2rem)]">
+      {/* OPR.0.4.0.1 (FR-3): the LIVE wide plate width is set to the optimal render
+          width of the Claude Code + Codex CLI TUIs. ~120 cols (the wider of the two)
+          at xterm fontSize 12 ui-monospace (cell ~7.23px) ~= 868px -> 880px sizer.
+          FitAddon propagates cols/rows over the WS so the TUI reflows. This is a
+          computed starting width; QA's fix-loop finalizes it against a REAL agent
+          TUI per the proof bar. Optimal width is LIVE-only -- the static topology
+          grid columns are NOT widened (3-col overview preserved). */}
+      <div className="h-[440px] w-[880px] max-w-[calc(100vw-2rem)]">
         {progressive ? (
           <ProgressiveTerminal sessionName={sessionName} terminalKey={key} testIdPrefix={testIdPrefix} />
         ) : (
