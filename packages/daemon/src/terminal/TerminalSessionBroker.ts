@@ -147,6 +147,10 @@ export class TerminalSessionBroker {
   private openPromise: Promise<{ ok: true } | { ok: false; code: number; reason: string }> | null = null;
   private tailStarted = false;
   private torndown = false;
+  // The honest close reason a subscriber should get if it resumes (after an
+  // async open/seed) to find the broker already torn down. Set on every
+  // teardown path so a late/racing attach never goes silently live.
+  private lastClose: { code: number; reason: string } | null = null;
 
   constructor(sessionName: string, tmux: BrokerTmux, opts: BrokerOptions = {}) {
     this.sessionName = sessionName;
@@ -181,7 +185,7 @@ export class TerminalSessionBroker {
    */
   async attach(sub: TerminalSubscriber): Promise<void> {
     if (this.torndown) {
-      sub.close(1011, "terminal broker unavailable");
+      this.closeTorndown(sub);
       return;
     }
     // Start the single pipe-open exactly once; every concurrent attach awaits
@@ -195,15 +199,15 @@ export class TerminalSessionBroker {
     // failed, or the session died. Close this subscriber HONESTLY; never leave a
     // live-looking subscriber on a dead broker (the no-live-terminal-lies rule).
     if (this.torndown) {
-      if (open.ok) sub.close(1011, "terminal broker unavailable");
-      else sub.close(open.code, open.reason);
+      this.closeTorndown(sub);
       return;
     }
 
     if (!open.ok) {
-      // Open failed: tear the broker down ONCE, then close THIS subscriber with
-      // the shared honest 1008/1011 reason. Every co-waiter takes the torndown
-      // branch above and is closed with the same reason - none is left live.
+      // Open failed: remember the reason and tear down ONCE, then close THIS
+      // subscriber. Every co-waiter takes a torndown branch and closes with the
+      // same remembered reason - none is left live.
+      this.lastClose = { code: open.code, reason: open.reason };
       this.torndown = true;
       this.teardownResources();
       this.onEmpty?.(this.sessionName);
@@ -212,13 +216,30 @@ export class TerminalSessionBroker {
     }
 
     // Open succeeded: seed this subscriber (ring replay + current screen) BEFORE
-    // it joins the fanout, then start the single tail + liveness exactly once.
+    // it joins the fanout.
     await this.seed(sub);
+    // RECHECK after the async seed: liveness/dispose may have torn the broker
+    // down while the capture was pending. Never add a subscriber to a dead
+    // broker - close it honestly with the remembered teardown reason.
+    if (this.torndown) {
+      this.closeTorndown(sub);
+      return;
+    }
     this.subscribers.add(sub);
     if (!this.tailStarted) {
       this.tailStarted = true;
       this.startTail();
       this.startLiveness();
+    }
+  }
+
+  /** Close a subscriber that resumed after teardown, with the remembered reason. */
+  private closeTorndown(sub: TerminalSubscriber): void {
+    const c = this.lastClose ?? { code: 1011, reason: "terminal broker unavailable" };
+    try {
+      sub.close(c.code, c.reason);
+    } catch {
+      // already-closed subscriber is fine
     }
   }
 
@@ -248,6 +269,7 @@ export class TerminalSessionBroker {
   /** Force teardown (used by the registry/route on shutdown and by tests). */
   dispose(): void {
     if (this.torndown) return;
+    this.lastClose = { code: 1011, reason: "terminal broker unavailable" };
     this.torndown = true;
     this.subscribers.clear();
     if (this.pipeActive) {
@@ -399,6 +421,7 @@ export class TerminalSessionBroker {
   /** FR-5: a dead session closes ALL subscribers honestly - never silent stale-live. */
   private handleSessionDeath(): void {
     if (this.torndown) return;
+    this.lastClose = { code: 1001, reason: "tmux session terminated" };
     this.torndown = true;
     const subs = [...this.subscribers];
     this.subscribers.clear();
@@ -419,6 +442,7 @@ export class TerminalSessionBroker {
 
   private async teardown(): Promise<void> {
     if (this.torndown) return;
+    this.lastClose = { code: 1011, reason: "terminal broker unavailable" };
     this.torndown = true;
     if (this.pipeActive) {
       this.pipeActive = false;

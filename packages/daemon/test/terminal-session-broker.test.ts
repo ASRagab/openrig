@@ -517,3 +517,43 @@ describe("TerminalSessionBroker - concurrent attach failure (honest close)", () 
     await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: 1000 });
   });
 });
+
+// ---- teardown-during-seed race (dev1-guard round-3 watchpoint) --------------
+// A late attach blocked in its async seed must NOT be added to a broker that
+// got torn down (session death / dispose) while the seed was pending - it must
+// close honestly with the remembered teardown reason, never go live silently.
+describe("TerminalSessionBroker - teardown during seed (honest close)", () => {
+  it("a late attach blocked in seed while the session dies closes honestly (1001) and is NOT added", async () => {
+    let releaseCapture!: () => void;
+    const blocked = new Promise<string | null>((res) => { releaseCapture = () => res("late-screen"); });
+    let captureCalls = 0;
+    let alive = true;
+    let evicted = 0;
+    const broker = new TerminalSessionBroker("dev@rig", makeTmux({
+      hasSession: async () => alive,
+      capturePaneScreen: async () => {
+        captureCalls += 1;
+        // The FIRST subscriber's seed resolves immediately; the late
+        // subscriber's seed blocks until we release it.
+        return captureCalls === 1 ? "first-screen" : blocked;
+      },
+    }), { pollMs: 10, livenessMs: 15, onEmpty: () => { evicted += 1; } });
+
+    const a = makeSub();
+    await broker.attach(a); // first subscriber attached, broker live + liveness running
+
+    const b = makeSub();
+    const bAttach = broker.attach(b); // blocks inside seed (capturePaneScreen)
+
+    // Session dies while B is mid-seed; liveness fires and tears the broker down.
+    alive = false;
+    await vi.waitFor(() => { expect(a.closed[0]?.code).toBe(1001); }, { timeout: 1000 });
+
+    releaseCapture(); // B's seed now resolves
+    await bAttach;
+
+    expect(b.closed[0]?.code).toBe(1001); // honest close with the remembered death reason
+    expect(broker.subscriberCount).toBe(0); // B was NOT added to the dead broker
+    expect(evicted).toBe(1);
+  });
+});
