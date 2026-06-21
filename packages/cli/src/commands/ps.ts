@@ -1061,10 +1061,17 @@ async function runCrossHostPs(
   const argv: string[] = ["rig", "ps"];
   if (opts.nodes) argv.push("--nodes");
   if (opts.full) argv.push("--full");
+  // OPR.0.4.0.34: forward the breadth flag so `--host h -A` keeps all-rigs
+  // breadth across the hop (the current-rig default is local-only and never
+  // applied to a remote call, but an explicit -A must still reach the remote).
+  if (opts.allRigs) argv.push("--all-rigs");
   if (opts.limit !== undefined) argv.push("--limit", opts.limit);
   if (opts.fields !== undefined) argv.push("--fields", opts.fields);
   if (opts.summary) argv.push("--summary");
   if (opts.filter !== undefined) argv.push("--filter", opts.filter);
+  // OPR.0.4.0.34: opts.active is the normalized form (set by --active OR
+  // --running). Forward it so the state filter survives the hop.
+  if (opts.active) argv.push("--active");
   if (opts.rig !== undefined) argv.push("--rig", opts.rig);
   if (opts.session !== undefined) argv.push("--session", opts.session);
   if (opts.includeArchived) argv.push("--include-archived");
