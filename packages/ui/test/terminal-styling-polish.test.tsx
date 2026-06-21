@@ -51,7 +51,8 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
 
   it("FR-1: the LIVE terminal CONTENT carries its own translucent smoked tint (not the plate-dependent rgba(0,0,0,0))", () => {
     const s = src("../src/components/terminal/FocusedTerminal.tsx");
-    expect(s).toContain("rgba(12,10,9,0.6)"); // stone-950 at ~0.6 alpha
+    expect(s).toContain('const SMOKED_TERMINAL_BACKGROUND = "rgba(12,10,9,0.6)"'); // stone-950 at ~0.6 alpha
+    expect(s).toContain("viewport.style.backgroundColor = SMOKED_TERMINAL_BACKGROUND");
     expect(s).not.toContain('background: "rgba(0,0,0,0)"');
     expect(s).toContain('foreground: "#e0e0e0"'); // text stays OPAQUE (AC-4 legibility)
   });

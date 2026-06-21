@@ -33,6 +33,8 @@ const ESCAPE_SEQ_MAP: Record<string, string> = {
   "\x1b[2~": "IC",
 };
 
+const SMOKED_TERMINAL_BACKGROUND = "rgba(12,10,9,0.6)";
+
 type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
 
 export function mapXtermInput(data: string): WsMessage[] {
@@ -171,7 +173,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
           // stays OPAQUE (#e0e0e0) so text is fully legible (AC-4 hard constraint);
           // alpha is the starting point, tuned toward opaque by QA if a busy backdrop
           // ever fights crispness. allowTransparency is required for a non-opaque bg.
-          theme: { background: "rgba(12,10,9,0.6)", foreground: "#e0e0e0", cursor: "#e0e0e0" },
+          theme: { background: SMOKED_TERMINAL_BACKGROUND, foreground: "#e0e0e0", cursor: "#e0e0e0" },
           allowTransparency: true,
           allowProposedApi: true,
         });
@@ -179,6 +181,11 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
         const fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
         term.open(containerRef.current!);
+        // xterm's viewport keeps its own default black background outside the
+        // theme-painted row layer. Keep it aligned with the smoked live content
+        // so live terminals do not regress to an opaque black panel.
+        const viewport = containerRef.current!.querySelector<HTMLElement>(".xterm-viewport");
+        if (viewport) viewport.style.backgroundColor = SMOKED_TERMINAL_BACKGROUND;
         fitAddon.fit();
         termRef.current = term;
         fitAddonRef.current = fitAddon;
