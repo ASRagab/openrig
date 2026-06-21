@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { serve, type ServerType } from "@hono/node-server";
 import http from "node:http";
+import * as fs from "node:fs";
 import { registerTerminalWs } from "../src/routes/terminal-ws.js";
 
 const TOKEN = "test-ws-route-token";
@@ -207,5 +208,102 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     await vi.waitFor(() => {
       expect(stopPipePaneCalls).toContain("death-test");
     }, { timeout: 2000 });
+  }, 10000);
+});
+
+// OPR.0.4.0.38 - the broker behaviors at the real WebSocket route: multiple
+// subscribers of one session share ONE pipe and a fanned-out stream, and a
+// client resize message never reaches the pane (FR-7 fixed geometry).
+describe("terminal WebSocket broker (multi-subscriber route)", () => {
+  const BROKER_PORT = 19879;
+  const BROKER_TOKEN = "broker-test-token";
+  let brokerServer: ServerType;
+  const startPipePaneCalls: string[] = [];
+  const resizeWindowCalls: Array<{ cols: number; rows: number }> = [];
+  let capturedOutputPath: string | null = null;
+
+  beforeAll(async () => {
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("tmuxAdapter" as never, {
+        hasSession: async () => true,
+        setWindowOption: async () => ({ ok: true }),
+        resizeWindow: async (_n: string, cols: number, rows: number) => {
+          resizeWindowCalls.push({ cols, rows });
+          return { ok: true };
+        },
+        startPipePane: async (name: string, outputPath: string) => {
+          startPipePaneCalls.push(name);
+          capturedOutputPath = outputPath;
+          return { ok: true };
+        },
+        stopPipePane: async () => ({ ok: true }),
+        sendKeys: async () => ({ ok: true }),
+        sendText: async () => ({ ok: true }),
+        capturePaneScreen: async () => null,
+        getPaneCursorPosition: async () => null,
+      });
+      await next();
+    });
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: BROKER_TOKEN });
+    brokerServer = serve({ fetch: app.fetch, port: BROKER_PORT, hostname: "127.0.0.1" });
+    injectWebSocket(brokerServer);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  });
+
+  afterAll(() => {
+    brokerServer?.close();
+  });
+
+  function openWs(session: string): Promise<WebSocket> {
+    const ws = new WebSocket(`ws://127.0.0.1:${BROKER_PORT}/api/terminal/${session}?token=${BROKER_TOKEN}`);
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => resolve(ws);
+      ws.onerror = () => reject(new Error("ws failed to open"));
+    });
+  }
+
+  it("two subscribers of one session share ONE pipe-pane and both receive fanned-out output", async () => {
+    startPipePaneCalls.length = 0;
+    capturedOutputPath = null;
+    const aRecv: string[] = [];
+    const bRecv: string[] = [];
+
+    const a = await openWs("fanout-session");
+    a.onmessage = (e) => { if (typeof e.data === "string") aRecv.push(e.data); };
+    const b = await openWs("fanout-session");
+    b.onmessage = (e) => { if (typeof e.data === "string") bRecv.push(e.data); };
+
+    // Give the second attach a beat to register on the existing broker.
+    await new Promise<void>((r) => setTimeout(r, 80));
+    expect(startPipePaneCalls.filter((n) => n === "fanout-session")).toHaveLength(1);
+    expect(capturedOutputPath).toBeTruthy();
+
+    fs.appendFileSync(capturedOutputPath!, "FANOUT-BYTES");
+    await vi.waitFor(() => {
+      expect(aRecv.join("")).toContain("FANOUT-BYTES");
+      expect(bRecv.join("")).toContain("FANOUT-BYTES");
+    }, { timeout: 1500 });
+
+    a.close();
+    b.close();
+  }, 10000);
+
+  it("a client resize message never resizes the pane (FR-7): only the one canonical geometry call", async () => {
+    resizeWindowCalls.length = 0;
+    const ws = await openWs("resize-session");
+    // One canonical-geometry resize happens at broker open.
+    await vi.waitFor(() => {
+      expect(resizeWindowCalls).toHaveLength(1);
+    }, { timeout: 1000 });
+    expect(resizeWindowCalls[0]).toEqual({ cols: 120, rows: 40 });
+
+    ws.send(JSON.stringify({ type: "resize", cols: 200, rows: 9 }));
+    // Give the message time to (not) be processed.
+    await new Promise<void>((r) => setTimeout(r, 120));
+    expect(resizeWindowCalls).toHaveLength(1); // unchanged - the resize was ignored
+
+    ws.close();
   }, 10000);
 });

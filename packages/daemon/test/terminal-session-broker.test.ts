@@ -279,14 +279,17 @@ describe("TerminalSessionBroker", () => {
     if (path) expect(fs.existsSync(path)).toBe(false);
   });
 
-  it("test 11b: a dead session at open closes the subscriber and never starts a pipe", async () => {
+  it("test 11b: a dead session at open closes the subscriber (1008, honest) and never starts a pipe", async () => {
     const startPipePane = vi.fn(async () => ({ ok: true as const }));
     const broker = new TerminalSessionBroker("dev@rig", makeTmux({ hasSession: async () => false, startPipePane }), {
       pollMs: 10,
     });
     const a = makeSub();
     await broker.attach(a);
-    expect(a.closed[0]?.code).toBe(1011);
+    // 1008 (policy / session genuinely absent) mirrors the pre-broker route, distinct
+    // from 1011 (server-side pipe failure) below.
+    expect(a.closed[0]?.code).toBe(1008);
+    expect(a.closed[0]?.reason).toContain("session not found");
     expect(startPipePane).not.toHaveBeenCalled();
   });
 });

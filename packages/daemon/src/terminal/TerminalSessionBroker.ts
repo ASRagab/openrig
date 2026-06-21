@@ -165,7 +165,7 @@ export class TerminalSessionBroker {
       if (!open.ok) {
         this.torndown = true;
         this.teardownResources();
-        sub.close(1011, open.reason);
+        sub.close(open.code, open.reason);
         this.onEmpty?.(this.sessionName);
         return;
       }
@@ -183,6 +183,7 @@ export class TerminalSessionBroker {
 
   /** Forward client input to tmux, serialized so rapid input keeps order (FR-3). */
   async input(msg: TerminalInputMessage): Promise<void> {
+    if (this.torndown) return;
     await this.enqueueInput(async () => {
       if (msg.type === "keys") {
         await this.tmux.sendKeys(this.sessionName, msg.keys);
@@ -216,9 +217,12 @@ export class TerminalSessionBroker {
     this.onEmpty?.(this.sessionName);
   }
 
-  private async openPipe(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  private async openPipe(): Promise<{ ok: true } | { ok: false; code: number; reason: string }> {
+    // Close codes mirror the pre-broker route so the UI keeps its semantics:
+    // 1008 (policy) = the session genuinely does not exist; 1011 (server error)
+    // = the pipe/temp-file machinery failed. Both are honest; neither is a lie.
     const alive = await this.tmux.hasSession(this.sessionName);
-    if (!alive) return { ok: false, reason: `session not found: ${this.sessionName}` };
+    if (!alive) return { ok: false, code: 1008, reason: `session not found: ${this.sessionName}` };
 
     // FR-7 fixed geometry: window-size manual so tmux will NOT auto-shrink the
     // window to the smallest attached client; then the canonical width/height
@@ -233,13 +237,13 @@ export class TerminalSessionBroker {
     try {
       fs.writeFileSync(outputPath, "", "utf-8");
     } catch (err) {
-      return { ok: false, reason: `pipe output file failed: ${String(err)}` };
+      return { ok: false, code: 1011, reason: `pipe output file failed: ${String(err)}` };
     }
     this.outputPath = outputPath;
 
     const pipe = await this.tmux.startPipePane(this.sessionName, outputPath);
     if (!pipe.ok) {
-      return { ok: false, reason: `pipe-pane failed: ${pipe.message}` };
+      return { ok: false, code: 1011, reason: `pipe-pane failed: ${pipe.message}` };
     }
     this.pipeActive = true;
 
@@ -250,8 +254,20 @@ export class TerminalSessionBroker {
   }
 
   private async seed(sub: TerminalSubscriber): Promise<void> {
-    const snapshot = await this.tmux.capturePaneScreen(this.sessionName).catch(() => null);
-    const cursor = await this.tmux.getPaneCursorPosition(this.sessionName).catch(() => null);
+    // Best-effort: a failed capture (or an adapter without the seed methods)
+    // must never break the attach - the tail still streams live output.
+    let snapshot: string | null = null;
+    let cursor: TmuxCursorPosition | null = null;
+    try {
+      snapshot = await this.tmux.capturePaneScreen(this.sessionName);
+    } catch {
+      snapshot = null;
+    }
+    try {
+      cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
+    } catch {
+      cursor = null;
+    }
     if (snapshot != null) {
       try {
         sub.send(screenSnapshotEscape(snapshot, cursor));
