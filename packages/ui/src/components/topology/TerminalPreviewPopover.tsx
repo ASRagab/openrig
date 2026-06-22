@@ -222,11 +222,10 @@ export function TerminalPreviewPopover({
       data-terminal-preview-surface=""
       data-reduced-motion={reducedMotion ? "true" : "false"}
       className={cn(
-        // OPR.0.4.0.1 (FR-4 de-dup): the terminal CONTENT now carries its own
-        // smoked-glass tint (FocusedTerminal bg / the static smoked plate), so the
-        // popover drops its redundant opaque smoked background to stay
-        // transparent-glassy (not double-tinted toward opaque). The backdrop-blur
-        // stays for the floating-plate effect over the page behind it.
+        // OPR.0.4.0.1 (FR-4 de-dup): the terminal wrapper/static plate carry the
+        // smoked-glass surface, while the xterm renderer itself stays opaque for
+        // reliable erase/redraw. The popover drops its redundant bg so the wrapper
+        // remains the single terminal plate.
         "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden p-1.5 backdrop-blur-sm",
         // OPR.0.4.0.1 (rev1-r2 fix): widen the shell to fit the live plate (880px +
         // padding) when live so overflow-hidden no longer clips it; stay compact for

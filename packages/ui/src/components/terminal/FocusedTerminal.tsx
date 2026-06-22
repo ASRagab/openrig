@@ -33,7 +33,7 @@ const ESCAPE_SEQ_MAP: Record<string, string> = {
   "\x1b[2~": "IC",
 };
 
-const SMOKED_TERMINAL_BACKGROUND = "rgba(12,10,9,0.6)";
+const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09";
 
 type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
 
@@ -77,6 +77,19 @@ export function mapXtermInput(data: string): WsMessage[] {
   }
   flushText();
   return messages;
+}
+
+export function applyOpaqueTerminalBackground(container: HTMLElement): void {
+  const surfaces = [
+    container,
+    container.querySelector<HTMLElement>(".xterm"),
+    container.querySelector<HTMLElement>(".xterm-screen"),
+    container.querySelector<HTMLElement>(".xterm-viewport"),
+    container.querySelector<HTMLElement>(".xterm-rows"),
+  ];
+  for (const surface of surfaces) {
+    if (surface) surface.style.backgroundColor = LIVE_TERMINAL_RENDER_BACKGROUND;
+  }
 }
 
 interface FocusedTerminalProps {
@@ -165,28 +178,22 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
           cursorBlink: true,
           fontSize: 12,
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-          // OPR.0.4.0.1 styling polish (FR-1): the live terminal CONTENT carries
-          // its OWN translucent smoked-black tint (stone-950 #0c0a09 at ~0.6 alpha)
-          // so it reads as a floating smoked-glass plate on EVERY surface -- incl.
-          // the truly-bare topology-tab + grid-popover surfaces that have no plate
-          // behind them -- not only over the popover/shell backdrop-blur. Foreground
-          // stays OPAQUE (#e0e0e0) so text is fully legible (AC-4 hard constraint);
-          // alpha is the starting point, tuned toward opaque by QA if a busy backdrop
-          // ever fights crispness. allowTransparency is required for a non-opaque bg.
-          theme: { background: SMOKED_TERMINAL_BACKGROUND, foreground: "#e0e0e0", cursor: "#e0e0e0" },
-          allowTransparency: true,
+          // xterm erase/redraw needs an opaque cell background. A translucent
+          // xterm render surface lets old TUI cells bleed through after clear
+          // screen / absolute cursor repaint, which corrupts Claude/Codex views.
+          theme: { background: LIVE_TERMINAL_RENDER_BACKGROUND, foreground: "#e0e0e0", cursor: "#e0e0e0" },
+          allowTransparency: false,
           allowProposedApi: true,
         });
 
         const fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
         term.open(containerRef.current!);
-        // xterm's viewport keeps its own default black background outside the
-        // theme-painted row layer. Keep it aligned with the smoked live content
-        // so live terminals do not regress to an opaque black panel.
-        const viewport = containerRef.current!.querySelector<HTMLElement>(".xterm-viewport");
-        if (viewport) viewport.style.backgroundColor = SMOKED_TERMINAL_BACKGROUND;
+        // Some xterm DOM layers do not inherit the theme background. Pin every
+        // render layer opaque so clear/erase operations actually erase.
+        applyOpaqueTerminalBackground(containerRef.current!);
         fitAddon.fit();
+        term.focus();
         termRef.current = term;
         fitAddonRef.current = fitAddon;
 
@@ -243,7 +250,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
       key={`focused-terminal-live-${sessionName}`}
       ref={containerRef}
       data-testid={`focused-terminal-${sessionName}`}
-      className="h-full w-full min-h-[200px]"
+      className="h-full w-full min-h-[200px] bg-stone-950/60 backdrop-blur-sm"
     />
   );
 }
