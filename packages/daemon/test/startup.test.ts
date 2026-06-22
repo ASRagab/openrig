@@ -65,6 +65,33 @@ describe("createDaemon startup composition", () => {
     db.close();
   });
 
+  it("defaults terminal auth to local-trusted mode without minting a token file", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-terminal-auth-"));
+    const priorHome = process.env.OPENRIG_HOME;
+    const priorToken = process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
+    process.env.OPENRIG_HOME = tmpDir;
+    delete process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
+    const cmuxFactory: CmuxTransportFactory = async () => {
+      throw Object.assign(new Error(""), { code: "ENOENT" });
+    };
+    const tmuxExec: ExecFn = async () => "";
+
+    try {
+      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+
+      expect(deps.terminalBearerToken).toBeNull();
+      expect(fs.existsSync(path.join(tmpDir, "terminal-token"))).toBe(false);
+
+      db.close();
+    } finally {
+      if (priorHome === undefined) delete process.env.OPENRIG_HOME;
+      else process.env.OPENRIG_HOME = priorHome;
+      if (priorToken === undefined) delete process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
+      else process.env.OPENRIG_TERMINAL_BEARER_TOKEN = priorToken;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("createDaemon app: GET /api/rigs/:rigId/sessions returns 200 (session routes mounted)", async () => {
     const cmuxFactory: CmuxTransportFactory = async () => {
       throw Object.assign(new Error(""), { code: "ENOENT" });
