@@ -59,8 +59,11 @@ export function SessionPreviewPane({
       data-variant={variant}
       className={cn(
         "space-y-1",
+        // OPR.0.4.0.39 FR-1 mirror flip: the compact static content reads OPAQUE
+        // #0c0a09 (matching the live xterm LIVE_TERMINAL_RENDER_BACKGROUND) within
+        // the smoke plate the caller supplies - NOT the old translucent tint.
         compactTerminal
-          ? "border-0 bg-transparent p-0 text-stone-50"
+          ? "border-0 bg-[#0c0a09] p-0 text-stone-50"
           : "border border-stone-300/40 bg-white/8 px-3 py-2",
       )}
     >
@@ -114,8 +117,14 @@ export function SessionPreviewPane({
             onScroll={handleScroll}
             className={cn(
               "font-mono",
+              // OPR.0.4.0.39 FR-5: the tmux capture is ALREADY wrapped to the pane
+              // width; whitespace-pre-wrap+break-words re-wrapped it at the
+              // (narrower) container width = double-wrapped/broken line returns.
+              // whitespace-pre renders the tmux lines as-is (matching the live
+              // fixed-geometry xterm) and overflow-x-auto scrolls/pans wider lines.
+              // FR-1 mirror: opaque #0c0a09 content surface.
               compactTerminal
-                ? "scrollbar-none max-h-72 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words bg-transparent px-1 py-0.5 text-[8px] leading-[1.2] text-stone-50"
+                ? "scrollbar-none max-h-72 overflow-y-auto overflow-x-auto whitespace-pre bg-[#0c0a09] px-1 py-0.5 text-[8px] leading-[1.2] text-stone-50"
                 : "max-h-32 overflow-y-auto whitespace-pre-wrap break-all bg-stone-50 px-2 py-1 text-[9px] text-stone-800",
             )}
           >

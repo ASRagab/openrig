@@ -91,10 +91,16 @@ describe("SessionPreviewPane", () => {
     expect(pane.getAttribute("data-variant")).toBe("compact-terminal");
     expect(content.className).toContain("text-[8px]");
     expect(content.className).toContain("text-stone-50");
-    expect(content.className).toContain("whitespace-pre-wrap");
-    expect(content.className).toContain("break-words");
+    // OPR.0.4.0.39 FR-5: the tmux capture is already pane-width-wrapped, so the
+    // static <pre> uses whitespace-pre (no re-wrap, mirroring the live fixed-
+    // geometry xterm) - NOT whitespace-pre-wrap/break-words (which double-wrapped).
+    expect(content.className).toContain("whitespace-pre");
+    expect(content.className).not.toContain("whitespace-pre-wrap");
+    expect(content.className).not.toContain("break-words");
+    // OPR.0.4.0.39 FR-1 mirror flip: opaque #0c0a09 content (matches the live xterm).
+    expect(content.className).toContain("bg-[#0c0a09]");
     expect(content.className).toContain("scrollbar-none");
-    expect(content.className).toContain("overflow-x-hidden");
+    expect(content.className).toContain("overflow-x-auto");
     expect(content.className).not.toContain("break-all");
     expect(screen.queryByText(/live preview/i)).toBeNull();
     expect(screen.queryByText(/captured/i)).toBeNull();

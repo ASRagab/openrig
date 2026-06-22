@@ -8,17 +8,14 @@
 // Static previews are uncapped (cheap polling). Used by all three surfaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SessionPreviewPane } from "../preview/SessionPreviewPane.js";
 import { FocusedTerminal } from "./FocusedTerminal.js";
+import { StaticTerminalPlate } from "./StaticTerminalPlate.js";
 import { useLiveTerminal } from "./LiveTerminalProvider.js";
 import { cn } from "../../lib/utils.js";
 
-/** OPR.0.4.0.1 (FR-1/FR-4): the borderless smoked-glass plate the STATIC terminal
- *  preview carries so it reads as floating glass on EVERY surface -- including the
- *  truly-bare ones with no popover/shell plate behind them (topology-tab, and the
- *  topology grid thumbnail). Exported so the grid thumbnail uses the SAME plate as
- *  ProgressiveTerminal's static view (one shared smoked-static source). */
-export const SMOKED_STATIC_PLATE_CLASS = "bg-stone-950/60 backdrop-blur-sm";
+// OPR.0.4.0.39 FR-1: the shared static-terminal plate now owns
+// SMOKED_STATIC_PLATE_CLASS; re-export here for existing importers.
+export { SMOKED_STATIC_PLATE_CLASS } from "./StaticTerminalPlate.js";
 
 interface ProgressiveTerminalProps {
   sessionName: string;
@@ -76,32 +73,19 @@ export function ProgressiveTerminal({
     );
   }
 
-  // Static default: the whole preview is the click target to go live.
+  // Static default: the whole preview is the click target to go live. The shared
+  // StaticTerminalPlate carries the smoked-glass plate + the OPAQUE #0c0a09
+  // compact preview content (mirrors the live look post-38-forward-fix; FR-1).
   return (
-    <button
-      type="button"
-      data-testid={`${testIdPrefix}-static`}
-      aria-label={`Make ${sessionName} terminal live (typeable)`}
-      title="Click to go live (typeable)"
+    <StaticTerminalPlate
+      sessionName={sessionName}
+      lines={lines}
+      plateTestId={`${testIdPrefix}-static`}
+      previewTestIdPrefix={`${testIdPrefix}-preview`}
+      className={className}
       onClick={goLive}
-      className={cn(
-        // OPR.0.4.0.1 (FR-1/FR-2/FR-4): the static preview carries its OWN
-        // borderless smoked-glass plate so it reads as floating glass on the
-        // truly-bare surfaces (topology-tab / grid), matching the live look. The
-        // compact-terminal SessionPreviewPane variant (border-0 bg-transparent
-        // text-stone-50) sits ON this smoke. The live mode relies on
-        // FocusedTerminal's own tinted bg -> one tint per mode, no double-tint.
-        "block h-full w-full cursor-pointer text-left",
-        SMOKED_STATIC_PLATE_CLASS,
-        className,
-      )}
-    >
-      <SessionPreviewPane
-        sessionName={sessionName}
-        lines={lines}
-        variant="compact-terminal"
-        testIdPrefix={`${testIdPrefix}-preview`}
-      />
-    </button>
+      ariaLabel={`Make ${sessionName} terminal live (typeable)`}
+      title="Click to go live (typeable)"
+    />
   );
 }

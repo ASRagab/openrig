@@ -22,9 +22,8 @@ import { useMemo, useState } from "react";
 import { useRigSummary } from "../../hooks/useRigSummary.js";
 import { useNodeInventory, type NodeInventoryEntry } from "../../hooks/useNodeInventory.js";
 import { displayAgentName } from "../../lib/display-name.js";
-import { SessionPreviewPane } from "../preview/SessionPreviewPane.js";
 import { TerminalPreviewPopover } from "./TerminalPreviewPopover.js";
-import { SMOKED_STATIC_PLATE_CLASS } from "../terminal/ProgressiveTerminal.js";
+import { StaticTerminalPlate } from "../terminal/StaticTerminalPlate.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { cn } from "../../lib/utils.js";
@@ -123,23 +122,19 @@ function SeatTerminalCard({ seat }: { seat: NodeInventoryEntry }) {
         </span>
       </header>
       <div className="relative z-0 min-h-0 flex items-start gap-2">
-        {/* OPR.0.4.0.1 (FR-5): a SMALL static thumbnail keeps the 3-col grid an
-            at-a-glance overview -- NOT widened to TUI width. */}
-        <div
-          data-testid={`terminal-grid-${seat.rigId}-${seat.logicalId}-thumb-plate`}
-          className={cn("min-w-0 flex-1 overflow-hidden", SMOKED_STATIC_PLATE_CLASS)}
-        >
-          {/* The grid is a TRULY BARE surface, so the static thumbnail carries the
-              SAME borderless smoked-glass plate as ProgressiveTerminal's static
-              view (shared SMOKED_STATIC_PLATE_CLASS) -- the compact-terminal
-              SessionPreviewPane is transparent and sits ON this smoke. */}
-          <SessionPreviewPane
-            sessionName={sessionName}
-            lines={6}
-            variant="compact-terminal"
-            testIdPrefix={`terminal-grid-${seat.rigId}-${seat.logicalId}-thumb`}
-          />
-        </div>
+        {/* OPR.0.4.0.39 FR-1: a SMALL static thumbnail keeps the grid an
+            at-a-glance overview -- NOT widened to TUI width. It uses the SHARED
+            StaticTerminalPlate (smoked-glass plate + OPAQUE #0c0a09 compact
+            content, mirroring the live look) so every static terminal is
+            consistent. Click-to-live here is the separate TerminalPreviewPopover
+            trigger (expand-out), so the plate itself is non-interactive. */}
+        <StaticTerminalPlate
+          sessionName={sessionName}
+          lines={6}
+          plateTestId={`terminal-grid-${seat.rigId}-${seat.logicalId}-thumb-plate`}
+          previewTestIdPrefix={`terminal-grid-${seat.rigId}-${seat.logicalId}-thumb`}
+          className="min-w-0 flex-1 overflow-hidden"
+        />
         {/* OPR.0.4.0.1 (FR-5 PINNED expand-OUT): the wide LIVE plate is reached via
             the SAME graph/table primitive -- the TerminalPreviewPopover trigger
             opens the wide popover (static), then the universal click-inside goes
