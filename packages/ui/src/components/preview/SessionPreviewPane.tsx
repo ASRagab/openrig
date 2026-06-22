@@ -141,7 +141,7 @@ export function SessionPreviewPane({
               "font-mono",
               // OPR.0.4.0.39 FR-1/FR-4/FR-5 (founder spec): the compact static renders
               // at the LIVE xterm geometry (STATIC_TERMINAL_GEOMETRY: same font, fixed
-              // 100-col width) so static and live are the SAME shape - the shared
+              // 90-col width) so static and live are the SAME shape - the shared
               // ScaleToFitTerminal scales the whole fixed block to the column (fit-
               // width, never clip; no overflow-x pan/cut-off). whitespace-pre renders
               // the captured lines as-is (no re-wrap = correct line returns; FR-5).

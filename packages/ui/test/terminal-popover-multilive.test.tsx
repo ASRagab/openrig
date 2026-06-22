@@ -61,7 +61,7 @@ describe("Progressive terminal popovers coexist under the global cap (rev1-r2 fi
       </LiveTerminalProvider>,
     );
     // open the popover -> STATIC -> shell is already the full-terminal width (the
-    // static is the 120-col mirror, not a small compact preview).
+    // static is the 90-col mirror, not a small compact preview).
     fireEvent.click(screen.getByTestId("pa-terminal-open"));
     expect(screen.getByTestId("pa-terminal-popover").className).toContain("w-max");
     expect(screen.getByTestId("pa-terminal-popover").className).not.toContain("w-[calc(80ch+24px)]");

@@ -91,7 +91,7 @@ describe("SessionPreviewPane", () => {
     expect(pane.getAttribute("data-variant")).toBe("compact-terminal");
     expect(content.className).toContain("text-stone-50");
     // OPR.0.4.0.39 (founder spec): the compact static renders at the LIVE xterm
-    // geometry (same font, fixed 120-col width) so static and live are the SAME
+    // geometry (same font, fixed 90-col width) so static and live are the SAME
     // shape under the shared ScaleToFitTerminal. Font + width are inline (mirror the
     // live exactly), not utility classes.
     expect(content.style.fontSize).toBe("12px");

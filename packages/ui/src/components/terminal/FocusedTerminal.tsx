@@ -325,7 +325,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
       data-testid={`focused-terminal-${sessionName}`}
       // OPR.0.4.0.39 (founder fix): size to the xterm's NATURAL full geometry (90x27)
       // instead of a height-capped (min-h/h-full) overflow-auto container. The capped
-      // container showed only the top ~16 of 40 rows anchored at the top (so the
+      // container showed only the top ~16 of 27 rows anchored at the top (so the
       // cursor/prompt at the bottom was hidden until you typed, and you couldn't reach
       // the rest). At natural size the WHOLE screen is visible (cursor included) and
       // the shared ScaleToFitTerminal scales it to the cell - matching the static

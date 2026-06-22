@@ -53,7 +53,7 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
     const s = src("../src/components/terminal/FocusedTerminal.tsx");
     // OPR.0.4.0.39: the geometry constants moved to terminal-geometry.ts (the single
     // source of truth shared by the static<->live mirror). FocusedTerminal imports +
-    // uses them; the opaque / 120x40 / lineHeight-1 contract is unchanged.
+    // uses them; the opaque / 90x27 / lineHeight-1 contract is unchanged.
     const geo = src("../src/components/terminal/terminal-geometry.ts");
     expect(geo).toContain('export const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09"');
     expect(geo).toContain("export const LIVE_TERMINAL_COLS = 90");

@@ -19,14 +19,14 @@ describe("TopologyTerminalView grid (OPR.0.4.0.39 FR-2/3/4)", () => {
   it("FR-2 (founder: 2 columns MAXIMUM): 1-col narrow / 2-col wider, NO 3-col", () => {
     expect(SRC).toContain("grid-cols-1");
     expect(SRC).toContain("md:grid-cols-2");
-    // 3-col was dropped - at 3-across the scaled 120-col terminal is too small to
+    // 3-col was dropped - at 3-across the scaled 90-col terminal is too small to
     // read; 2-col keeps each cell wide enough for legible terminals.
     expect(SRC).not.toContain("grid-cols-3");
   });
 
   it("FR-3: fit-width is delegated to the shared scaler (ProgressiveTerminal -> ScaleToFitTerminal), not a hardcoded grid scale", () => {
     // The grid must NOT hardcode a per-breakpoint CSS scale anymore; ProgressiveTerminal
-    // wraps both static + live in ScaleToFitTerminal, which measures the fixed 120-col
+    // wraps both static + live in ScaleToFitTerminal, which measures the fixed 90-col
     // block and scales it to fit each cell width (fit-width, never clip).
     expect(SRC).not.toContain("origin-top-left");
     expect(SRC).not.toContain("xl:scale-90");
