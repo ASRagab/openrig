@@ -8,17 +8,19 @@
 // Static previews are uncapped (cheap polling). Used by all three surfaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SessionPreviewPane } from "../preview/SessionPreviewPane.js";
 import { FocusedTerminal } from "./FocusedTerminal.js";
+import { StaticTerminalPlate } from "./StaticTerminalPlate.js";
+import { ScaleToFitTerminal } from "./ScaleToFitTerminal.js";
 import { useLiveTerminal } from "./LiveTerminalProvider.js";
-import { cn } from "../../lib/utils.js";
 
-/** OPR.0.4.0.1 (FR-1/FR-4): the borderless smoked-glass plate the STATIC terminal
- *  preview carries so it reads as floating glass on EVERY surface -- including the
- *  truly-bare ones with no popover/shell plate behind them (topology-tab, and the
- *  topology grid thumbnail). Exported so the grid thumbnail uses the SAME plate as
- *  ProgressiveTerminal's static view (one shared smoked-static source). */
-export const SMOKED_STATIC_PLATE_CLASS = "bg-stone-950/60 backdrop-blur-sm";
+// OPR.0.4.0.39: the static fetches a deeper history than the visible landscape window
+// so you can SCROLL BACK through it (the compact <pre> caps the visible height with
+// max-h + overflow-y); the live xterm scrolls its own buffer.
+const STATIC_HISTORY_LINES = 100;
+
+// OPR.0.4.0.39 FR-1: the shared static-terminal plate now owns
+// SMOKED_STATIC_PLATE_CLASS; re-export here for existing importers.
+export { SMOKED_STATIC_PLATE_CLASS } from "./StaticTerminalPlate.js";
 
 interface ProgressiveTerminalProps {
   sessionName: string;
@@ -31,15 +33,21 @@ interface ProgressiveTerminalProps {
    *  (e.g. the popover) can size its shell to the wide live plate when live and
    *  stay compact when static. */
   onLiveChange?: (isLive: boolean) => void;
+  /** OPR.0.4.0.39: scale-to-fit mode. "width" (default) fits the column width and
+   *  never upscales (grid/graph/table cells). "contain" fills a big dedicated
+   *  container on both axes (capped upscale, centered) - the node-detail panel. */
+  fit?: "width" | "contain";
 }
 
 export function ProgressiveTerminal({
   sessionName,
   terminalKey,
-  lines = 20,
+  // OPR.0.4.0.39: fetch deeper history so the static landscape window can scroll back.
+  lines = STATIC_HISTORY_LINES,
   testIdPrefix = "progressive-terminal",
   className,
   onLiveChange,
+  fit = "width",
 }: ProgressiveTerminalProps) {
   const [mode, setMode] = useState<"static" | "live">("static");
   const live = useLiveTerminal();
@@ -68,40 +76,43 @@ export function ProgressiveTerminal({
     return () => live.release(terminalKey);
   }, [mode, live, terminalKey]);
 
+  // OPR.0.4.0.39 (founder spec): static and live are the SAME 90x27 geometry, both
+  // wrapped in the shared ScaleToFitTerminal so they scale identically to the column
+  // (fit-width, never clip). The glass->opaque flip on click is the only change - the
+  // live xterm appears at the same size in the same place (the mirror).
   if (mode === "live") {
+    // OPR.0.4.0.39 (selection fix): the LIVE xterm scales via fontSize (FocusedTerminal's
+    // own fit), NOT a CSS transform. A CSS transform:scale ancestor breaks xterm's
+    // mouse/selection hit-testing (it divides a post-transform offset by the pre-
+    // transform cell size - #6023), so dragging selects the wrong cells. FocusedTerminal
+    // fills this container and fontSize-fits 90x27 to it, pixel-matching the static plate
+    // (which keeps its transform - native DOM selection follows transforms fine). Same
+    // signed-off look, native-correct selection.
     return (
-      <div data-testid={`${testIdPrefix}-live`} className={cn("h-full w-full", className)}>
-        <FocusedTerminal sessionName={sessionName} />
+      <div
+        data-testid={`${testIdPrefix}-live`}
+        className={[fit === "contain" ? "h-full w-full" : "w-full", className].filter(Boolean).join(" ")}
+      >
+        <FocusedTerminal sessionName={sessionName} fit={fit} />
       </div>
     );
   }
 
-  // Static default: the whole preview is the click target to go live.
+  // Static default: the whole preview is the click target to go live. The shared
+  // StaticTerminalPlate carries the translucent smoked-GLASS plate + transparent
+  // compact content at the 90-col geometry (FR-1/FR-2); clicking flips it to the
+  // OPAQUE #0c0a09 live xterm in place - the glass->opaque activation affordance.
   return (
-    <button
-      type="button"
-      data-testid={`${testIdPrefix}-static`}
-      aria-label={`Make ${sessionName} terminal live (typeable)`}
-      title="Click to go live (typeable)"
-      onClick={goLive}
-      className={cn(
-        // OPR.0.4.0.1 (FR-1/FR-2/FR-4): the static preview carries its OWN
-        // borderless smoked-glass plate so it reads as floating glass on the
-        // truly-bare surfaces (topology-tab / grid), matching the live look. The
-        // compact-terminal SessionPreviewPane variant (border-0 bg-transparent
-        // text-stone-50) sits ON this smoke. The live mode relies on
-        // FocusedTerminal's own tinted bg -> one tint per mode, no double-tint.
-        "block h-full w-full cursor-pointer text-left",
-        SMOKED_STATIC_PLATE_CLASS,
-        className,
-      )}
-    >
-      <SessionPreviewPane
+    <ScaleToFitTerminal testId={`${testIdPrefix}-fit`} className={className} fit={fit}>
+      <StaticTerminalPlate
         sessionName={sessionName}
         lines={lines}
-        variant="compact-terminal"
-        testIdPrefix={`${testIdPrefix}-preview`}
+        plateTestId={`${testIdPrefix}-static`}
+        previewTestIdPrefix={`${testIdPrefix}-preview`}
+        onClick={goLive}
+        ariaLabel={`Make ${sessionName} terminal live (typeable)`}
+        title="Click to go live (typeable)"
       />
-    </button>
+    </ScaleToFitTerminal>
   );
 }

@@ -41,7 +41,7 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
     );
     const staticBtn = screen.getByTestId("t-static");
     // the bare-surface static view carries its OWN smoked-glass plate (FR-4) ...
-    expect(staticBtn.className).toContain("bg-stone-950/60");
+    expect(staticBtn.className).toContain("bg-stone-950/85");
     expect(staticBtn.className).toContain("backdrop-blur-sm");
     // ... and is BORDERLESS (FR-2 floating plate, not a bordered box)
     expect(staticBtn.className).not.toContain("border");
@@ -51,12 +51,18 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
 
   it("FR-1: the LIVE terminal keeps an opaque xterm render surface so erase/redraw is cursor-safe", () => {
     const s = src("../src/components/terminal/FocusedTerminal.tsx");
-    expect(s).toContain('const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09"');
-    expect(s).toContain("const LIVE_TERMINAL_COLS = 120");
-    expect(s).toContain("const LIVE_TERMINAL_ROWS = 40");
+    // OPR.0.4.0.39: the geometry constants moved to terminal-geometry.ts (the single
+    // source of truth shared by the static<->live mirror). FocusedTerminal imports +
+    // uses them; the opaque / 90x27 / lineHeight-1 contract is unchanged.
+    const geo = src("../src/components/terminal/terminal-geometry.ts");
+    expect(geo).toContain('export const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09"');
+    expect(geo).toContain("export const LIVE_TERMINAL_COLS = 90");
+    expect(geo).toContain("export const LIVE_TERMINAL_ROWS = 27");
+    expect(geo).toContain("export const LIVE_TERMINAL_LINE_HEIGHT = 1");
+    expect(s).toContain('from "./terminal-geometry.js"');
     expect(s).toContain("cols: LIVE_TERMINAL_COLS");
     expect(s).toContain("rows: LIVE_TERMINAL_ROWS");
-    expect(s).toContain("lineHeight: 1");
+    expect(s).toContain("lineHeight: LIVE_TERMINAL_LINE_HEIGHT");
     expect(s).toContain("applyOpaqueTerminalBackground(containerRef.current!)");
     expect(s).toContain("scrollTerminalViewportToPrompt(containerRef.current!)");
     expect(s).toContain("term.scrollToBottom();");
@@ -72,20 +78,61 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
     expect(s).toContain('foreground: "#e0e0e0"'); // text stays OPAQUE (AC-4 legibility)
   });
 
-  it("FR-3/FR-4: the popover sets the measured LIVE width + drops its redundant opaque bg", () => {
+  it("OPR.0.4.0.39 (founder spec): the popover sizes to the canonical geometry (w-max shell, LIVE_TERMINAL_COLS-ch inner), no hardcoded plate width, no redundant opaque bg", () => {
     const s = src("../src/components/topology/TerminalPreviewPopover.tsx");
-    expect(s).toContain("w-[880px]"); // the LIVE inner sizer (optimal width)
-    // OPR.0.4.0.1 (rev1-r2 fix): the shell widens to fit the 880px live plate so
-    // overflow-hidden no longer clips it (the prior fixed compact shell did).
-    expect(s).toContain("w-[904px]");
-    expect(s).not.toContain("w-[820px]");
-    expect(s).not.toContain("bg-stone-950/65"); // dropped -> live wrapper supplies the plate
+    // The shell sizes to its content (w-max) and the inner is the canonical geometry
+    // width (LIVE_TERMINAL_COLS ch) - tracks the column count, no reshape, no loose
+    // empty width, no hardcoded 880/904 plate.
+    expect(s).toContain("w-max");
+    expect(s).toContain("LIVE_TERMINAL_COLS");
+    expect(s).not.toContain("w-[880px]");
+    expect(s).not.toContain("w-[904px]");
+    expect(s).not.toContain("bg-stone-950/65"); // live wrapper supplies the plate
     expect(s).toContain("backdrop-blur-sm");
   });
 
-  it("FR-5: the topology grid card mounts the TerminalPreviewPopover trigger, NOT a live-in-place ProgressiveTerminal", () => {
+  it("OPR.0.4.0.39 (founder spec, REVERSES slice-01 FR-5): the topology grid card mounts the in-place ProgressiveTerminal, NOT the TerminalPreviewPopover trigger", () => {
+    // Founder live-review reversed the popover-expand-out for the grid (and all
+    // surfaces): the static IS the in-place click-to-live target.
     const s = src("../src/components/topology/TopologyTerminalView.tsx");
-    expect(s).toContain("TerminalPreviewPopover");
-    expect(s).not.toContain('import { ProgressiveTerminal }');
+    expect(s).toContain("import { ProgressiveTerminal }");
+    expect(s).not.toContain("TerminalPreviewPopover");
+  });
+
+  it("OPR.0.4.0.39 (node-detail fit): ScaleToFitTerminal has a 'contain' mode (fill both axes, capped upscale, centered) that the node-detail panel opts into; the grid keeps fit-width", () => {
+    const scaler = src("../src/components/terminal/ScaleToFitTerminal.tsx");
+    // contain fits BOTH axes (min of width/height ratios), allows a CAPPED upscale,
+    // and centers - so a big dedicated panel is filled, not left small top-left.
+    expect(scaler).toContain('fit?: "width" | "contain"');
+    expect(scaler).toContain("MAX_CONTAIN_SCALE");
+    expect(scaler).toContain("availableHeight / naturalHeight");
+    expect(scaler).toContain("items-center justify-center");
+    // ProgressiveTerminal forwards `fit` to BOTH the static + live scalers (mirror).
+    const prog = src("../src/components/terminal/ProgressiveTerminal.tsx");
+    expect(prog).toContain('fit?: "width" | "contain"');
+    expect((prog.match(/fit=\{fit\}/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // The node-detail panel (big 500px area) opts into contain; the grid does NOT
+    // (it keeps the default fit-width so cells never upscale).
+    expect(src("../src/components/LiveNodeDetails.tsx")).toContain('fit="contain"');
+    expect(src("../src/components/topology/TopologyTerminalView.tsx")).not.toContain('fit="contain"');
+  });
+
+  it("OPR.0.4.0.39 (selection fix #6023): the LIVE xterm scales via fontSize, NOT a CSS transform, so xterm selection/click hit-testing stays native-correct", () => {
+    const focused = src("../src/components/terminal/FocusedTerminal.tsx");
+    // FocusedTerminal sizes the live xterm by SETTING term fontSize to fit its
+    // container (no CSS transform on the xterm) - the maintainer-blessed fix for #6023.
+    expect(focused).toContain('fit?: "natural" | "width" | "contain"');
+    expect(focused).toContain("options.fontSize");
+    expect(focused).toContain("MAX_FIT_UPSCALE");
+    expect(focused).toContain("#6023");
+    // The live xterm must NOT be CSS-transform-scaled (that's what breaks selection).
+    expect(focused).not.toContain("transform: `scale");
+    expect(focused).not.toContain("transformOrigin");
+    // ProgressiveTerminal's LIVE branch renders FocusedTerminal with fit (fontSize),
+    // NOT wrapped in the transform-based ScaleToFitTerminal (static plate only).
+    const prog = src("../src/components/terminal/ProgressiveTerminal.tsx");
+    expect(prog).toContain("<FocusedTerminal sessionName={sessionName} fit={fit}");
+    // ScaleToFitTerminal (CSS transform) is still imported + used - for the STATIC plate.
+    expect(prog).toContain("ScaleToFitTerminal");
   });
 });
