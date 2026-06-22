@@ -1,5 +1,4 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
 import "@xterm/xterm/css/xterm.css";
@@ -34,6 +33,8 @@ const ESCAPE_SEQ_MAP: Record<string, string> = {
 };
 
 const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09";
+const LIVE_TERMINAL_COLS = 120;
+const LIVE_TERMINAL_ROWS = 40;
 
 type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
 
@@ -92,6 +93,28 @@ export function applyOpaqueTerminalBackground(container: HTMLElement): void {
   }
 }
 
+export function scrollTerminalViewportToPrompt(container: HTMLElement): void {
+  const scroll = () => {
+    const cursor = container.querySelector<HTMLElement>("textarea.xterm-helper-textarea");
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (!cursor) {
+      container.scrollTop = maxScrollTop;
+      return;
+    }
+
+    const parsedCursorTop = Number.parseFloat(cursor.style.top);
+    const cursorTop = Number.isFinite(parsedCursorTop) ? parsedCursorTop : cursor.offsetTop;
+    const lineHeight = cursor.offsetHeight || 14;
+    const cursorBottom = cursorTop + lineHeight;
+    const desiredScrollTop = cursorBottom - container.clientHeight + lineHeight * 3;
+    container.scrollTop = Math.min(maxScrollTop, Math.max(0, desiredScrollTop));
+  };
+
+  scroll();
+  window.requestAnimationFrame(scroll);
+  window.setTimeout(scroll, 50);
+}
+
 interface FocusedTerminalProps {
   sessionName: string;
   daemonBaseUrl?: string;
@@ -101,17 +124,25 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const fitAddonRef = useRef<unknown>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
+  const promptScrollUntilRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
 
   const disposeTerminal = useCallback(() => {
     const term = termRef.current as { dispose(): void } | null;
     term?.dispose();
     termRef.current = null;
-    fitAddonRef.current = null;
+  }, []);
+
+  const scrollLiveTerminalToPrompt = useCallback((term: { scrollToBottom(): void } | null) => {
+    if (term) {
+      term.scrollToBottom();
+    }
+    if (containerRef.current) {
+      scrollTerminalViewportToPrompt(containerRef.current);
+    }
   }, []);
 
   const connectForGeneration = useCallback((gen: number) => {
@@ -123,19 +154,21 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
     ws.onopen = () => {
       if (generationRef.current !== gen) { ws.close(); return; }
-      // OPR.0.4.0.38 FR-7: fit the CONTAINER for scroll/pan only; do NOT send a
-      // resize. The daemon broker owns fixed canonical geometry (120x40) shared
-      // across every viewer - a client-driven resize would shrink the shared
-      // pane for everyone else. The seed arrives from the broker on attach.
-      const fitAddon = fitAddonRef.current as { fit(): void } | null;
-      fitAddon?.fit();
+      // The daemon broker owns fixed canonical geometry (120x40). The client
+      // must keep the same grid and let the UI scroll/pan smaller surfaces.
+      promptScrollUntilRef.current = Date.now() + 2500;
+      const term = termRef.current as { scrollToBottom(): void } | null;
+      scrollLiveTerminalToPrompt(term);
     };
 
     ws.onmessage = (evt) => {
       if (generationRef.current !== gen) return;
-      const term = termRef.current as { write(data: string): void } | null;
+      const term = termRef.current as { write(data: string): void; scrollToBottom(): void } | null;
       if (typeof evt.data === "string" && term) {
         term.write(evt.data);
+        if (Date.now() <= promptScrollUntilRef.current) {
+          scrollLiveTerminalToPrompt(term);
+        }
       }
     };
 
@@ -160,7 +193,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
     wsRef.current = ws;
     return ws;
-  }, [sessionName, daemonBaseUrl, disposeTerminal]);
+  }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -168,7 +201,6 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     generationRef.current++;
     const currentGen = generationRef.current;
     let cleanedUp = false;
-    let resizeObs: ResizeObserver | undefined;
 
     (async () => {
       try {
@@ -176,7 +208,10 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
 
         const term = new Terminal({
           cursorBlink: true,
+          cols: LIVE_TERMINAL_COLS,
+          rows: LIVE_TERMINAL_ROWS,
           fontSize: 12,
+          lineHeight: 1,
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
           // xterm erase/redraw needs an opaque cell background. A translucent
           // xterm render surface lets old TUI cells bleed through after clear
@@ -186,16 +221,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
           allowProposedApi: true,
         });
 
-        const fitAddon = new FitAddon();
-        term.loadAddon(fitAddon);
         term.open(containerRef.current!);
         // Some xterm DOM layers do not inherit the theme background. Pin every
         // render layer opaque so clear/erase operations actually erase.
         applyOpaqueTerminalBackground(containerRef.current!);
-        fitAddon.fit();
         term.focus();
+        promptScrollUntilRef.current = Date.now() + 2500;
+        scrollTerminalViewportToPrompt(containerRef.current!);
         termRef.current = term;
-        fitAddonRef.current = fitAddon;
 
         term.onData((data: string) => {
           const wsc = wsRef.current;
@@ -207,13 +240,10 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
         });
 
         // OPR.0.4.0.38 FR-7: no term.onResize -> ws resize relay. The pane
-        // geometry is fixed daemon-side; the client only fits its container
-        // viewport (scroll/pan) and never asks the pane to resize.
+        // geometry is fixed daemon-side; the client grid matches it exactly
+        // and never asks the pane to resize.
 
         connectForGeneration(currentGen);
-
-        resizeObs = new ResizeObserver(() => { fitAddon.fit(); });
-        resizeObs.observe(containerRef.current!);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Terminal initialization failed");
       }
@@ -224,7 +254,6 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
       mountedRef.current = false;
       generationRef.current++;
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
-      resizeObs?.disconnect();
       const activeWs = wsRef.current;
       if (activeWs) { activeWs.close(); wsRef.current = null; }
       disposeTerminal();
@@ -250,7 +279,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
       key={`focused-terminal-live-${sessionName}`}
       ref={containerRef}
       data-testid={`focused-terminal-${sessionName}`}
-      className="h-full w-full min-h-[200px] bg-stone-950/60 backdrop-blur-sm"
+      className="h-full w-full min-h-[200px] overflow-auto bg-stone-950/60 backdrop-blur-sm"
     />
   );
 }

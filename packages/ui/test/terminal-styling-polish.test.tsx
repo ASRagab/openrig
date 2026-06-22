@@ -52,10 +52,22 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
   it("FR-1: the LIVE terminal keeps an opaque xterm render surface so erase/redraw is cursor-safe", () => {
     const s = src("../src/components/terminal/FocusedTerminal.tsx");
     expect(s).toContain('const LIVE_TERMINAL_RENDER_BACKGROUND = "#0c0a09"');
+    expect(s).toContain("const LIVE_TERMINAL_COLS = 120");
+    expect(s).toContain("const LIVE_TERMINAL_ROWS = 40");
+    expect(s).toContain("cols: LIVE_TERMINAL_COLS");
+    expect(s).toContain("rows: LIVE_TERMINAL_ROWS");
+    expect(s).toContain("lineHeight: 1");
     expect(s).toContain("applyOpaqueTerminalBackground(containerRef.current!)");
+    expect(s).toContain("scrollTerminalViewportToPrompt(containerRef.current!)");
+    expect(s).toContain("term.scrollToBottom();");
+    expect(s).toContain('querySelector<HTMLElement>("textarea.xterm-helper-textarea")');
+    expect(s).toContain("const desiredScrollTop = cursorBottom - container.clientHeight + lineHeight * 3");
+    expect(s).toContain("container.scrollTop = Math.min(maxScrollTop, Math.max(0, desiredScrollTop))");
     expect(s).toContain("term.focus();");
     expect(s).toContain("allowTransparency: false");
     expect(s).not.toContain("allowTransparency: true");
+    expect(s).not.toContain("FitAddon");
+    expect(s).not.toContain("fitAddon.fit");
     expect(s).not.toContain('background: "rgba(0,0,0,0)"');
     expect(s).toContain('foreground: "#e0e0e0"'); // text stays OPAQUE (AC-4 legibility)
   });
