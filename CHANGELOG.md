@@ -23,7 +23,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 Five read-commands flip from firehose-by-default to compact-by-default — closes a ~225,000-token aggregate context-window cost on aged hosts.
 
-- **`rig ps`** — compact TL;DR per node (slice 25); `--full` for v0.3.4 shape; `--rig <name>` / `--session <sess>` filters. Daemon-side payload source-dedup (slice 26): `recoveryGuidance` no longer duplicated per-node; `contextUsage` compact in list payload.
+- **`rig ps`** — compact TL;DR per node (slice 25); `--full` for v0.3.4 shape; `--rig <name>` / `--session <sess>` filters. **Slice 34** breadth default flipped to current-rig (derived from `OPENRIG_SESSION_NAME`'s `@<rig>` suffix); `-A`/`--all-rigs` for fleet breadth; all-states default preserved (topology/readiness signal, unlike queue-list); `--full` JSON now emits `resumeTokenPresent` boolean instead of the resume-token value (security fix). Daemon-side payload source-dedup (slice 26): `recoveryGuidance` no longer duplicated per-node; `contextUsage` compact in list payload.
 - **`rig whoami`** — compact identity-recovery essentials by default (~192 tokens vs ~909); `--full` (alias `--verbose`) returns v0.3.4 payload. Allowlist projection — future fields default to `--full`.
 - **`rig queue list`** — docker / kubectl grammar (slices 28 + 32): `-a` for history, `-A` for cross-rig breadth, `-o json|wide` for encoding, `--mine` / `--source` / `--destination` for scope. Default is active + compact + current-rig.
 - **`rig restore-check`** — summary counts + not-ready seats only by default (slice 29); `--full` for complete per-seat detail. Closes the largest measured bomb (~79,000 → low thousands).
@@ -38,7 +38,9 @@ Five read-commands flip from firehose-by-default to compact-by-default — close
 
 ### UI + Topology + Identity
 
-- Real (interactive) terminals (slice 01) — per-seat terminals are interactive; read-only 3-second snapshot view retired for local-host seats.
+- Real (interactive) terminals (slice 01) — per-seat terminals are interactive; read-only 3-second snapshot view retired for local-host seats. Global `LiveTerminalRegistry` caps concurrently-live terminals (`ui.terminal.max_live_terminals` config); `LiveTerminalProvider` + `ProgressiveTerminal` interaction model — live where the user is looking, static smoked-glass thumbnails everywhere else; in-place multi-live in the topology grid; shared smoked-glass styling across focused / popover / grid / node-detail.
+- Real-terminal session broker (slice 38) — release-critical reliability: a daemon-owned `TerminalSessionBroker` keyed by canonical `sessionName` (one tmux pipe-pane per session, N WebSocket subscribers, output fanout, session-level seed + shared scrollback ring, input-owner semantics, honest cleanup). Closes the "second view steals output from the first" failure mode (tmux's one-pipe-pane-per-pane constraint). `terminal-ws` is now a thin broker subscriber. Resize policy = canonical fixed geometry (120×40); subscribers fit/scroll their container, no per-subscriber tmux resize.
+- Unified static/live terminal component (slice 39) — shared `StaticTerminalPlate` + opaque mirror + static line-return fix + 90×27 mirror geometry (fit-to-container projection of the broker's 120×40 live stream); fontSize-scaling for selection on scaled views (not CSS transform); geometry-comment sweep (behavior-neutral).
 - Agent Images library polish (slice 07) — Fork-now + row metadata + nested-failure rendering.
 - Attention / activity detection elite tier (slice 09) — richer `agentActivity` consumption.
 - Topology graph-view ghost render fix (slice 21).
@@ -55,7 +57,7 @@ Five read-commands flip from firehose-by-default to compact-by-default — close
 ### Known Limitations / Carry-Forward
 
 - **Plugin-lineage drift in `openrig-core`** — the openrig-core plugin skill lineage is divergent/stale; full re-sync is OPR.0.4.1.4 (rides 0.4.1). Boot-path layers (canonical + hub cwd) verified current in wrap-gate AC-3 sweep. `rig skill audit` (slice 10) is the runtime mechanism for future drift detection.
-- `rig ps --current-rig` default (slice 34) pushed to 0.4.1. (Slice 35 — `rig scope` stage / verified / reconcile verbs — was RESTORED to 0.4.0 by founder direction during the wrap; see New Top-Level CLI Verbs section above.)
+- All earlier "PUSHED to 0.4.1" carry-forwards from the original wrap-gate were RESTORED to 0.4.0 during the wrap: slice 34 (`rig ps` current-rig default + `-A`/`--all-rigs` + `resumeTokenPresent`) landed — see Token-Efficient Defaults; slice 35 (`rig scope` stage/verified/reconcile) landed — see New Top-Level CLI Verbs. Real-terminal-related slices 38 + 39 also shipped via founder live-dogfood forward-fix authorization 2026-06-21. Nothing of substance carries forward to 0.4.1 from the original wrap-gate set.
 
 ### What To STOP Using
 

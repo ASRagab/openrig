@@ -435,20 +435,27 @@ honestly and the UI exposes a one-click open-missing affordance.
 
 v0.4.0 flips the five most frequently invoked read-commands from firehose-by-default to compact-by-default, and `rig queue list` adopts the docker / kubectl read-command grammar. **All defaults preserve breadth and capability — the firehose is one explicit flag away.**
 
-### `rig ps` — compact-by-default + `--full`
+### `rig ps` — current-rig default + compact-by-default + `-A`/`--all-rigs` + `--full`
 
 ```bash
-rig ps                      # compact rig summaries (default)
-rig ps --json               # compact array (TL;DR per node: session, rig, activity, assigned/pending)
-rig ps --nodes              # compact node inventory
-rig ps --nodes --full       # complete record (the v0.3.4 default shape)
-rig ps --nodes --rig <name> # narrow to one rig
+rig ps                      # CURRENT-RIG, all-states, compact rig summaries (default)
+rig ps --json               # compact JSON array (TL;DR per node: session, rig, activity, assigned/pending, resumeTokenPresent boolean)
+rig ps -A                   # all-rigs (fleet breadth; was the v0.3.4 default)
+rig ps --rig <name>         # explicit-rig (overrides current-rig default)
+rig ps --nodes              # compact node inventory (current rig)
+rig ps --nodes -A           # cross-rig node inventory (was v0.3.4 default)
+rig ps --nodes --full       # complete record (the v0.3.4 per-node default shape; resumeToken VALUE retained here for downstream consumers)
 rig ps --nodes --session <sess>  # narrow to one canonical session
+rig ps --active             # opt-in active-state filter (does NOT change the all-states default — ps surfaces topology/readiness, where stopped/recoverable/attention IS the actionable signal)
 ```
 
-Same breadth as v0.3.4 — all visible nodes still listed. The change is **projection-trim, not scope-narrowing**. Default emits the 80/20 a status glance needs; `--full` returns the complete per-node record (raw byte-equivalent passthrough). Daemon-side payload source-dedup (slice 26) means `recoveryGuidance` is no longer duplicated per-node (relocated to a top-level guidance-by-reference map) — even `--full` benefits.
+**v0.4.0 breadth + projection changes**:
+- **Slice 34**: default breadth is CURRENT-RIG (derived from `OPENRIG_SESSION_NAME`'s `@<rig>` suffix), not all-rigs. `-A` / `--all-rigs` widens to fleet. Matches the `rig queue list -A` pattern.
+- **Slice 25 + 26**: per-node TL;DR projection (compact) is the default; `--full` returns the raw byte-equivalent passthrough. Daemon-side `recoveryGuidance` relocated to a guidance-by-reference map (no longer duplicated per-node) — even `--full` benefits.
+- **All-states stays default** (different from `rig queue list` which defaults to active-only) — for `ps`, non-running states ARE often the actionable signal.
+- **Resume-token security (slice 34)**: `--full` JSON emits `resumeTokenPresent` (boolean) — the actual `resumeToken` value also remains in `--full` for downstream consumers that legitimately need it, but the compact default never carries it (an orch glance never accidentally leaks token material).
 
-**STOP using `rig ps --nodes --json` as the casual status check assuming the v0.3.4 shape.** The v0.4.0 default IS the casual check; explicit `--full` is the firehose. The ~77,000-token status-glance incident is closed.
+**STOP using `rig ps --nodes --json` as a fleet-wide casual status check assuming the v0.3.4 shape.** The v0.4.0 default is CURRENT-RIG + compact; explicit `-A --full` is the fleet firehose. The ~77,000-token status-glance incident is closed twice over (compact + scope).
 
 ### `rig whoami` — compact-by-default + `--full` (`--verbose` alias)
 
