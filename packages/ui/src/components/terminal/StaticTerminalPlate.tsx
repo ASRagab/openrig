@@ -72,7 +72,7 @@ export function StaticTerminalPlate({
         aria-label={ariaLabel}
         title={title}
         onClick={onClick}
-        // OPR.0.4.0.39: w-max - the plate sizes to its fixed 120-col content (not
+        // OPR.0.4.0.39: w-max - the plate sizes to its fixed 90-col content (not
         // fill), so the shared ScaleToFitTerminal can measure the natural width and
         // scale the whole block to the column (the static<->live geometry mirror).
         className={cn("block w-max cursor-pointer text-left", SMOKED_STATIC_PLATE_CLASS, className)}

@@ -74,9 +74,9 @@ export interface BrokerOptions {
   pollMs?: number;
   /** Session-liveness probe interval (ms). Default 2000. */
   livenessMs?: number;
-  /** Canonical pane width. Default 90. */
+  /** Canonical pane width. Default CANONICAL_COLS (90). */
   cols?: number;
-  /** Canonical pane height. Default 40. */
+  /** Canonical pane height. Default CANONICAL_ROWS (27). */
   rows?: number;
   /** Bounded size of the recent-output history ring in bytes. Default 64KB. */
   maxHistoryBytes?: number;

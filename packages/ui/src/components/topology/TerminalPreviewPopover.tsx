@@ -116,7 +116,7 @@ export function TerminalPreviewPopover({
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
-  // OPR.0.4.0.39 (founder spec): static and live are the SAME 120x40 mirror (same
+  // OPR.0.4.0.39 (founder spec): static and live are the SAME 90x27 mirror (same
   // size, same place) via ProgressiveTerminal -> ScaleToFitTerminal, so the popover
   // no longer reshapes on go-live. The old compact-static -> wide-live grow was the
   // "separately shaped, different location" the founder flagged; now the shell holds
@@ -238,7 +238,7 @@ export function TerminalPreviewPopover({
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* OPR.0.4.0.39: the popover holds the full 120-col terminal width (~880px at
+      {/* OPR.0.4.0.39: the popover holds the full 90-col terminal width (~650px at
           fontSize 12 ui-monospace, the broker's canonical geometry) for BOTH the
           static and the live state. ProgressiveTerminal renders the static smoked-
           glass mirror or the opaque live xterm at the SAME size in place (no reshape).

@@ -76,14 +76,14 @@ export function ProgressiveTerminal({
     return () => live.release(terminalKey);
   }, [mode, live, terminalKey]);
 
-  // OPR.0.4.0.39 (founder spec): static and live are the SAME 120x40 geometry, both
+  // OPR.0.4.0.39 (founder spec): static and live are the SAME 90x27 geometry, both
   // wrapped in the shared ScaleToFitTerminal so they scale identically to the column
   // (fit-width, never clip). The glass->opaque flip on click is the only change - the
   // live xterm appears at the same size in the same place (the mirror).
   if (mode === "live") {
     return (
       <ScaleToFitTerminal testId={`${testIdPrefix}-fit`} className={className} fit={fit}>
-        {/* The live div sizes to the xterm's natural 90x40 geometry (FocusedTerminal
+        {/* The live div sizes to the xterm's natural 90x27 geometry (FocusedTerminal
             is w-max); ScaleToFitTerminal scales it to the cell, matching the static
             plate exactly - the glass->opaque flip stays the same size in place. */}
         <div data-testid={`${testIdPrefix}-live`}>
@@ -95,7 +95,7 @@ export function ProgressiveTerminal({
 
   // Static default: the whole preview is the click target to go live. The shared
   // StaticTerminalPlate carries the translucent smoked-GLASS plate + transparent
-  // compact content at the 120-col geometry (FR-1/FR-2); clicking flips it to the
+  // compact content at the 90-col geometry (FR-1/FR-2); clicking flips it to the
   // OPAQUE #0c0a09 live xterm in place - the glass->opaque activation affordance.
   return (
     <ScaleToFitTerminal testId={`${testIdPrefix}-fit`} className={className} fit={fit}>

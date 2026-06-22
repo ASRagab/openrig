@@ -2,8 +2,8 @@
 //
 // Founder spec (spec-dev2-authored-2026-06-22): the static (polling-preview) and the
 // live (interactive xterm) terminals are THE SAME shape - the optimal Claude/Codex
-// CLI geometry, which is the live xterm's pinned 120x40 at fontSize 12 / lineHeight 1.
-// The static plate renders at this exact font + 120-col width so it mirrors the live;
+// CLI geometry, which is the live xterm's pinned 90x27 at fontSize 12 / lineHeight 1.
+// The static plate renders at this exact font + 90-col width so it mirrors the live;
 // ScaleToFitTerminal scales both identically to the column. Only glass (static) vs
 // opaque (live) differs.
 //

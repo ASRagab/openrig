@@ -90,7 +90,7 @@ function TokenMetric({ seat }: { seat: NodeInventoryEntry }) {
 // target -- there is NO separate expand-out popover trigger and NO white card
 // wrapper (too contrasty with the terminal). The static renders translucent smoked-
 // GLASS; clicking flips it to the OPAQUE #0c0a09 live xterm in place (the activation
-// affordance). The live xterm scrolls/pans within the cell (38 pins 120x40 +
+// affordance). The live xterm scrolls/pans within the cell (38 pins 90x27 +
 // overflow-auto) -- fine; the grid is a scan-and-click-to-intervene view, not for
 // long sessions. The global live cap binds on go-live (shared LiveTerminalProvider).
 // FR-3: origin-top-left + a per-breakpoint CSS scale-down (xl:scale-90 starting
@@ -127,8 +127,8 @@ function SeatTerminalCard({ seat }: { seat: NodeInventoryEntry }) {
       </header>
       {/* OPR.0.4.0.39 FR-1/FR-3/FR-6 (founder spec): ProgressiveTerminal IS the
           in-place click-to-live target (static smoked-glass -> click -> opaque live
-          xterm at the SAME 120x40 geometry, same place). It wraps both states in the
-          shared ScaleToFitTerminal, which measures the fixed 120-col block and scales
+          xterm at the SAME 90x27 geometry, same place). It wraps both states in the
+          shared ScaleToFitTerminal, which measures the fixed 90-col block and scales
           it to fit the cell width (fit-width, never clip - no hardcoded per-breakpoint
           scale). No separate popover trigger. */}
       <ProgressiveTerminal
@@ -182,7 +182,7 @@ function TerminalGrid({
         ) : null}
       </div>
       {/* OPR.0.4.0.39 FR-2 (founder: 2 columns MAXIMUM): 1-col narrow / 2-col wider.
-          3-col was dropped - at 3-across the scaled 120-col terminal is too small to
+          3-col was dropped - at 3-across the scaled 90-col terminal is too small to
           read; 2-col keeps each cell wide enough for legible terminals. */}
       <div className="grid gap-2 grid-cols-1 md:grid-cols-2">
         {visible.map((seat) => (
