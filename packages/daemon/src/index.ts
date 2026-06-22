@@ -4,6 +4,9 @@ import { createDaemon } from "./startup.js";
 import {
   assertBindAuthInvariant,
   detectTailscaleInterface,
+  isLoopbackBind,
+  isTailscaleBind,
+  resolveToIpOrNull,
 } from "./middleware/auth-bearer-token.js";
 
 /** OPR.0.3.4.9 — extracted for testability. Starts the periodic snapshot
@@ -23,6 +26,16 @@ export function startPeriodicSnapshotScheduler(deps: {
   deps.psProjectionService.setPeriodicSnapshotState(true, intervalS);
 }
 
+async function isTrustedLocalOrTailnetBind(host: string): Promise<boolean> {
+  if (isLoopbackBind(host)) return true;
+  if (isTailscaleBind(host)) return true;
+  if (!/^[\d.]+$/.test(host) && !host.includes(":")) {
+    const resolvedIp = await resolveToIpOrNull(host);
+    if (resolvedIp) return isLoopbackBind(resolvedIp) || isTailscaleBind(resolvedIp);
+  }
+  return false;
+}
+
 export async function startServer(port?: number) {
   const p = port ?? parseInt(readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT") ?? "7433", 10);
   const dbPath = readOpenRigEnv("OPENRIG_DB", "RIGGED_DB") ?? "openrig.sqlite";
@@ -39,10 +52,15 @@ export async function startServer(port?: number) {
   const bearerToken = process.env.OPENRIG_AUTH_BEARER_TOKEN ?? null;
 
   let bindHosts: string[];
+  const terminalTokenEnv = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
+  let terminalBearerToken: string | null = terminalTokenEnv || null;
   if (explicitHost) {
     // Operator opt-in path — invariant enforces bearer requirement for
     // genuinely public/LAN binds; loopback/tailscale binds short-circuit.
     await assertBindAuthInvariant({ host: explicitHost, bearerToken });
+    if (!terminalBearerToken && !(await isTrustedLocalOrTailnetBind(explicitHost))) {
+      terminalBearerToken = bearerToken;
+    }
     bindHosts = [explicitHost];
   } else {
     // Default path — loopback always, plus tailscale auto-add when active.
@@ -50,7 +68,11 @@ export async function startServer(port?: number) {
     bindHosts = tailscaleIp ? ["127.0.0.1", tailscaleIp] : ["127.0.0.1"];
   }
 
-  const { app, contextMonitor, deps, injectWebSocket } = await createDaemon({ dbPath, bearerToken });
+  const { app, contextMonitor, deps, injectWebSocket } = await createDaemon({
+    dbPath,
+    bearerToken,
+    terminalBearerToken,
+  });
 
   // Multi-bind via N serve() instances sharing the same Hono app.
   // Hono's serve() targets a single host:port; for multi-bind we spawn

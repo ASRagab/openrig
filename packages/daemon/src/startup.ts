@@ -168,6 +168,13 @@ interface DaemonOptions {
    * comparison + 401 on missing/mismatch.
    */
   bearerToken?: string | null;
+  /**
+   * Terminal bearer token for live-terminal routes. Null means the
+   * daemon bind posture is already trusted (loopback/tailnet), matching
+   * the Mission Control auth boundary. Non-null enforces bearer auth on
+   * terminal preview/transport/websocket routes.
+   */
+  terminalBearerToken?: string | null;
 }
 
 interface DaemonResult {
@@ -1032,26 +1039,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     deps.missionControlBearerToken = opts?.bearerToken ?? null;
 
     const terminalTokenEnv = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
-    if (terminalTokenEnv) {
-      deps.terminalBearerToken = terminalTokenEnv;
-    } else {
-      const { randomBytes } = await import("node:crypto");
-      const nodePath = await import("node:path");
-      const nodeFs = await import("node:fs");
-      const homeDir = process.env.OPENRIG_HOME ?? nodePath.default.join(process.env.HOME ?? "", ".openrig");
-      const tokenPath = nodePath.default.join(homeDir, "terminal-token");
-      try {
-        const existing = nodeFs.default.readFileSync(tokenPath, "utf-8").trim();
-        if (existing) { deps.terminalBearerToken = existing; }
-      } catch {}
-      if (!deps.terminalBearerToken) {
-        deps.terminalBearerToken = randomBytes(32).toString("hex");
-        try {
-          nodeFs.default.mkdirSync(homeDir, { recursive: true });
-          nodeFs.default.writeFileSync(tokenPath, deps.terminalBearerToken, { mode: 0o600 });
-        } catch {}
-      }
-    }
+    deps.terminalBearerToken =
+      opts && Object.prototype.hasOwnProperty.call(opts, "terminalBearerToken")
+        ? opts.terminalBearerToken ?? null
+        : terminalTokenEnv || null;
 
     // Notification dispatcher: chosen mechanism via env config.
     // OPENRIG_NOTIFICATIONS_MECHANISM=ntfy|webhook|none (default none).

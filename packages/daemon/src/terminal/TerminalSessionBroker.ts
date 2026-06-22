@@ -116,6 +116,28 @@ export function screenSnapshotEscape(
 }
 
 /**
+ * Raw pipe output from a full-screen TUI is a repaint stream, not durable
+ * scrollback. Replaying cursor-addressed history into a fresh xterm before the
+ * current snapshot causes stale prompt/status rows to appear above or under the
+ * real screen. Preserve the AC-5 shared-history behavior for plain line output
+ * (and simple SGR color), but skip history that contains cursor movement,
+ * erase, alternate-screen, OSC, or carriage-return repaint semantics.
+ */
+export function isSafeHistoryReplay(data: string): boolean {
+  if (!data) return false;
+  if (/\r(?!\n)/.test(data)) return false;
+
+  const escapePattern = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[\(\)][ -~]|[@-Z\\-_])/g;
+  let match: RegExpExecArray | null;
+  while ((match = escapePattern.exec(data)) !== null) {
+    const sequence = match[0];
+    const final = sequence.at(-1);
+    if (final !== "m") return false;
+  }
+  return true;
+}
+
+/**
  * One broker per live tmux session. Owns a single pipe-pane and fans its output
  * out to every attached subscriber.
  */
@@ -319,13 +341,14 @@ export class TerminalSessionBroker {
   private async seed(sub: TerminalSubscriber): Promise<void> {
     // AC-5: replay the broker-owned recent-output ring FIRST so the late
     // subscriber's xterm builds the same scrollback the earlier subscribers
-    // have (raw bytes write into xterm's scrollback). The visible-screen seed
-    // then paints a cursor-correct current screen on top - screenSnapshotEscape
-    // opens with ESC[2J, which clears only the VISIBLE viewport, NOT the
-    // scrollback, so the recent scrolled-off output is preserved above. The
-    // first subscriber's ring is empty, so it gets only the visible seed.
+    // have for plain terminal streams. Cursor-addressed TUI repaint history is
+    // not scrollback; replaying it corrupts late subscribers, so those sessions
+    // seed from the current visible-screen snapshot only.
     if (this.historyBytes > 0) {
-      try { sub.send(this.history.join("")); } catch { /* dead subscriber */ }
+      const history = this.history.join("");
+      if (isSafeHistoryReplay(history)) {
+        try { sub.send(history); } catch { /* dead subscriber */ }
+      }
     }
     // Best-effort: a failed capture (or an adapter without the seed methods)
     // must never break the attach - the tail still streams live output.

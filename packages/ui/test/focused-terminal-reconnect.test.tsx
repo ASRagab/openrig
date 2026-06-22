@@ -40,6 +40,11 @@ vi.mock("@xterm/xterm", () => ({
     write(data: string) { terminalWrites.push(data); }
     onData(_cb: (data: string) => void) {}
     onResize(_cb: (size: { cols: number; rows: number }) => void) {}
+    // The real xterm Terminal exposes focus() + scrollToBottom(); FocusedTerminal
+    // calls both (focus on open, scrollToBottom in the scroll-to-prompt path).
+    // Stub them so the component's setup does not throw in the mock.
+    focus() {}
+    scrollToBottom() {}
     dispose() {
       terminalDisposeCount++;
       this.child?.remove();

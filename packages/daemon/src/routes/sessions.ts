@@ -31,7 +31,7 @@ import { validateResumeToken } from "../domain/resume-token-validation.js";
 
 function terminalAuthGuard(): MiddlewareHandler {
   return async (c, next) => {
-    const token = c.get("terminalBearerToken" as never) as string | null;
+    const token = (c.get("terminalBearerToken" as never) as string | null | undefined) ?? null;
     const mw = authBearerTokenMiddleware({ expectedToken: token });
     return mw(c, next);
   };

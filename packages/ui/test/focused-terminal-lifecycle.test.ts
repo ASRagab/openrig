@@ -21,8 +21,12 @@ describe("FocusedTerminal lifecycle", () => {
     // The broker owns fixed canonical geometry; the client must NOT send a
     // resize (it would shrink the shared pane for every other viewer).
     expect(src).not.toMatch(/type:\s*["']resize["']/);
-    // FitAddon still fits the CONTAINER (scroll/pan), just without a resize relay.
-    expect(src).toContain("fitAddon");
+    // OPR.0.4.0.38 forward-fix: the client now PINS to the broker canonical
+    // geometry (cols=120 rows=40) and scrolls/pans its container - FitAddon was
+    // removed entirely (no container-fit resize-fight), which is the stronger
+    // form of fixed-geometry mirroring.
+    expect(src).not.toContain("FitAddon");
+    expect(src).toContain("cols: LIVE_TERMINAL_COLS");
   });
 
   it("source guard: cleanup closes wsRef.current not local ws", async () => {
@@ -47,7 +51,10 @@ describe("FocusedTerminal lifecycle", () => {
     expect(src).toContain("[disconnected - reconnecting...]");
     expect(src).toContain("mountedRef.current");
     expect(src).toMatch(/setTimeout\(\s*\(\)\s*=>\s*\{/);
-    expect(src).toContain("connect()");
+    // The reconnect schedules connectForGeneration(gen). (The prior
+    // toContain("connect()") was a false-positive match on resizeObs.disconnect()
+    // - now removed with FitAddon - so it is corrected to the real reconnect call.)
+    expect(src).toContain("connectForGeneration(gen)");
   });
 
   it("source guard: cleanup sets mountedRef false and clears reconnect timer", async () => {

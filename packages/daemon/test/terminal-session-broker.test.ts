@@ -438,6 +438,31 @@ describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
     expect(startPipePane).toHaveBeenCalledOnce();
   });
 
+  it("a LATE subscriber skips unsafe TUI repaint history and receives the current screen snapshot", async () => {
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({
+      capturePaneScreen: async () => "CURRENT SCREEN",
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 120, height: 40 }),
+    }), { pollMs: 10 }));
+    const a = makeSub();
+    await broker.attach(a);
+
+    fs.appendFileSync(
+      broker.pipeOutputPath!,
+      "\x1b[2J\x1b[12;1HSTALE TUI PROMPT\x1b[13;1Hoverpainted status",
+    );
+    await vi.waitFor(() => {
+      expect(a.received.join("")).toContain("STALE TUI PROMPT");
+    }, { timeout: 1000 });
+
+    const b = makeSub();
+    await broker.attach(b);
+    const bSeed = b.received.join("");
+
+    expect(bSeed).not.toContain("STALE TUI PROMPT");
+    expect(bSeed).not.toContain("overpainted status");
+    expect(bSeed).toContain("CURRENT SCREEN");
+  });
+
   it("the history ring is bounded under sustained output", async () => {
     const broker = track(new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 5, maxHistoryBytes: 2048 }));
     await broker.attach(makeSub());

@@ -211,9 +211,9 @@ describe("P5.3 ActivityRing and HotPotatoEdge", () => {
     expect(driverPopover.className).toContain("max-w-[calc(100vw-1rem)]");
     expect(driverPopover.className).toContain("max-h-[calc(100vh-1rem)]");
     expect(driverPopover.className).toContain("overflow-hidden");
-    // OPR.0.4.0.1 (FR-4): the popover dropped its redundant bg-stone-950/65 -- the
-    // terminal CONTENT now carries its own smoked-glass tint, so the popover stays
-    // transparent-glassy (backdrop-blur retained) instead of double-tinted opaque.
+    // OPR.0.4.0.1 (FR-4): the popover dropped its redundant bg-stone-950/65; the
+    // live terminal wrapper supplies the smoked plate while xterm's renderer stays
+    // opaque enough for reliable erase/redraw.
     expect(driverPopover.className).not.toContain("bg-stone-950/65");
     expect(driverPopover.className).toContain("font-mono");
     expect(driverPopover.className).toContain("text-[8px]");
