@@ -11,6 +11,15 @@ import {
 } from "./terminal-geometry.js";
 import "@xterm/xterm/css/xterm.css";
 
+// OPR.0.4.0.39 (selection fix): when the live terminal must fit a container, it
+// scales by FONT SIZE, not a CSS transform. xterm's mouse hit-test (text selection,
+// link clicks) divides a post-transform pointer offset by the pre-transform cell
+// size, so a CSS transform:scale ancestor makes selection drift by the scale factor
+// (xterm.js #6023). Scaling via fontSize keeps the cell metrics honest -> native
+// selection. Upscale (contain mode) is capped to keep text crisp (matches
+// ScaleToFitTerminal's MAX_CONTAIN_SCALE).
+const MAX_FIT_UPSCALE = 2;
+
 const SPECIAL_KEY_MAP: Record<string, string> = {
   "\t": "Tab",
   "\r": "Enter",
@@ -122,10 +131,27 @@ export function scrollTerminalViewportToPrompt(container: HTMLElement): void {
 interface FocusedTerminalProps {
   sessionName: string;
   daemonBaseUrl?: string;
+  /**
+   * OPR.0.4.0.39: how the live xterm sizes to its container. "natural" (default) =
+   * render at the native 90x27 size (callers that don't scale, e.g. the feed-card).
+   * "width" = scale DOWN via fontSize to fit the container width (never upscale) -
+   * the grid/graph/table cells. "contain" = fit both axes via fontSize with capped
+   * upscale, centered - the node-detail panel. fontSize-scaling (not CSS transform)
+   * keeps xterm's selection/click hit-testing native-correct (#6023).
+   */
+  fit?: "natural" | "width" | "contain";
 }
 
-export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalProps) {
+export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural" }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
+  // containerRef holds the natural-sized xterm. We measure the wrapper (available)
+  // vs the xterm's natural size (captured once at the base font) and set the xterm
+  // fontSize so 90x27 fits - no CSS transform, so selection stays native-correct.
+  const fitWrapperRef = useRef<HTMLDivElement>(null);
+  const naturalSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,6 +169,32 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     if (wsc && wsc.readyState === WebSocket.OPEN) {
       wsc.send(JSON.stringify({ type: "scroll", offset }));
     }
+  }, []);
+
+  // OPR.0.4.0.39 (selection fix): size the xterm to its container by FONT SIZE (not a
+  // CSS transform, which breaks xterm's mouse/selection coords - #6023). Reads only
+  // refs so it is a stable, dependency-free callback. natural is the xterm's 90x27
+  // pixel size at the base font (captured once); the wrapper is the available space.
+  const applyFontSizeFit = useCallback(() => {
+    const mode = fitRef.current;
+    if (mode === "natural") return;
+    const term = termRef.current as { options: { fontSize: number } } | null;
+    const wrapper = fitWrapperRef.current;
+    const natural = naturalSizeRef.current;
+    if (!term || !wrapper || !natural || natural.w <= 0 || natural.h <= 0) return;
+    const availW = wrapper.clientWidth;
+    const availH = wrapper.clientHeight;
+    if (availW <= 0) return; // not laid out yet (or jsdom) - skip, no crash
+    const scale = mode === "contain" && availH > 0
+      ? Math.min(MAX_FIT_UPSCALE, availW / natural.w, availH / natural.h)
+      : Math.min(1, availW / natural.w); // "width": fit width, never upscale
+    const nextFont = Math.max(2, LIVE_TERMINAL_FONT_SIZE * scale);
+    try {
+      // Only write on a meaningful change (avoids churn + ResizeObserver feedback).
+      if (Math.abs(term.options.fontSize - nextFont) > 0.1) {
+        term.options.fontSize = nextFont;
+      }
+    } catch { /* term not ready / disposed */ }
   }, []);
 
   const disposeTerminal = useCallback(() => {
@@ -288,6 +340,19 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
         // and never asks the pane to resize.
 
         connectForGeneration(currentGen);
+
+        // OPR.0.4.0.39 (selection fix): capture the xterm's NATURAL 90x27 pixel size
+        // at the base font (before any fontSize-fit) as the fixed reference, then
+        // apply the initial fit. rAF so layout has settled. Guarded for jsdom (0 size).
+        requestAnimationFrame(() => {
+          if (cleanedUp || !containerRef.current) return;
+          if (!naturalSizeRef.current) {
+            const w = containerRef.current.offsetWidth;
+            const h = containerRef.current.offsetHeight;
+            if (w > 0 && h > 0) naturalSizeRef.current = { w, h };
+          }
+          applyFontSizeFit();
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Terminal initialization failed");
       }
@@ -304,6 +369,20 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     };
   }, [connectForGeneration, disposeTerminal]);
 
+  // OPR.0.4.0.39 (selection fix): refit the xterm fontSize when its container resizes
+  // (responsive grid columns, window resize, node-detail panel). Observes the fit
+  // WRAPPER (which fills the parent), so changing the INNER xterm fontSize does not
+  // feed back into the observed box. No-op in "natural" mode.
+  useEffect(() => {
+    if (fit === "natural") return undefined;
+    const wrapper = fitWrapperRef.current;
+    if (!wrapper || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(() => applyFontSizeFit());
+    ro.observe(wrapper);
+    applyFontSizeFit();
+    return () => ro.disconnect();
+  }, [fit, applyFontSizeFit]);
+
   if (error) {
     return (
       <div
@@ -318,19 +397,34 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl }: FocusedTerminalP
     );
   }
 
-  return (
+  // The xterm always renders at its NATURAL full 90x27 geometry (w-max) so the WHOLE
+  // screen + cursor are visible (no min-h/h-full cap that hid the bottom rows).
+  const liveTerminal = (
     <div
       key={`focused-terminal-live-${sessionName}`}
       ref={containerRef}
       data-testid={`focused-terminal-${sessionName}`}
-      // OPR.0.4.0.39 (founder fix): size to the xterm's NATURAL full geometry (90x27)
-      // instead of a height-capped (min-h/h-full) overflow-auto container. The capped
-      // container showed only the top ~16 of 27 rows anchored at the top (so the
-      // cursor/prompt at the bottom was hidden until you typed, and you couldn't reach
-      // the rest). At natural size the WHOLE screen is visible (cursor included) and
-      // the shared ScaleToFitTerminal scales it to the cell - matching the static
-      // exactly (no drift). The xterm's own .xterm-viewport handles scrollback.
       className="w-max bg-stone-950/85 backdrop-blur-sm"
     />
+  );
+
+  // OPR.0.4.0.39 (selection fix): in "natural" mode the xterm renders at native size
+  // (no scaling). In "width"/"contain" mode it is wrapped in a fit-wrapper that fills
+  // the container; applyFontSizeFit sets the xterm fontSize so 90x27 fits - NO CSS
+  // transform, so xterm's selection/click hit-testing stays native-correct (#6023).
+  if (fit === "natural") return liveTerminal;
+
+  return (
+    <div
+      ref={fitWrapperRef}
+      data-testid={`focused-terminal-fit-${sessionName}`}
+      className={
+        fit === "contain"
+          ? "flex h-full w-full items-center justify-center overflow-hidden"
+          : "w-full overflow-hidden"
+      }
+    >
+      {liveTerminal}
+    </div>
   );
 }

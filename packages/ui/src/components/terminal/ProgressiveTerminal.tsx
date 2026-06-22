@@ -81,15 +81,20 @@ export function ProgressiveTerminal({
   // (fit-width, never clip). The glass->opaque flip on click is the only change - the
   // live xterm appears at the same size in the same place (the mirror).
   if (mode === "live") {
+    // OPR.0.4.0.39 (selection fix): the LIVE xterm scales via fontSize (FocusedTerminal's
+    // own fit), NOT a CSS transform. A CSS transform:scale ancestor breaks xterm's
+    // mouse/selection hit-testing (it divides a post-transform offset by the pre-
+    // transform cell size - #6023), so dragging selects the wrong cells. FocusedTerminal
+    // fills this container and fontSize-fits 90x27 to it, pixel-matching the static plate
+    // (which keeps its transform - native DOM selection follows transforms fine). Same
+    // signed-off look, native-correct selection.
     return (
-      <ScaleToFitTerminal testId={`${testIdPrefix}-fit`} className={className} fit={fit}>
-        {/* The live div sizes to the xterm's natural 90x27 geometry (FocusedTerminal
-            is w-max); ScaleToFitTerminal scales it to the cell, matching the static
-            plate exactly - the glass->opaque flip stays the same size in place. */}
-        <div data-testid={`${testIdPrefix}-live`}>
-          <FocusedTerminal sessionName={sessionName} />
-        </div>
-      </ScaleToFitTerminal>
+      <div
+        data-testid={`${testIdPrefix}-live`}
+        className={[fit === "contain" ? "h-full w-full" : "w-full", className].filter(Boolean).join(" ")}
+      >
+        <FocusedTerminal sessionName={sessionName} fit={fit} />
+      </div>
     );
   }
 

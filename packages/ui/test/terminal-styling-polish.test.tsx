@@ -116,4 +116,23 @@ describe("OPR.0.4.0.1 terminal styling polish", () => {
     expect(src("../src/components/LiveNodeDetails.tsx")).toContain('fit="contain"');
     expect(src("../src/components/topology/TopologyTerminalView.tsx")).not.toContain('fit="contain"');
   });
+
+  it("OPR.0.4.0.39 (selection fix #6023): the LIVE xterm scales via fontSize, NOT a CSS transform, so xterm selection/click hit-testing stays native-correct", () => {
+    const focused = src("../src/components/terminal/FocusedTerminal.tsx");
+    // FocusedTerminal sizes the live xterm by SETTING term fontSize to fit its
+    // container (no CSS transform on the xterm) - the maintainer-blessed fix for #6023.
+    expect(focused).toContain('fit?: "natural" | "width" | "contain"');
+    expect(focused).toContain("options.fontSize");
+    expect(focused).toContain("MAX_FIT_UPSCALE");
+    expect(focused).toContain("#6023");
+    // The live xterm must NOT be CSS-transform-scaled (that's what breaks selection).
+    expect(focused).not.toContain("transform: `scale");
+    expect(focused).not.toContain("transformOrigin");
+    // ProgressiveTerminal's LIVE branch renders FocusedTerminal with fit (fontSize),
+    // NOT wrapped in the transform-based ScaleToFitTerminal (static plate only).
+    const prog = src("../src/components/terminal/ProgressiveTerminal.tsx");
+    expect(prog).toContain("<FocusedTerminal sessionName={sessionName} fit={fit}");
+    // ScaleToFitTerminal (CSS transform) is still imported + used - for the STATIC plate.
+    expect(prog).toContain("ScaleToFitTerminal");
+  });
 });
