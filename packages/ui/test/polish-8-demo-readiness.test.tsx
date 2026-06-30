@@ -27,9 +27,12 @@ describe("polish-8 demo-readiness source guards", () => {
     const src = read("../src/components/project/ScopePages.tsx");
     expect(src).toContain("function SliceOverviewTab({ detail }");
     expect(src).toContain("slice-overview-summary");
-    expect(src).toContain("function SliceArtifactsTab({ detail }");
-    expect(src).toContain("slice-artifacts-files");
-    expect(src).toContain("slice-artifacts-commits");
+    // OPR.0.4.1 AC-4-FF: the slice Artifacts surface IS the ArtifactsNavigator (file
+    // navigator at slice altitude); the prior Files/Commits/Docs/Decisions card wall
+    // (SliceArtifactsTab) is removed — Commits flagged 0.4.2, Decisions live in Story.
+    expect(src).toContain("<ArtifactsNavigator scopePath={detail.slicePath}");
+    expect(src).not.toContain("function SliceArtifactsTab");
+    expect(src).not.toContain("slice-artifacts-commits");
   });
 
   it("TopologyTab reaches the React Flow workflow graph instead of the adjacency panel", () => {

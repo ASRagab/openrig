@@ -17,6 +17,7 @@ import {
   type TopologySeatScopeTab,
 } from "./TopologyViewModeTabs.js";
 import { TopologyTableView } from "./TopologyTableView.js";
+import { ErrorBoundary } from "../ui/ErrorBoundary.js";
 import { LaunchCmuxButton } from "./LaunchCmuxButton.js";
 import { TopologyTerminalView } from "./TopologyTerminalView.js";
 import { SectionHeader } from "../ui/section-header.js";
@@ -150,7 +151,10 @@ export function HostScopePage() {
               Graph view degrades to table on narrow viewports.
             </p>
           ) : null}
-          <TopologyTableView />
+          {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
+          <ErrorBoundary label="Table view">
+            <TopologyTableView />
+          </ErrorBoundary>
         </div>
       ) : null}
       {effectiveActive === "terminal" ? <TopologyTerminalView scope="host" /> : null}
@@ -201,7 +205,10 @@ export function RigScopePage() {
               Graph view degrades to table on narrow viewports.
             </p>
           ) : null}
-          <TopologyTableView rigIdScope={rigId} />
+          {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
+          <ErrorBoundary label="Table view">
+            <TopologyTableView rigIdScope={rigId} />
+          </ErrorBoundary>
         </div>
       ) : null}
       {effectiveActive === "terminal" ? <TopologyTerminalView scope="rig" rigId={rigId} /> : null}
@@ -313,7 +320,10 @@ export function PodScopePage() {
               Graph view degrades to table on narrow viewports.
             </p>
           ) : null}
-          <TopologyTableView rigIdScope={rigId} podNameScope={podName} />
+          {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
+          <ErrorBoundary label="Table view">
+            <TopologyTableView rigIdScope={rigId} podNameScope={podName} />
+          </ErrorBoundary>
         </div>
       ) : null}
       {effectiveActive === "terminal" ? (

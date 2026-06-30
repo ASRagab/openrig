@@ -42,6 +42,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private readThreadIdByPid: (pid: number) => string | undefined;
   private sleep: (ms: number) => Promise<void>;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
+  // OPR.0.4.1.10 FR-B — absolute path to the daemon's own shipped activity-relay.cjs,
+  // resolved by startup from import.meta.dirname. Used by ensureCodexActivityHooks
+  // (FR-A) to write config-layer [hooks] command entries that are cwd-independent and
+  // version-matched to the running daemon (NOT ${PLUGIN_ROOT}, NOT a per-cwd copy).
+  private activityRelayPath?: string;
 
   constructor(deps: {
     tmux: TmuxAdapter;
@@ -50,9 +55,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     readThreadIdByPid?: (pid: number) => string | undefined;
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
+    activityRelayPath?: string;
   }) {
     this.tmux = deps.tmux;
     this.fs = deps.fsOps;
+    this.activityRelayPath = deps.activityRelayPath;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
     this.readThreadIdByPid = deps.readThreadIdByPid ?? ((pid) => this.readThreadIdFromLogs(pid));
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
@@ -82,6 +89,65 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const updated = upsertCodexHooksFeature(existing);
     if (updated !== existing) {
       this.fs.mkdirp(nodePath.dirname(configPath));
+      this.fs.writeFile(configPath, updated);
+    }
+  }
+
+  /**
+   * OPR.0.4.1.10 FR-A — write the OpenRig activity hooks into Codex's config layer
+   * (`~/.codex/config.toml` inline `[hooks]`) so an OpenRig-launched Codex seat is
+   * hook-PRIMARY from clean shipped config. Idempotent managed-block upsert for the
+   * four events SessionStart / UserPromptSubmit / Stop / PermissionRequest; each
+   * command is `node "<activityRelayPath>"` (the daemon's OWN shipped relay, FR-B —
+   * cwd-independent, version-matched, NOT `${PLUGIN_ROOT}` nor a per-cwd copy). Also
+   * pins `[features].hooks = true` (canonical key; the deprecated `codex_hooks` alias
+   * is intentionally NOT used here). Trust is granted at launch by the hook_trust_gate
+   * auto-clear (dismissCodexInteractiveGates → "2" Trust all and continue, verified on
+   * Codex 0.139). The relay inherits the seat's OPENRIG_* env from the tmux session.
+   *
+   * Fail-safe: skips + warns when the relay asset is missing — never writes a hook that
+   * points at a nonexistent script. Verified-firsthand (Codex 0.139, dev1-qa AC-2 proof):
+   * on the OpenRig-managed launch path — managed inline hooks + trusted + the relay env
+   * delivered into the seat (OPENRIG_URL + OPENRIG_ACTIVITY_HOOK_TOKEN + session/node/runtime)
+   * — all four events, SessionStart included, deliver as runtime_hook activity. Without the
+   * relay env the hooks are still trusted/visible but no activity rows land. (A bare/manual
+   * codex TUI launch lacks that context and may not deliver SessionStart — not how OpenRig
+   * launches seats.)
+   */
+  ensureCodexActivityHooks(): void {
+    const relay = this.activityRelayPath;
+    if (!relay || !this.fs.exists(relay)) {
+      if (relay) {
+        console.error(`[openrig] codex activity hooks skipped: relay asset not found at ${relay}`);
+      }
+      return;
+    }
+    const homedir = this.fs.homedir;
+    if (!homedir) return;
+    const configPath = nodePath.join(homedir, ".codex", "config.toml");
+    const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
+    const updated = upsertCodexActivityHooks(existing, relay);
+    if (updated !== existing) {
+      this.fs.mkdirp(nodePath.dirname(configPath));
+      this.fs.writeFile(configPath, updated);
+    }
+  }
+
+  /**
+   * OPR.0.4.1.10 B3 — durable disable. When runtime.codex.hooks_enabled is false, strip the
+   * OpenRig-managed activity-hooks sentinel block from ~/.codex/config.toml so a seat that was
+   * previously provisioned with hooks does not keep firing them after the operator disables.
+   * Removes ONLY the managed block — preserves any user-owned hooks and leaves [features].hooks
+   * (the Codex 0.139 default) intact. Idempotent; no-op when the config or the block is absent.
+   */
+  removeCodexActivityHooks(): void {
+    const homedir = this.fs.homedir;
+    if (!homedir) return;
+    const configPath = nodePath.join(homedir, ".codex", "config.toml");
+    if (!this.fs.exists(configPath)) return;
+    const existing = this.fs.readFile(configPath);
+    const updated = stripCodexActivityHooks(existing);
+    if (updated !== existing) {
       this.fs.writeFile(configPath, updated);
     }
   }
@@ -737,9 +803,33 @@ export function isCodex013xOrLater(version: string): boolean {
   return minor >= 130;
 }
 
+// OPR.0.4.1.10 B2 — true for a real TOML `[features]` table header in ANY valid spelling.
+// Normalize-and-compare (not incremental regex): a table header is `[ <key> ]` optionally
+// followed by a comment. Per the TOML v1.0.0 spec (toml.io/en/v1.0.0, Keys/Table): whitespace
+// around the bracketed key is ignored (`[ features ]` == `[features]`), and the key may be bare
+// (`features`) or quoted as a basic/literal string (`"features"` / `'features'`) — all denote the
+// same `features` table. A leading-`#` line is a comment, never a section. The `[^[\]]*` body
+// excludes the array-of-tables `[[...]]` form. Used by BOTH feature upserts (DRY) so no header
+// spelling is missed — a missed header appends a duplicate table that Codex 0.139 --strict-config
+// rejects (config-could-not-be-loaded).
+function isCodexFeaturesHeader(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.startsWith("#")) return false;
+  const match = /^\[([^[\]]*)\]\s*(#.*)?$/.exec(trimmed);
+  if (!match) return false;
+  let key = match[1]!.trim();
+  if (
+    key.length >= 2 &&
+    ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))
+  ) {
+    key = key.slice(1, -1);
+  }
+  return key === "features";
+}
+
 function upsertCodexHooksFeature(content: string): string {
   const lines = content.length > 0 ? content.replace(/\n*$/, "").split("\n") : [];
-  const featuresIndex = lines.findIndex((line) => line.trim() === "[features]");
+  const featuresIndex = lines.findIndex(isCodexFeaturesHeader);
 
   if (featuresIndex === -1) {
     const prefix = lines.length > 0 ? `${lines.join("\n")}\n\n` : "";
@@ -765,6 +855,79 @@ function upsertCodexHooksFeature(content: string): string {
     lines.splice(featuresIndex + 1, 0, "codex_hooks = true");
   }
 
+  return `${lines.join("\n")}\n`;
+}
+
+// OPR.0.4.1.10 FR-A — config-layer activity-hook projection.
+const OPENRIG_ACTIVITY_HOOKS_BEGIN = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS";
+const OPENRIG_ACTIVITY_HOOKS_END = "# END OPENRIG MANAGED ACTIVITY HOOKS";
+const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"] as const;
+
+/**
+ * Idempotently write the OpenRig activity hooks into a Codex config.toml: pin
+ * `[features].hooks = true` (canonical key) and a sentinel-wrapped managed block of
+ * inline `[[hooks.<Event>]]` stanzas (one representation per layer — never a sibling
+ * hooks.json). Re-running with the same relay path is a no-op; a changed daemon path
+ * replaces the block. `command` is a TOML literal string so the absolute relay path
+ * needs no escaping; the inner double-quotes quote the path arg for the shell Codex
+ * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
+ * turn-scope event).
+ */
+function upsertCodexActivityHooks(content: string, relayPath: string): string {
+  const command = `'node "${relayPath}"'`;
+  const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
+    .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
+    .join("\n\n");
+  const block = `${OPENRIG_ACTIVITY_HOOKS_BEGIN}\n${stanzas}\n${OPENRIG_ACTIVITY_HOOKS_END}\n`;
+
+  let next = upsertCodexFeaturesHooksEnabled(content);
+
+  const pattern = new RegExp(
+    `${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}\\n?`,
+    "m"
+  );
+  if (pattern.test(next)) {
+    return next.replace(pattern, block);
+  }
+  const prefix = next.replace(/\n*$/, "");
+  return prefix.length > 0 ? `${prefix}\n\n${block}` : block;
+}
+
+/**
+ * OPR.0.4.1.10 B3 — remove the OpenRig-managed activity-hooks sentinel block (durable disable).
+ * Strips ONLY the BEGIN..END block (plus the leading blank-line separator it was appended with);
+ * leaves all other content — user-owned hooks, [features], project trust — untouched. Returns the
+ * input unchanged when the block is absent.
+ */
+function stripCodexActivityHooks(content: string): string {
+  const pattern = new RegExp(
+    `\\n*${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}[ \\t]*\\n?`,
+    "m"
+  );
+  if (!pattern.test(content)) return content;
+  return content.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
+}
+
+/** Ensure `[features].hooks = true` (canonical key; not the deprecated codex_hooks alias). */
+function upsertCodexFeaturesHooksEnabled(content: string): string {
+  const lines = content.length > 0 ? content.replace(/\n*$/, "").split("\n") : [];
+  const featuresIndex = lines.findIndex(isCodexFeaturesHeader);
+  if (featuresIndex === -1) {
+    const prefix = lines.length > 0 ? `${lines.join("\n")}\n\n` : "";
+    return `${prefix}[features]\nhooks = true\n`;
+  }
+  let nextSectionIndex = lines.length;
+  for (let i = featuresIndex + 1; i < lines.length; i++) {
+    if (lines[i]!.trim().startsWith("[")) { nextSectionIndex = i; break; }
+  }
+  const flagIndex = lines.findIndex(
+    (line, index) => index > featuresIndex && index < nextSectionIndex && /^\s*hooks\s*=/.test(line)
+  );
+  if (flagIndex >= 0) {
+    lines[flagIndex] = "hooks = true";
+  } else {
+    lines.splice(featuresIndex + 1, 0, "hooks = true");
+  }
   return `${lines.join("\n")}\n`;
 }
 

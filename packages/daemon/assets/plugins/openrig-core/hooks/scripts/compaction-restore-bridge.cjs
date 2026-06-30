@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 "use strict";
 
-// OpenRig Claude compaction restore bridge.
+// OpenRig Claude compaction restore bridge (reader/deliverer).
 //
-// PreCompact writes a pending marker under OPENRIG_HOME. SessionStart
-// (matcher=compact) and UserPromptSubmit can then inject one restore
-// directive into Claude context via hookSpecificOutput.additionalContext.
-// PostCompact uses the same script as a cheap marker timestamp hook.
+// The per-seat pending marker is WRITTEN on PreCompact by the product-plugin
+// writer skills/claude-compaction-restore/scripts/precompact-hook.mjs (which
+// generates the restore packet and persists the real outputDir + operator
+// message). This bridge READS that marker on SessionStart (matcher=compact)
+// and UserPromptSubmit and injects ONE restore directive into Claude context
+// via hookSpecificOutput.additionalContext. PostCompact is a cheap marker
+// timestamp hook. OPR.0.4.1.09: resolve ONLY this seat's marker (never deliver
+// another seat's restore state) and surface the per-seat restore-map pointer.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -76,26 +80,21 @@ function readMarker(filePath) {
 }
 
 function findMarker(payload, env = process.env) {
-  const dir = markerDir(env);
+  // OPR.0.4.1.09 (never deliver wrong-seat state): resolve ONLY this seat's keyed marker.
+  // The previous fallback-to-newest handed a seat with NO marker the NEWEST marker on
+  // disk - which can be ANOTHER seat's (the reader-side parallel of the part-1 extra bug).
+  // No seat identity -> no marker; absence -> the loud JSONL fallback the restore prompt
+  // already describes, NEVER a wrong-seat guess.
   const key = sessionKey(payload, env);
-  if (key) {
-    const direct = readMarker(path.join(dir, `${key}.json`));
-    if (direct) return direct;
-  }
-  try {
-    const candidates = fs.readdirSync(dir)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => path.join(dir, name))
-      .map((filePath) => ({ filePath, stat: fs.statSync(filePath) }))
-      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-    for (const candidate of candidates) {
-      const marker = readMarker(candidate.filePath);
-      if (marker) return marker;
-    }
-  } catch {
-    return null;
-  }
-  return null;
+  if (!key) return null;
+  const marker = readMarker(path.join(markerDir(env), `${key}.json`));
+  if (!marker) return null;
+  // Defense-in-depth: refuse a keyed marker that DECLARES a different seat.
+  const declaredName = marker.data && typeof marker.data.sessionName === "string"
+    ? marker.data.sessionName.trim()
+    : "";
+  if (declaredName && sanitizeKey(declaredName) !== key) return null;
+  return marker;
 }
 
 function writeMarker(marker) {
@@ -106,6 +105,7 @@ function buildRestoreContext(marker) {
   const outputDir = firstString(marker.data.outputDir) || "/tmp/claude-compaction-restore";
   const ack = firstString(marker.data.expectedAck) || "restored from packet at <path>; resumed at step <X>";
   const postInstruction = firstString(marker.data.postCompactInstruction);
+  const restoreMapPath = firstString(marker.data.restoreMapPath);
   const pieces = [
     "OpenRig compaction restore packet is available for this Claude session.",
     "This hook output is informational context, not the action request.",
@@ -113,6 +113,10 @@ function buildRestoreContext(marker) {
     "OpenRig may send a later normal user message asking you to restore from this packet. Treat that later normal user message as the operator-authorized action request.",
     `After restoration, reply with: ${ack}`,
   ];
+  if (restoreMapPath) {
+    // OPR.0.4.1.09: the per-seat restore-map pointer the marker carries.
+    pieces.push(`Per-seat restore map: ${restoreMapPath} — read it during restore.`);
+  }
   if (postInstruction) {
     pieces.push(`Operator post-compaction context: ${postInstruction}`);
   }

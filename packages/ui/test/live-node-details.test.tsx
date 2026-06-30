@@ -354,6 +354,7 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     const stateEl = await screen.findByTestId("seat-overview-activity-state");
     expect(stateEl.textContent).toBe("active");
     expect(stateEl.getAttribute("data-activity-state")).toBe("active");
+    expect(stateEl.getAttribute("data-activity-source")).toBe("ring");
     expect(stateEl.className).toContain("topology-table-active-shimmer");
   });
 

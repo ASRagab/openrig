@@ -67,8 +67,11 @@ export function sendCommand(depsOverride?: SendDeps): Command {
     .argument("<session>", "Target session name (e.g. dev-impl@my-rig)")
     .argument("<text>", "Message text to send")
     .option("--verify", "Verify pane only delivery by checking content after send")
-    .option("--force", "Send even if target pane appears mid-task")
+    .option("--force", "Send even if target pane appears mid-task (does NOT bypass the interactive-prompt/permission guard)")
     .option("--wait-for-idle <seconds>", "Wait until the target is explicitly idle before sending")
+    .option("--raw", "Send exact text/keystrokes without the From/To messaging envelope (still guarded against interactive prompts)")
+    .option("--dangerously-interact", "DANGEROUS: deliberately drive an interactive prompt/permission block (implies --raw; requires --reason). The ONLY override of the prompt/permission guard.")
+    .option("--reason <text>", "Why the prompt is being driven (required with --dangerously-interact; recorded in the audit log)")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml (CLI-side ssh shell-out)")
     .option("--json", "JSON output for agents")
     .addHelpText("after", `
@@ -81,15 +84,23 @@ Examples:
   rig send --host vm-claude-test dev-impl@my-rig "remote message" --verify
 
 The two-step send pattern (paste text, wait, submit Enter) is handled
-automatically. Use --wait-for-idle to send only after explicit idle evidence;
-it fails closed on attention prompts, unknown activity, or timeout. Use --verify
-to confirm the message appeared in the pane only; it is not agent acknowledgement.
-Use --force to override mid-task safety checks without wait mode.
+automatically. By default a send is REFUSED when the target is at an interactive
+prompt or permission block (so a message can never select/approve another agent's
+prompt), and fails closed when the target's activity can't be determined. Use
+--wait-for-idle to send only after explicit idle evidence. Use --verify to confirm
+the message appeared in the pane only; it is not agent acknowledgement.
+
+Use --force to override the mid-task busy check; it does NOT bypass the
+interactive-prompt/permission guard. Use --raw to send exact text/keystrokes
+without the From/To envelope (e.g. a slash command); it is still guarded. Use
+--dangerously-interact --reason "<why>" to DELIBERATELY drive a prompt (select an
+option, approve a permission, send /compact to a blocked pane) — the only override
+of the prompt guard; it implies --raw and is audit-logged.
 
 --host runs the same command on a remote host declared in ~/.openrig/hosts.yaml
 via single-hop ssh. SSH success is NOT verify success: the remote rig's
 'Verified: yes/no' line is what counts and is surfaced verbatim.`)
-    .action(async (session: string, text: string, opts: { verify?: boolean; force?: boolean; waitForIdle?: string; host?: string; json?: boolean }) => {
+    .action(async (session: string, text: string, opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; host?: string; json?: boolean }) => {
       const waitForIdleMs = parseWaitForIdleMs(opts.waitForIdle);
       if (opts.force && waitForIdleMs !== undefined) {
         console.error("--wait-for-idle cannot be combined with --force");
@@ -98,6 +109,18 @@ via single-hop ssh. SSH success is NOT verify success: the remote rig's
       }
       if (waitForIdleMs === null) {
         console.error("--wait-for-idle must be a positive number of seconds");
+        process.exitCode = 1;
+        return;
+      }
+      // OPR.0.4.1.10 — the danger override requires a reason (for the audit) and cannot compose with
+      // wait mode. Reject locally before contacting the daemon.
+      if (opts.dangerouslyInteract && (!opts.reason || opts.reason.trim().length === 0)) {
+        console.error("--dangerously-interact requires --reason \"<why>\" (recorded in the audit log)");
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.dangerouslyInteract && waitForIdleMs !== undefined) {
+        console.error("--dangerously-interact cannot be combined with --wait-for-idle");
         process.exitCode = 1;
         return;
       }
@@ -119,9 +142,13 @@ via single-hop ssh. SSH success is NOT verify success: the remote rig's
       }
 
       const client = deps.clientFactory(getDaemonUrl(status));
-      const wrappedText = wrapSendBody(resolveSenderSession(), session, text);
+      const senderSession = resolveSenderSession();
+      // --raw (and --dangerously-interact, which implies it) send EXACT text with no messaging envelope.
+      const raw = Boolean(opts.raw || opts.dangerouslyInteract);
+      const outboundText = raw ? text : wrapSendBody(senderSession, session, text);
       const res = await client.post<Record<string, unknown>>("/api/transport/send", {
-        session, text: wrappedText, verify: opts.verify, force: opts.force, waitForIdleMs,
+        session, text: outboundText, verify: opts.verify, force: opts.force, waitForIdleMs,
+        dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
       }, { ...waitForIdleRequestOptions(waitForIdleMs), headers: terminalAuthHeaders() });
 
       if (opts.json) {
@@ -161,7 +188,7 @@ async function runCrossHostSend(
   hostId: string,
   session: string,
   text: string,
-  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; json?: boolean },
+  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; json?: boolean },
   deps: SendDeps,
 ): Promise<void> {
   const loader = deps.hostRegistryLoader ?? loadHostRegistry;
@@ -185,6 +212,9 @@ async function runCrossHostSend(
   if (opts.verify) argv.push("--verify");
   if (opts.force) argv.push("--force");
   if (opts.waitForIdle !== undefined) argv.push("--wait-for-idle", opts.waitForIdle);
+  if (opts.raw) argv.push("--raw");
+  if (opts.dangerouslyInteract) argv.push("--dangerously-interact");
+  if (opts.reason !== undefined) argv.push("--reason", opts.reason);
   if (opts.json) argv.push("--json");
 
   const result = await runner(host, argv);

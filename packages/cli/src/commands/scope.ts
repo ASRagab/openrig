@@ -47,9 +47,11 @@ import {
   updateFrontmatter,
 } from "../lib/scope/scope-fs.js";
 import {
+  renderMissionBriefTemplate,
   renderMissionNotesTemplate,
   renderMissionProgressTemplate,
   renderMissionTemplate,
+  renderSliceProofTemplate,
   renderSliceProgressTemplate,
   renderSliceTemplate,
   titleFromSlug,
@@ -297,15 +299,18 @@ function buildSliceCreateCommand(): Command {
         }
         const id = sliceIdFromMission(missionId, nn);
         const title = opts.title ?? titleFromSlug(slug);
+        const createdDate = todayDateISO();
         const body = renderSliceTemplate(kind, {
           id,
           slice_number: pad2(nn),
           slug,
           mission: mission.name,
           title,
-          created_date: todayDateISO(),
+          created_date: createdDate,
         });
+        const proofBody = renderSliceProofTemplate({ id, title });
         fs.mkdirSync(sliceAbs, { recursive: true });
+        fs.mkdirSync(path.join(sliceAbs, "proof"), { recursive: true });
         const readmePath = path.join(sliceAbs, "README.md");
         const readmeOnly = Boolean(opts.readmeOnly);
         if (readmeOnly) {
@@ -319,6 +324,7 @@ function buildSliceCreateCommand(): Command {
           const progressPath = path.join(sliceAbs, "PROGRESS.md");
           fs.writeFileSync(progressPath, renderSliceProgressTemplate(title), "utf8");
         }
+        fs.writeFileSync(path.join(sliceAbs, "PROOF.md"), proofBody, "utf8");
         const payload = {
           ok: true,
           slice: {
@@ -690,6 +696,7 @@ function buildMissionCreateCommand(): Command {
           missionNotesRendered = { rendered: r.rendered, resolvedFrom: r.resolvedFrom };
         }
         const progressBody = renderMissionProgressTemplate(title);
+        const missionBriefBody = renderMissionBriefTemplate(title);
         // All renders succeeded — safe to touch the filesystem.
         fs.mkdirSync(absPath, { recursive: true });
         fs.mkdirSync(path.join(absPath, "slices"), { recursive: true });
@@ -697,6 +704,8 @@ function buildMissionCreateCommand(): Command {
         fs.writeFileSync(readmePath, readmeBody, "utf8");
         const progressPath = path.join(absPath, "PROGRESS.md");
         fs.writeFileSync(progressPath, progressBody, "utf8");
+        const missionBriefPath = path.join(absPath, "MISSION_BRIEF.md");
+        fs.writeFileSync(missionBriefPath, missionBriefBody, "utf8");
         let missionNotesPath: string | null = null;
         let missionNotesResolvedFrom: "env" | "built-in" | null = null;
         if (missionNotesRendered) {
@@ -721,6 +730,7 @@ function buildMissionCreateCommand(): Command {
             template: templateKind,
             path: absPath,
             readmePath,
+            missionBriefPath,
             missionNotesPath,
             missionNotesResolvedFrom,
           },
@@ -755,8 +765,11 @@ function buildAuditCommand(): Command {
 
         const missionReadme = path.join(missionDir, "README.md");
         const missionProgress = path.join(missionDir, "PROGRESS.md");
+        const missionBrief = path.join(missionDir, "MISSION_BRIEF.md");
+        const missionNotes = path.join(missionDir, "MISSION_NOTES.md");
         const missionReadmeExists = fs.existsSync(missionReadme);
         const missionProgressExists = fs.existsSync(missionProgress);
+        const missionBriefExists = fs.existsSync(missionBrief);
 
         let missionResult: ReturnType<typeof classifyScopeItem>;
         if (!missionReadmeExists && missionProgressExists) {
@@ -783,10 +796,16 @@ function buildAuditCommand(): Command {
             readmeOnlyMarker: false,
             isActiveRelease: true,
             level: "mission",
+            missionBriefExists,
+            missionBriefPath: missionBrief,
+            missionBriefContent: missionBriefExists ? fs.readFileSync(missionBrief, "utf-8") : null,
+            missionNotesExists: fs.existsSync(missionNotes),
+            missionNotesPath: missionNotes,
           });
         }
 
         const slicesDir = path.join(missionDir, "slices");
+        const dogfoodEvidenceRoot = defaultDogfoodEvidenceRoot(missionsRoot);
         const sliceResults: Array<{ name: string; result: ReturnType<typeof classifyScopeItem> }> = [];
 
         if (fs.existsSync(slicesDir)) {
@@ -795,6 +814,8 @@ function buildAuditCommand(): Command {
             if (!fs.statSync(sliceDir).isDirectory()) continue;
             const sliceReadme = path.join(sliceDir, "README.md");
             const sliceProgress = path.join(sliceDir, "PROGRESS.md");
+            const proofFile = path.join(sliceDir, "PROOF.md");
+            const proofDir = path.join(sliceDir, "proof");
 
             if (!fs.existsSync(sliceReadme)) {
               if (fs.existsSync(sliceProgress)) {
@@ -838,6 +859,12 @@ function buildAuditCommand(): Command {
               readmeOnlyMarker,
               isActiveRelease: true,
               level: "slice",
+              proofFileExists: fs.existsSync(proofFile),
+              proofFilePath: proofFile,
+              proofDirExists: fs.existsSync(proofDir),
+              proofDirPath: proofDir,
+              proofDirHasEntries: directoryHasEntries(proofDir),
+              hasProofPacket: hasProofPacketForSlice(dogfoodEvidenceRoot, entry),
             });
 
             if (!/^\d{2}-/.test(entry)) {
@@ -858,16 +885,17 @@ function buildAuditCommand(): Command {
           ...missionResult.findings.map((f) => ({ ...f, scope: "mission" as const, scopeName: missionName })),
           ...sliceResults.flatMap((s) => s.result.findings.map((f) => ({ ...f, scope: "slice" as const, scopeName: s.name }))),
         ];
+        const hardFindings = allFindings.filter((f) => f.severity === "high");
 
         if (json) {
           out.write(JSON.stringify({
-            ok: allFindings.length === 0,
+            ok: hardFindings.length === 0,
             mission: { name: missionName, railStatus: missionResult.railStatus, frontmatterError: missionResult.frontmatterError, findings: missionResult.findings },
             slices: sliceResults.map((s) => ({ name: s.name, railStatus: s.result.railStatus, frontmatterError: s.result.frontmatterError, findings: s.result.findings })),
             totalFindings: allFindings.length,
           }, null, 2));
           out.write("\n");
-          if (allFindings.length > 0) process.exitCode = 1;
+          if (hardFindings.length > 0) process.exitCode = 1;
           return;
         }
 
@@ -882,8 +910,12 @@ function buildAuditCommand(): Command {
             out.write(`    ${f.message}\n`);
             out.write(`    fix: ${f.remediation}\n`);
           }
-          out.write(`\nFAIL: ${allFindings.length} finding(s)\n`);
-          process.exitCode = 1;
+          if (hardFindings.length > 0) {
+            out.write(`\nFAIL: ${allFindings.length} finding(s)\n`);
+            process.exitCode = 1;
+          } else {
+            out.write(`\nWARN: ${allFindings.length} advisory finding(s)\n`);
+          }
         } else {
           out.write("PASS: all scope items have valid rails\n");
         }
@@ -898,6 +930,34 @@ function extractFrontmatterRaw(content: string): string | null {
   if (!content.startsWith("---")) return null;
   const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
   return match ? match[1]! : null;
+}
+
+function directoryHasEntries(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).some((entry) => !entry.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+
+function defaultDogfoodEvidenceRoot(missionsRoot: string): string {
+  return path.join(path.dirname(missionsRoot), "dogfood-evidence");
+}
+
+function hasProofPacketForSlice(dogfoodEvidenceRoot: string, sliceName: string): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dogfoodEvidenceRoot, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  const sliceTokens = sliceName.split("-").filter((token) => token.length > 0 && !/^v\d+$/.test(token));
+  return entries.some((entry) => {
+    if (!entry.isDirectory()) return false;
+    const dirTokenSet = new Set(entry.name.split(/[-._]/).filter((token) => token.length > 0));
+    return sliceTokens.every((token) => dirTokenSet.has(token));
+  });
 }
 
 // ---------------------------------------------------------------------

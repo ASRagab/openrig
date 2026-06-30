@@ -883,8 +883,11 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "hello");
 
+    // OPR.0.4.1.10: an interactive prompt now refuses with the precise target_needs_input (not the
+    // generic mid_work) so the prompt/permission guard is independent of --force.
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe("mid_work");
+    expect(result.reason).toBe("target_needs_input");
+    expect(result.activity?.state).toBe("needs_input");
   });
 
   it("send refuses when a full-screen Codex trust prompt has blank padding below it", async () => {
@@ -910,8 +913,10 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "hello");
 
+    // OPR.0.4.1.10: trust prompt → target_needs_input (precise prompt/permission guard).
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe("mid_work");
+    expect(result.reason).toBe("target_needs_input");
+    expect(result.activity?.state).toBe("needs_input");
   });
 
   it("send refuses when Claude Code trust-prompt choice line is the active pane content", async () => {
@@ -927,8 +932,10 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "hello");
 
+    // OPR.0.4.1.10: trust prompt → target_needs_input (precise prompt/permission guard).
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe("mid_work");
+    expect(result.reason).toBe("target_needs_input");
+    expect(result.activity?.state).toBe("needs_input");
   });
 
   it("send still refuses when Working footer is present with no idle prompt below it", async () => {
@@ -962,8 +969,11 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "/compact Preserve current task.");
 
+    // OPR.0.4.1.10: a prompt draft above the idle footer is an interactive-prompt state →
+    // target_needs_input (a stray send must not land on the human's in-progress input).
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe("mid_work");
+    expect(result.reason).toBe("target_needs_input");
+    expect(result.activity?.state).toBe("needs_input");
   });
 
   // --- Realistic pane-fixture tests (test-infrastructure lane) ---
@@ -1137,8 +1147,10 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "hello");
 
+    // OPR.0.4.1.10: full-screen trust prompt → target_needs_input (precise prompt/permission guard).
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe("mid_work");
+    expect(result.reason).toBe("target_needs_input");
+    expect(result.activity?.state).toBe("needs_input");
   });
 
   it("realistic: short-burst Codex work with stale status bar in last 3 non-blank blocks", async () => {

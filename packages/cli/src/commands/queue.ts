@@ -168,6 +168,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--expires-at <iso>", "ISO timestamp at which the qitem expires")
     .option("--id <qitemId>", "Idempotent qitem_id (skip if not provided)")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
+    .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary of the work (feeds the Story node label; the agent-speak --body stays the source of truth). Warned-if-missing; pre-18 qitems exempt.")
     .option("--no-nudge", "Suppress the default destination nudge (cold-queue)")
     .option("--json", "JSON output for agents")
     .action(async (opts: {
@@ -183,6 +184,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       expiresAt?: string;
       id?: string;
       targetRepo?: string;
+      summary?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
@@ -194,6 +196,15 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       } catch (err) {
         emitBodyResolveError(err as Error & { fact?: string; consequence?: string; action?: string }, opts.json ?? false);
         return;
+      }
+      // OPR.0.4.1.18 (FR-7, warn-then-require grace): a summary SHOULD accompany
+      // every new qitem (it feeds the Story node + helps humans skim). Warn — to
+      // stderr so --json stdout stays clean — but do NOT hard-break existing
+      // callers that omit it; hard-require is a future hardening.
+      if (!opts.summary) {
+        process.stderr.write(
+          "warning: rig queue create called without --summary. New qitems should carry a short human-readable summary; the Story node degrades to a body truncation without it. Proceeding (pre-18 callers exempt).\n"
+        );
       }
       const deps = getDeps();
       // OPR.0.3.2.21.FR-4(b) — first-class --mission / --slice flags
@@ -215,6 +226,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           sourceSession: opts.source,
           destinationSession: opts.destination,
           body: resolvedBody,
+          summary: opts.summary,
           priority: opts.priority,
           tier: opts.tier,
           tags,
@@ -305,6 +317,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--tier <tier>", "Override tier for the new qitem")
     .option("--tags <tags>", "Comma-separated tags for the new qitem")
     .option("--target-repo <name>", "PL-007: typed repo scope for the new qitem")
+    .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary for the new qitem (feeds the Story node; --body stays source of truth). Warned-if-missing.")
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
@@ -316,11 +329,19 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       tier?: string;
       tags?: string;
       targetRepo?: string;
+      summary?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
       const from = resolveCurrentSession(opts.from, "from");
       if (!from) return;
+      // OPR.0.4.1.18 (FR-7): warn-on-author — a handoff authors a NEW qitem, so
+      // it should carry its own summary. Warn to stderr; do not hard-break.
+      if (!opts.summary) {
+        process.stderr.write(
+          "warning: rig queue handoff called without --summary. The new qitem should carry a short human-readable summary; the Story node degrades to a body truncation without it. Proceeding.\n"
+        );
+      }
       const deps = getDeps();
       const tags = opts.tags ? opts.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
       await withClient(deps, async (client) => {
@@ -328,6 +349,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           fromSession: from,
           toSession: opts.to,
           body: opts.body,
+          summary: opts.summary,
           transitionNote: opts.note,
           priority: opts.priority,
           tier: opts.tier,
@@ -352,6 +374,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--tier <tier>", "Override tier for the new qitem")
     .option("--tags <tags>", "Comma-separated tags for the new qitem")
     .option("--target-repo <name>", "PL-007: typed repo scope for the new qitem")
+    .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary for the new qitem (feeds the Story node; --body stays source of truth). Warned-if-missing.")
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
@@ -363,11 +386,19 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       tier?: string;
       tags?: string;
       targetRepo?: string;
+      summary?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
       const from = resolveCurrentSession(opts.from, "from");
       if (!from) return;
+      // OPR.0.4.1.18 (FR-7): warn-on-author — a handoff authors a NEW qitem, so
+      // it should carry its own summary. Warn to stderr; do not hard-break.
+      if (!opts.summary) {
+        process.stderr.write(
+          "warning: rig queue handoff called without --summary. The new qitem should carry a short human-readable summary; the Story node degrades to a body truncation without it. Proceeding.\n"
+        );
+      }
       const deps = getDeps();
       const tags = opts.tags ? opts.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
       await withClient(deps, async (client) => {
@@ -375,6 +406,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           fromSession: from,
           toSession: opts.to,
           body: opts.body,
+          summary: opts.summary,
           transitionNote: opts.note,
           priority: opts.priority,
           tier: opts.tier,

@@ -284,6 +284,40 @@ describe("PL-slice-story-view-v1 TopologyTab", () => {
     expect(screen.getByRole("img", { name: "Terminal" })).toBeDefined();
   });
 
+  it("OPR.0.4.1.20: workflow-grammar — Workflow header, per-step state dot bound to isCurrent, read-only + reject->rework legend", async () => {
+    const sg: SpecGraphPayload = {
+      specName: "triple-gate",
+      specVersion: "2",
+      nodes: [
+        { stepId: "plan", label: "shape the plan", role: "planner", preferredTarget: "dev1-planner@openrig-delivery", isEntry: true, isCurrent: false, isTerminal: false },
+        { stepId: "build", label: "one-shot the chunk", role: "driver", preferredTarget: "dev1-driver@openrig-delivery", isEntry: false, isCurrent: true, isTerminal: false },
+        { stepId: "merge", label: "merge to main", role: "orch-lead", preferredTarget: "orch-lead@openrig-delivery", isEntry: false, isCurrent: false, isTerminal: true },
+      ],
+      edges: [
+        { fromStepId: "plan", toStepId: "build", routingType: "direct", isLoopBack: false },
+        { fromStepId: "build", toStepId: "merge", routingType: "direct", isLoopBack: false },
+        { fromStepId: "merge", toStepId: "build", routingType: "direct", isLoopBack: true },
+      ],
+    };
+    render(makeRouter(topologyShape(sg)));
+    await waitFor(() => expect(screen.getByTestId("topology-spec-graph")).toBeDefined());
+    // Tab content header renamed Topology -> Workflow (slice 20). The legacy
+    // capital-T "Topology" header word is gone (the lowercase "Open topology"
+    // rig-listing link is unrelated and untouched).
+    expect(screen.getByTestId("topology-tab").textContent).toContain("Workflow");
+    expect(screen.getByTestId("topology-tab").textContent).not.toContain("Topology");
+    // Read-only spec viz + reject->rework legend (a loop-back edge is present).
+    const panel = screen.getByTestId("topology-spec-graph").textContent?.toLowerCase() ?? "";
+    expect(panel).toContain("read-only");
+    expect(panel).toContain("reject");
+    // Topology-grammar card: dark header carries the step ROLE; the state dot
+    // is bound to isCurrent (only the current step is active).
+    expect(screen.getByTestId("spec-node-plan").textContent).toContain("planner");
+    expect(screen.getByTestId("spec-node-build-state-dot").getAttribute("data-active")).toBe("true");
+    expect(screen.getByTestId("spec-node-plan-state-dot").getAttribute("data-active")).toBe("false");
+    expect(screen.getByTestId("spec-node-merge-state-dot").getAttribute("data-active")).toBe("false");
+  });
+
   it("renders empty state only when BOTH specGraph is null AND no rigs are present", async () => {
     render(makeRouter({ affectedRigs: [], totalSeats: 0, specGraph: null }));
     await waitFor(() => expect(screen.getByTestId("topology-empty")).toBeDefined());

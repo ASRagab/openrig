@@ -6,12 +6,18 @@
 //
 // V1 attempt-3 Phase 5 P5-2: SliceScopePage tab content piping.
 // Per code-map AFTER tree fold mapping from Phase 5 dispatch:
-//   - TimelineTab → story tab (preserved; events + phaseDefinitions props)
+//   - StoryGraph → story tab (OPR.0.4.1.19; queue-lineage git-graph, replaces the events TimelineTab)
 //   - TestsVerificationTab → tests tab (preserved; tests prop)
 //   - TopologyTab → topology tab (preserved; topology prop)
 //   - AcceptanceTab → progress tab (FOLDED; canon-7 progress is acceptance + currentStep)
-//   - DocsTab + DecisionsTab → artifacts tab (FOLDED vertically; canon-7 artifacts is docs+decisions)
-//   - Overview tab → README/IMPLEMENTATION-PRD via DocsTab pre-selected for now
+//   - Artifacts tab → ArtifactsNavigator at slice altitude (OPR.0.4.1 AC-4-FF):
+//     the slice Artifacts view IS the altitude-scoped file navigator, mirroring the
+//     mission-altitude wiring. The prior Files / Commits / Proof / Docs / Decisions
+//     sections are dropped — Files+Docs subsumed by the navigator, Proof has its own
+//     tab + appears in the tree, Decisions live in the Story DAG (decision-of-record
+//     qitems) + decision docs via the navigator, and Commits are FLAGGED 0.4.2 (no
+//     qitem->commit linkage; slice-level commitRefs stay in the SliceDetail payload).
+//   - Overview tab → README via useScopeMarkdown
 //   - Queue tab → qitemIds list with QueueItemTrigger (P5-1 wiring) per content-drawer.md L26
 // Workspace + Mission scope tab piping remains Phase 5 polish (filesystem-walk
 // dependent; P5-5 lays the data layer).
@@ -39,16 +45,13 @@ import {
   projectSliceMeta,
   type ProjectMissionGroup,
 } from "../../lib/project-mission-state.js";
-import { TimelineTab } from "../slices/tabs/TimelineTab.js";
-import { useSliceTimelineMarkdown } from "../../hooks/useSliceTimelineMarkdown.js";
+import { StoryGraph } from "./StoryGraph.js";
+import { buildStoryForest, type StoryQitemInput } from "../../lib/story-graph-model.js";
 import { useScopeMarkdown } from "../../hooks/useScopeMarkdown.js";
-import { FileLink } from "../ui/FileLink.js";
 import { useMission } from "../../hooks/useMission.js";
 import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
 import { AcceptanceTab } from "../slices/tabs/AcceptanceTab.js";
-import { DocsTab } from "../slices/tabs/DocsTab.js";
-import { DecisionsTab } from "../slices/tabs/DecisionsTab.js";
-import { TestsVerificationTab } from "../slices/tabs/TestsVerificationTab.js";
+import { ScopeProofRollup, SliceProofTab } from "./ProofTab.js";
 import { TopologyTab } from "../slices/tabs/TopologyTab.js";
 import { HostMultiRigGraph } from "../topology/HostMultiRigGraph.js";
 import { LiveTerminalProvider, useTerminalCap } from "../terminal/LiveTerminalProvider.js";
@@ -60,8 +63,6 @@ import {
   EventBadge,
   FlowChips,
   ProjectPill,
-  ProofPacketHeader,
-  ProofThumbnailGrid,
   QueueCountIcon,
   QueueStateBadge,
   sliceStatusTone,
@@ -71,20 +72,34 @@ import {
   scopeToken,
   stateTone,
 } from "./ProjectMetaPrimitives.js";
-import { ProofImageViewer } from "./ProofImageViewer.js";
-import { ToolMark } from "../graphics/RuntimeMark.js";
+import { SteeringTab } from "./SteeringTab.js";
+import { ArtifactsNavigator } from "./ArtifactsNavigator.js";
+import { WorkspacePortfolioPanel } from "./WorkspacePortfolioPanel.js";
 
-type SharedTab = "overview" | "story" | "progress" | "artifacts" | "tests" | "queue" | "topology";
-type SliceTab = SharedTab | "story" | "tests";
+type SharedTab = "overview" | "story" | "progress" | "artifacts" | "proof" | "queue" | "topology" | "steering";
+type SliceTab = SharedTab | "story" | "proof";
 
 const SHARED_TABS: { id: SharedTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "story", label: "Story" },
   { id: "progress", label: "Progress" },
   { id: "artifacts", label: "Artifacts" },
-  { id: "tests", label: "Tests" },
+  { id: "proof", label: "Proof" },
   { id: "queue", label: "Queue" },
-  { id: "topology", label: "Topology" },
+  { id: "topology", label: "Workflow" },
+];
+
+// OPR.0.4.1.17 — mission tab set adds Steering as the LANDING (mission-only; not on the parent
+// or slice altitudes). Other taxonomy moves (Workflow add, Queue/Topology drop) = separate slices.
+const MISSION_TABS: { id: SharedTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "steering", label: "Steering" },
+  { id: "story", label: "Story" },
+  { id: "progress", label: "Progress" },
+  { id: "artifacts", label: "Artifacts" },
+  { id: "proof", label: "Proof" },
+  { id: "queue", label: "Queue" },
+  { id: "topology", label: "Workflow" },
 ];
 
 const SLICE_TABS: { id: SliceTab; label: string }[] = [
@@ -92,9 +107,9 @@ const SLICE_TABS: { id: SliceTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "progress", label: "Progress" },
   { id: "artifacts", label: "Artifacts" },
-  { id: "tests", label: "Tests" },
+  { id: "proof", label: "Proof" },
   { id: "queue", label: "Queue" },
-  { id: "topology", label: "Topology" },
+  { id: "topology", label: "Workflow" },
 ];
 
 function TabNav<T extends string>({
@@ -384,9 +399,48 @@ function ScopeArtifactsRollup({
   );
 }
 
+// Exported for focused unit coverage (OPR.0.4.1.18): the QA-blocking bug was
+// this mapper hardcoding summary: null, so the regression guard tests it directly.
+export function toStoryInput(item: QueueItemDetail): StoryQitemInput {
+  return {
+    qitemId: item.qitemId,
+    tsCreated: item.tsCreated,
+    tsUpdated: item.tsUpdated,
+    sourceSession: item.sourceSession,
+    destinationSession: item.destinationSession,
+    state: item.state,
+    closureReason: item.closureReason ?? null,
+    closureTarget: item.closureTarget ?? null,
+    priority: item.priority ?? null,
+    tier: item.tier ?? null,
+    blockedOn: item.blockedOn ?? null,
+    tags: item.tags ?? [],
+    body: item.body,
+    // OPR.0.4.1.18: the authored human summary now rides on QueueItemDetail
+    // (served by /api/queue/:id). Pass it through; story-graph-model's
+    // deriveSummary prefers it and degrades to the first body line when null
+    // (pre-18 qitems + any an author omitted). body stays the source of truth
+    // for the drawer / drill-in; the handoff child's own summary is used (the
+    // model reads each item's summary, never the parent's).
+    summary: item.summary ?? null,
+    chainOfRecord: item.chainOfRecord ?? null,
+    handedOffFrom: item.handedOffFrom ?? null,
+    handedOffTo: item.handedOffTo ?? null,
+    claimedAt: item.claimedAt ?? null,
+    expiresAt: item.expiresAt ?? null,
+    closureRequiredAt: item.closureRequiredAt ?? null,
+    lastNudgeAttempt: item.lastNudgeAttempt ?? null,
+    lastNudgeResult: item.lastNudgeResult ?? null,
+    lastHeartbeat: item.lastHeartbeat ?? null,
+    resolution: item.resolution ?? null,
+    targetRepo: item.targetRepo ?? null,
+  };
+}
+
+// OPR.0.4.1.19 — the Story tab IS the queue-lineage git-graph (replaces the prior
+// events timeline at both mission and slice altitude). The forest reconstructs
+// from the scope's queue items (chain_of_record + handoff lineage).
 function ScopeStoryRollup({
-  rows,
-  detailsByName,
   queueItemsById,
   isFetching,
 }: {
@@ -395,119 +449,20 @@ function ScopeStoryRollup({
   queueItemsById: Map<string, QueueItemDetail>;
   isFetching: boolean;
 }) {
-  const rowByName = useMemo(() => new Map(rows.map((row) => [row.name, row])), [rows]);
-  const events = useMemo(() => {
-    return Array.from(detailsByName.values()).flatMap((detail) => {
-      const row = rowByName.get(detail.name);
-      const sliceLabel = row?.displayName ?? detail.displayName ?? detail.name;
-      return storyEventsForDetail(detail).map((event) => ({
-        ...event,
-        detail: {
-          ...(event.detail ?? {}),
-          sliceLabel,
-          sliceName: detail.name,
-        },
-      }));
-    });
-  }, [detailsByName, rowByName]);
-
-  if (isFetching && events.length === 0) {
-    return <PlaceholderTab label="LOADING STORY" description="Reading scoped story events." />;
-  }
-  if (events.length === 0) {
-    return <EmptyState label="NO STORY EVENTS" description="No story events are indexed for this scope." variant="card" testId="scope-story-empty" />;
+  const forest = useMemo(
+    () => buildStoryForest(Array.from(queueItemsById.values()).map(toStoryInput)),
+    [queueItemsById],
+  );
+  if (isFetching && forest.nodes.length === 0) {
+    return <PlaceholderTab label="LOADING STORY" description="Reading queue lineage." />;
   }
   return (
     <div data-testid="scope-story-rollup">
-      <TimelineTab events={events} phaseDefinitions={null} queueItemsById={queueItemsById} />
+      <StoryGraph forest={forest} />
     </div>
   );
 }
 
-function storyEventsForDetail(detail: SliceDetail) {
-  const qitemIds = new Set(detail.qitemIds);
-  return detail.story.events.filter((event) => !event.qitemId || qitemIds.has(event.qitemId));
-}
-
-function ScopeTestsRollup({
-  rows,
-  detailsByName,
-  isFetching,
-}: {
-  rows: SliceListEntry[];
-  detailsByName: Map<string, SliceDetail>;
-  isFetching: boolean;
-}) {
-  const [selected, setSelected] = useState<{ sliceName: string; relPath: string } | null>(null);
-  const rowsWithDetails = rows.map((row) => ({ row, detail: detailsByName.get(row.name) }));
-  const proofRows = rowsWithDetails.filter(({ detail }) => detail && detail.tests.proofPackets.length > 0);
-
-  if (isFetching && detailsByName.size === 0) {
-    return <PlaceholderTab label="LOADING TESTS" description="Reading scoped proof packets." />;
-  }
-  if (proofRows.length === 0) {
-    return <EmptyState label="NO PROOF PACKETS" description="No proof evidence is indexed for this scope." variant="card" testId="scope-tests-empty" />;
-  }
-
-  return (
-    <div data-testid="scope-tests-rollup" className="space-y-3">
-      {proofRows.map(({ row, detail }) => {
-        if (!detail) return null;
-        const screenshotCount = detail.tests.proofPackets.reduce((count, packet) => count + packet.screenshots.length, 0);
-        return (
-          <article key={row.name} className="border border-outline-variant bg-white/35 p-3 backdrop-blur-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-outline-variant pb-2">
-              <div className="min-w-0">
-                <Link
-                  to="/project/slice/$sliceId"
-                  params={{ sliceId: row.name }}
-                  className="font-mono text-[12px] uppercase tracking-[0.12em] text-stone-900 hover:underline"
-                >
-                  {row.displayName}
-                </Link>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <ProjectPill token={scopeToken("slice")} compact />
-                  <ProjectPill token={{ label: `${detail.tests.proofPackets.length} packets`, tone: "info" }} compact />
-                  <ProjectPill token={{ label: `${screenshotCount} screenshots`, tone: "success" }} compact />
-                </div>
-              </div>
-              <DateChip value={row.lastActivityAt} />
-            </div>
-            <div className="mt-3 space-y-3">
-              {detail.tests.proofPackets.map((packet) => (
-                <div key={packet.dirName} className="border border-outline-variant bg-white/30 p-2 backdrop-blur-sm">
-                  <ProofPacketHeader title={packet.dirName} badge={packet.passFailBadge} />
-                  {packet.primaryMarkdown?.content ? (
-                    // Slice 16: proof-packet markdown body is prose.
-                    // Per DESIGN §Typography prose stays font-body Inter.
-                    <p className="mt-2 line-clamp-3 font-body text-[11px] leading-relaxed text-stone-700">
-                      {packet.primaryMarkdown.content}
-                    </p>
-                  ) : null}
-                  {packet.screenshots.length > 0 ? (
-                    <div className="mt-2">
-                      <ProofThumbnailGrid
-                        sliceName={detail.name}
-                        screenshots={packet.screenshots}
-                        onSelect={(relPath) => setSelected({ sliceName: detail.name, relPath })}
-                        testIdPrefix={`scope-proof-screenshot-${detail.name}`}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </article>
-        );
-      })}
-      <ProofImageViewer
-        sliceName={selected?.sliceName ?? ""}
-        relPath={selected?.relPath ?? null}
-        onClose={() => setSelected(null)}
-      />
-    </div>
-  );
-}
 
 function aggregateTopology(detailsByName: Map<string, SliceDetail>): SliceDetail["topology"] {
   const rigs = new Map<string, { rigId: string; rigName: string; sessionNames: Set<string> }>();
@@ -713,7 +668,10 @@ export function WorkspaceScopePage() {
       onSelect={(id) => setActive(id as SharedTab)}
     >
       {active === "overview" ? (
-        <WorkspaceOverviewPanel />
+        // OPR.0.4.1.24 — the workspace parent altitude lands on the cross-mission
+        // portfolio (collapsed missions, most-recently-modified, expand→steering glance).
+        // Supersedes the prior WorkspaceOverviewPanel mission grid.
+        <WorkspacePortfolioPanel />
       ) : null}
       {active === "story" ? (
         <ScopeStoryRollup
@@ -733,11 +691,13 @@ export function WorkspaceScopePage() {
       {active === "artifacts" ? (
         <ScopeArtifactsRollup rows={rollup.rows} detailsByName={rollup.details.itemsByName} />
       ) : null}
-      {active === "tests" ? (
-        <ScopeTestsRollup
-          rows={rollup.rows}
-          detailsByName={rollup.details.itemsByName}
-          isFetching={rollup.details.isFetching}
+      {active === "proof" ? (
+        <ScopeProofRollup
+          rows={rollup.rows.map((r) => ({
+            name: r.name,
+            displayName: r.displayName,
+            slicePath: r.slicePath ?? null,
+          }))}
         />
       ) : null}
       {active === "queue" ? (
@@ -761,8 +721,13 @@ export function WorkspaceScopePage() {
 
 export function MissionScopePage() {
   const { missionId } = useParams({ from: "/project/mission/$missionId" });
-  const [active, setActive] = useState<SharedTab>("overview");
-  const rollup = useProjectScopeRollup(missionId, active !== "overview");
+  // OPR.0.4.1.17 — Steering is the mission LANDING tab.
+  const [active, setActive] = useState<SharedTab>("steering");
+  // Steering (the landing) + Overview need only the slice LIST, not per-slice
+  // details or queue bodies. Gate the detail+queue cascade off BOTH so the
+  // two-projection landing never fires hidden slice-detail/queue-body fetches
+  // (guard forward-fix: steering !== overview would otherwise load them).
+  const rollup = useProjectScopeRollup(missionId, active !== "overview" && active !== "steering");
   // V0.3.1 slice 12 walk-item 1 — fetch aggregated mission metadata
   // (missionPath for README/PROGRESS lookup; slices already covered
   // by rollup). README + PROGRESS render via useScopeMarkdown above
@@ -777,10 +742,11 @@ export function MissionScopePage() {
     <ScopeShell
       eyebrow="Mission"
       title={missionId}
-      tabs={SHARED_TABS}
+      tabs={MISSION_TABS}
       active={active}
       onSelect={(id) => setActive(id as SharedTab)}
     >
+      {active === "steering" ? <SteeringTab missionId={missionId} /> : null}
       {active === "overview" ? (
         <div data-testid="mission-overview-panel" className="space-y-6">
           {missionReadme.content && (
@@ -882,21 +848,26 @@ export function MissionScopePage() {
               </ul>
             </section>
           )}
-          <ScopeProgressRollup
-            rows={rollup.rows}
-            detailsByName={rollup.details.itemsByName}
-            isLoading={rollup.list.isLoading || rollup.details.isFetching}
-          />
+          {/* OPR.0.4.1.22 — per-slice rollup CARDS removed from the mission
+              Progress tab (founder round-8: remove cards, keep heatmap). The
+              MissionProgressHeatmap above is the per-slice acceptance view; the
+              redundant ScopeProgressRollup card wall is cut. (rollup.details
+              still loads — the heat-map's acceptance cells read it.) */}
         </div>
       ) : null}
       {active === "artifacts" ? (
-        <ScopeArtifactsRollup rows={rollup.rows} detailsByName={rollup.details.itemsByName} />
+        // OPR.0.4.1.21 — mission Artifacts is now the altitude-scoped file
+        // navigator (rooted at the mission dir = all mission artifacts),
+        // replacing the per-slice ScopeArtifactsRollup card wall.
+        <ArtifactsNavigator scopePath={missionPath} scopeLabel={missionId} />
       ) : null}
-      {active === "tests" ? (
-        <ScopeTestsRollup
-          rows={rollup.rows}
-          detailsByName={rollup.details.itemsByName}
-          isFetching={rollup.details.isFetching}
+      {active === "proof" ? (
+        <ScopeProofRollup
+          rows={rollup.rows.map((r) => ({
+            name: r.name,
+            displayName: r.displayName,
+            slicePath: r.slicePath ?? null,
+          }))}
         />
       ) : null}
       {active === "queue" ? (
@@ -1042,117 +1013,6 @@ function SliceMetric({ label, value }: { label: string; value: string | number }
   );
 }
 
-function SliceArtifactsTab({ detail }: { detail: SliceDetail }) {
-  const docsTree = detail.docs.tree;
-  const proofPackets = detail.tests.proofPackets;
-  return (
-    <div data-testid="slice-artifacts-tab" className="space-y-6">
-      <section data-testid="slice-artifacts-files" className="border border-outline-variant bg-white/20 p-4">
-        <SectionHeader tone="muted">Files</SectionHeader>
-        {docsTree.length > 0 ? (
-          <ul className="mt-3 divide-y divide-outline-variant border border-outline-variant bg-white/30">
-            {docsTree.map((entry) => {
-              // V0.3.1 slice 15 walk-items 6 + 11 — file entries
-              // become FileLink triggers. Click opens the
-              // SharedDetailDrawer with FileViewer (images render as
-              // images via FileViewer.inferKind). Directories stay
-              // inert (non-clickable) since FileViewer would 404 on
-              // a directory read.
-              const isFile = entry.type === "file";
-              const absolutePath = `${detail.slicePath}/${entry.relPath}`;
-              return (
-                <li key={entry.relPath} className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 font-mono text-[10px]">
-                  {isFile ? (
-                    <FileLink
-                      path={entry.relPath}
-                      absolutePath={absolutePath}
-                      className="inline-flex min-w-0 items-center gap-1.5 text-stone-900 hover:underline text-left"
-                      testId={`slice-artifacts-file-${entry.relPath}`}
-                    >
-                      <ToolMark tool={entry.relPath} size="xs" />
-                      <span className="truncate">{entry.relPath}</span>
-                    </FileLink>
-                  ) : (
-                    <span className="inline-flex min-w-0 items-center gap-1.5 text-stone-500">
-                      <ToolMark tool="folder" size="xs" decorative />
-                      <span className="truncate">{entry.relPath}</span>
-                    </span>
-                  )}
-                  <span className="uppercase tracking-[0.10em] text-stone-500">{entry.type}</span>
-                  <span className="text-stone-400">{entry.size == null ? "-" : `${entry.size}b`}</span>
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <div className="mt-3 font-mono text-[10px] text-stone-400">No slice files indexed.</div>
-        )}
-      </section>
-
-      <section data-testid="slice-artifacts-commits" className="border border-outline-variant bg-white/20 p-4">
-        <SectionHeader tone="muted">Commits</SectionHeader>
-        {detail.commitRefs.length > 0 ? (
-          <ul className="mt-3 divide-y divide-outline-variant border border-outline-variant bg-white/30">
-            {detail.commitRefs.map((commitRef) => (
-              <li key={commitRef} className="px-3 py-2 font-mono text-[10px] text-stone-900">
-                <span className="inline-flex min-w-0 items-center gap-1.5">
-                  <ToolMark tool="commit" size="xs" decorative />
-                  <span className="truncate">{commitRef}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="mt-3 font-mono text-[10px] text-stone-400">No commit refs indexed for this slice.</div>
-        )}
-      </section>
-
-      <section data-testid="slice-artifacts-proof" className="border border-outline-variant bg-white/20 p-4">
-        <SectionHeader tone="muted">Proof Packets</SectionHeader>
-        {proofPackets.length > 0 ? (
-          <ul className="mt-3 divide-y divide-outline-variant border border-outline-variant bg-white/30">
-            {proofPackets.map((packet) => (
-              <li key={packet.dirName} className="px-3 py-2 font-mono text-[10px] text-stone-700">
-                <ProofPacketHeader title={packet.dirName} badge={packet.passFailBadge} />
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-stone-500">
-                  <span className="inline-flex items-center gap-1">
-                    <ToolMark tool="screenshot" size="xs" decorative />
-                    {packet.screenshots.length} screenshots
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <ToolMark tool="video" size="xs" decorative />
-                    {packet.videos.length} videos
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <ToolMark tool="trace" size="xs" decorative />
-                    {packet.traces.length} traces
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="mt-3 font-mono text-[10px] text-stone-400">No proof packets indexed.</div>
-        )}
-      </section>
-
-      <section data-testid="slice-artifacts-docs">
-        <SectionHeader tone="muted">Docs Browser</SectionHeader>
-        <div className="mt-2 border border-outline-variant">
-          <DocsTab sliceName={detail.name} tree={docsTree} />
-        </div>
-      </section>
-
-      <section data-testid="slice-artifacts-decisions">
-        <SectionHeader tone="muted">Decisions</SectionHeader>
-        <div className="mt-2 border border-outline-variant">
-          <DecisionsTab rows={detail.decisions.rows} />
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function SliceOverviewTab({ detail }: { detail: SliceDetail }) {
   const currentStep = detail.acceptance.currentStep;
   // V0.3.1 slice 12 walk-item 1 — render slice README via the
@@ -1236,15 +1096,6 @@ export function SliceScopePage() {
   const detailQuery = useSliceDetail(sliceId);
   const queueItems = useQueueItemMap(detailQuery.data?.qitemIds ?? []);
   const queueItemsById = useMemo(() => queueItems.itemsById, [queueItems.itemsById]);
-  // 0.3.1 slice 06 — fetch <slicePath>/timeline.md so TimelineTab can
-  // render the curated narrative above the auto-captured event feed.
-  // SliceDetail.slicePath is an ABSOLUTE filesystem path; the hook
-  // resolves it against the daemon's allowlist roots and issues the
-  // /api/files/read call with the correct relative path. When no
-  // allowlist root contains the slice, the hook returns
-  // unavailable=true and TimelineTab degrades to the auto-captured
-  // event feed alone.
-  const timelineMd = useSliceTimelineMarkdown(detailQuery.data?.slicePath ?? null);
   const sliceScopeAudit = useScopeAudit(detailQuery.data?.missionId ?? null);
 
   if (detailQuery.isLoading) {
@@ -1301,11 +1152,11 @@ export function SliceScopePage() {
       onSelect={(id) => setActive(id as SliceTab)}
     >
       {active === "story" ? (
-        <TimelineTab
-          events={storyEventsForDetail(detail)}
-          phaseDefinitions={detail.story.phaseDefinitions}
+        <ScopeStoryRollup
+          rows={[]}
+          detailsByName={new Map<string, SliceDetail>()}
           queueItemsById={queueItemsById}
-          timelineMarkdown={timelineMd.content ?? undefined}
+          isFetching={false}
         />
       ) : null}
       {active === "overview" ? (
@@ -1342,15 +1193,18 @@ export function SliceScopePage() {
         </div>
       ) : null}
       {active === "artifacts" ? (
-        <SliceArtifactsTab detail={detail} />
+        // OPR.0.4.1 AC-4-FF — the slice Artifacts view IS the altitude-scoped file
+        // navigator (slice 21's pattern at slice altitude), rooted at the slice dir.
+        // The prior Files/Commits/Proof/Docs/Decisions card wall is dropped; commits
+        // are flagged 0.4.2 (no qitem->commit linkage), decisions live in the Story
+        // DAG + decision docs surface in this navigator tree.
+        <ArtifactsNavigator scopePath={detail.slicePath} scopeLabel={detail.displayName || detail.name} />
       ) : null}
-      {active === "tests" ? (
-        <TestsVerificationTab
-          sliceName={detail.name}
-          tests={detail.tests}
-          qitemCount={detail.qitemIds.length}
-          docsCount={detail.docs.tree.length}
-          lastActivityAt={detail.lastActivityAt}
+      {active === "proof" ? (
+        <SliceProofTab
+          sliceId={detail.displayName}
+          title={detail.name}
+          slicePath={detail.slicePath}
         />
       ) : null}
       {active === "queue" ? (

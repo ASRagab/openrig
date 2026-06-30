@@ -47,6 +47,9 @@ export interface RenderOpts {
   title: string;
   created_date: string;
   release_version?: string;
+  intent_visual_image_path?: string;
+  intent_visual_diff_path?: string;
+  intent_visual_build_command?: string;
 }
 
 function applyPlaceholders(content: string, opts: RenderOpts): string {
@@ -57,7 +60,10 @@ function applyPlaceholders(content: string, opts: RenderOpts): string {
     .replace(/\{\{mission\}\}/g, opts.mission)
     .replace(/\{\{title\}\}/g, opts.title)
     .replace(/\{\{created_date\}\}/g, opts.created_date)
-    .replace(/\{\{release_version\}\}/g, opts.release_version ?? "");
+    .replace(/\{\{release_version\}\}/g, opts.release_version ?? "")
+    .replace(/\{\{intent_visual_image_path\}\}/g, opts.intent_visual_image_path ?? "./intent.png")
+    .replace(/\{\{intent_visual_diff_path\}\}/g, opts.intent_visual_diff_path ?? "./change.diff")
+    .replace(/\{\{intent_visual_build_command\}\}/g, opts.intent_visual_build_command ?? "TWIN_ROUTE=<route> npm run twin:build");
 }
 
 export function renderSliceTemplate(kind: SliceTemplateKind, opts: RenderOpts): string {
@@ -141,9 +147,26 @@ export function renderMissionProgressTemplate(missionName: string): string {
   return raw.replace(/\{\{missionName\}\}/g, missionName);
 }
 
+export function renderMissionBriefTemplate(missionName: string): string {
+  const raw = fs.readFileSync(resolveTemplate("mission-brief.md"), "utf8");
+  return raw.replace(/\{\{mission_name\}\}/g, missionName);
+}
+
 export function renderSliceProgressTemplate(sliceName: string): string {
   const raw = fs.readFileSync(resolveTemplate("slice-progress.md"), "utf8");
   return raw.replace(/\{\{sliceName\}\}/g, sliceName);
+}
+
+export interface SliceProofRenderOpts {
+  id: string;
+  title: string;
+}
+
+export function renderSliceProofTemplate(opts: SliceProofRenderOpts): string {
+  const raw = fs.readFileSync(resolveTemplate("proof.md"), "utf8");
+  return raw
+    .replace(/\{\{id\}\}/g, opts.id)
+    .replace(/\{\{title\}\}/g, opts.title);
 }
 
 /** Convert a folder-slug to a title-cased display name. */

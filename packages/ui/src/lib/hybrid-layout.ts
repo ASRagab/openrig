@@ -416,10 +416,65 @@ function layoutWithDagre(
 
   dagre.layout(graph);
 
+  return resolveDagrePositions(
+    items,
+    (id) => graph.node(id) as { x: number; y: number } | undefined,
+    rankdir,
+    options,
+  );
+}
+
+// OPR.0.4.2.17 — resolve dagre's per-node coords into a position map WITHOUT
+// ever collapsing to one coordinate. dagre can return missing or degenerate
+// (all-equal) coords on a refetch tick; the old blanket `?? {x:0,y:0}` fallback
+// then stacked every node on the origin (the "all collapsed onto r2" demo bug).
+// On any degenerate signal, lay a deterministic non-overlapping fallback so
+// distinct items keep distinct positions.
+function resolveDagrePositions(
+  items: LayoutItem[],
+  lookup: (id: string) => { x: number; y: number } | undefined,
+  rankdir: "TB" | "LR",
+  options: { nodesep: number; ranksep: number },
+): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
+  let degenerate = false;
   for (const item of items) {
-    const node = graph.node(item.id) as { x: number; y: number } | undefined;
-    positions.set(item.id, node ?? { x: 0, y: 0 });
+    const node = lookup(item.id);
+    if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) {
+      degenerate = true;
+      break;
+    }
+    positions.set(item.id, { x: node.x, y: node.y });
+  }
+  if (!degenerate && items.length > 1) {
+    const values = [...positions.values()];
+    const first = values[0]!;
+    degenerate = values.every((p) => p.x === first.x && p.y === first.y);
+  }
+  if (degenerate) {
+    return deterministicFallbackPositions(items, rankdir, options);
+  }
+  return positions;
+}
+
+// Lay items along the rank axis with cumulative spacing. Returns CENTER coords
+// to match dagre's contract (normalizeLayout reads centers). Guarantees every
+// distinct item a distinct, non-overlapping coordinate.
+function deterministicFallbackPositions(
+  items: LayoutItem[],
+  rankdir: "TB" | "LR",
+  options: { nodesep: number; ranksep: number },
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  let cursor = 0;
+  for (const item of items) {
+    if (rankdir === "LR") {
+      positions.set(item.id, { x: cursor + item.width / 2, y: item.height / 2 });
+      cursor += item.width + options.ranksep;
+    } else {
+      positions.set(item.id, { x: item.width / 2, y: cursor + item.height / 2 });
+      cursor += item.height + options.ranksep;
+    }
   }
   return positions;
 }
@@ -470,4 +525,5 @@ export const __test_internals = {
   layoutWithDagre,
   normalizeLayout,
   dedupeEdges,
+  resolveDagrePositions,
 };

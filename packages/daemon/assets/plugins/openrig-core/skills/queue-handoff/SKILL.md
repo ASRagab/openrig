@@ -1,23 +1,18 @@
 ---
 name: queue-handoff
-description: Use when ending a turn, finishing a slice, blocked on another agent's work, or escalating to a human — durable work handoff via queue items so the system keeps moving across compactions, missed messages, and interruptions. Covers the hot-potato terminal-turn-rule (active work ends by passing the ball, not by going idle), default-nudge semantics, and when --no-nudge or --notify is required.
+description: Use when ending a turn, finishing a slice, blocked on another agent's work, or escalating to a human — durable work handoff via queue items so the system keeps moving across compactions, missed messages, and interruptions. Covers the hot-potato terminal-turn-rule (active work ends by passing the ball, not by going idle), default-nudge semantics, and when `--no-nudge` is appropriate for intentional cold park or human gate.
 metadata:
   openrig:
     stage: factory-approved
-    last_verified: "2026-05-04"
+    last_verified: "2026-06-24"
     distribution_scope: product-bound
     source_evidence: |
-      Daemon-backed `rig queue` shipped in v0.2.0 (PL-004 Phase A) with handed-off-to / handed-off-from / state field shape. `rig queue` is canonical for new work; `rigx queue` is recovery-only fallback. The daemon enforces hot-potato strict-rejection at the API.
+      Daemon-backed `rig queue` shipped in v0.2.0 (PL-004 Phase A) with handed-off-to / handed-off-from / state field shape. `rig queue` is canonical for new work; `rigx queue` is recovery-only fallback. The daemon enforces hot-potato strict-rejection at the API. Body resynced from canonical 2026-06-24 (demo-blocker fix: corrected the default-nudge guidance — the default already nudges; the previously-described extra notify flag does not exist on the shipped CLI).
     sibling_skills: []
     transfer_test: pending
 ---
 
 # Queue Handoff
-
-> **CANONICAL SURFACE NOTE (2026-05-11)** — `rig queue` (daemon-backed SQLite) is the
-> canonical surface for all substantive work routing. `rigx queue` (filesystem v0
-> prototype) is **recovery-only fallback**; qitems written via `rigx queue` are
-> invisible to daemon-backed reads and break fleet-wide routing discipline.
 
 Durable work handoff via queue items. Lets the system keep moving
 through compactions, missed messages, and interruptions by passing the
@@ -71,27 +66,64 @@ every surface (CLI, MCP, future UI) inherits the same guarantee.
 |---|---|---|
 | `rig queue create` | yes | New qitem created from scratch |
 | `rig queue handoff` | yes | Transactional close-as-handed-off + create-new |
-| `rig queue handoff-and-complete` | **no — requires `--notify`** | Inside a self-driving loop where motion matters |
-| `rigx queue handoff` (filesystem v0 prototype; **recovery-only fallback since 2026-05-11**) | yes | Legacy artifact; qitems invisible to daemon-backed reads. Use `rig queue handoff` for all new substantive work. |
+| `rig queue handoff-and-complete` | yes | Atomic close + create-new; default nudge wakes the new owner |
+| `rigx queue handoff` (filesystem v0 prototype; **recovery-only fallback since 2026-05-11**) | yes | Legacy artifact; qitems invisible to daemon-backed reads; deprecated with removal queued. Use `rig queue handoff` (daemon-backed) for all new substantive work. |
 
-**Footgun**: `handoff-and-complete` is cold unless `--notify` is passed.
-In a self-driving loop, an agent that closes with
-`handoff-and-complete` (no `--notify`) writes a durable qitem but does
-NOT wake the next owner — the rig stalls silently while the qitem sits
-in inbox.
+**Footgun**: `--no-nudge` accidentally added to a live-loop handoff.
+The shipped 0.3.1 CLI nudges by default on every queue write surface
+(`rig queue create`, `rig queue handoff`, AND `rig queue handoff-and-complete`).
+The only suppression flag is `--no-nudge` — appropriate for intentional
+cold park, human-gate signal, or a deliberate poll-driven workflow, but
+NOT for live-loop handoffs where motion matters.
 
-**Rule**: in a live loop, use `handoff-and-complete --notify` OR send
-a separate verified manual nudge. `--no-nudge` exists but should be
-used intentionally (e.g., explicit park or human-gate signal), not as
-an accidental stall.
+**Rule**: in a live loop, omit `--no-nudge` and trust the default.
+`--no-nudge` is the opt-out, not the opt-in. If you find yourself
+reaching for `--notify`, stop — that flag does not exist on the
+shipped 0.3.1 CLI; you may be following a stale instruction that
+inverted the default-nudge polarity.
 
-## Failure modes (5; verbatim)
+## Queue-body hygiene (token + parse safety)
+
+The qitem body is durable DATA the daemon stores and replays on every
+`rig queue show <id>` / `--json` read. Keep it small and parse-safe — a
+bloated or malformed body costs every future reader, not just the
+recipient.
+
+- **No large command output in bodies.** Do NOT paste `rig ps`/`--nodes`
+  dumps, big JSON blobs, full proof output, diffs, or transcript chunks
+  into a qitem body. **Link the artifact PATH** (e.g.
+  `missions/<m>/<slice>/proof.md`) or **summarize in prose**, then point
+  at the file for the detail. A pasted dump makes `rig queue show <id>
+  --json` huge — a second-order token bloat: bloated DATA living in the
+  queue, distinct from the command-default output bombs the token-burn
+  emergency pack covers. (Sensor: dev1-guard token-burn-flag 8ea201e4,
+  2026-06; founder-directed cure.)
+- **Substantive bodies go through `--body-file`, not inline `--body`.**
+  For anything beyond a short line, write the body to a file and pass
+  `--body-file <path>` (or `-` for stdin). Inline `--body` with shell
+  metacharacters is fragile.
+- **No raw backticks in bodies.** Backticks in an inline body are shell
+  command-substitution and corrupt the payload (or execute). If you need
+  code/command spans, use `--body-file`, or drop the backticks and write
+  the command in plain text.
+
+Heuristic: if the thing you want to include is more than a few lines or
+contains shell metacharacters (backticks, `$`, quotes, newlines-with-pipes),
+it belongs in a file you LINK, not in the body you paste.
+
+Product backstop (defense-in-depth, NOT a substitute for this discipline):
+`rig queue show` oversized-body truncation/preview is tracked separately
+as slice OPR.0.4.1.3. The behavioral rule here is the primary, durable
+cure; the product truncation is the safety net.
+
+## Failure modes (6; verbatim)
 
 1. Agent ends a turn without a handoff, so the rig appears idle.
-2. Agent creates a queue item but suppresses or forgets the nudge when immediate motion was intended. This includes `handoff-and-complete` without `--notify` inside a live loop.
+2. Agent creates a queue item with `--no-nudge` inside a live loop, intending suppression of attention but breaking immediate motion. `--no-nudge` is for intentional cold park / human gate, not for routine live-loop handoffs. The opposite footgun — adding a `--notify` flag that does not exist on the shipped 0.3.1 CLI — comes from following stale instructions; the default already nudges.
 3. Queue item is too small and turns work into bureaucracy.
 4. Queue item is too broad and loses ownership, proof, or closure criteria.
 5. Human escalation happens in chat but not as a durable attention item.
+6. Agent pastes a large command dump (ps/nodes, big JSON, proof blob) into the qitem body, bloating the stored DATA so every future `rig queue show --json` read is huge. Link the proof PATH or summarize in prose; substantive bodies go through `--body-file`; no raw backticks inline.
 
 ## Durable handoff field shape
 
@@ -102,16 +134,16 @@ Every qitem carries:
 - `state` — one of: `pending | in-progress | done | blocked | failed | denied | canceled | handed-off`
 - `closure_reason` + `closure_target` — set on terminal closure per hot-potato rule
 
-The same field shape exists in legacy `rigx queue` artifacts and the daemon-shipped
-`rig queue` surface, but new queue reads and writes should use `rig queue`. Watchdog
-policies and workflow runtime project new owners off these fields.
+The fields are auditable across both `rigx queue` (config-layer) and
+`rig queue` (daemon-shipped) surfaces. Watchdog policies and workflow
+runtime project new owners off these fields.
 
 ## Two surfaces (same shape)
 
 | Surface | Status | When to use |
 |---|---|---|
 | `rig queue ...` (daemon-shipped, v0.2.0) | Active host coordination surface | Daemon-backed PL-004 work; SQLite-canonical |
-| `rigx queue ...` (filesystem v0 prototype) | Recovery-only fallback | Legacy recovery for artifacts that have not migrated; not for new substantive work because daemon-backed reads cannot see those qitems |
+| `rigx queue ...` (config-layer dogfood) | Coexists with daemon | Workflows still operating on the temporary substrate coordination layer; legacy artifacts |
 
 Default posture: prefer daemon `rig queue` for new work. If a
 daemon-backed coordination command fails, debug the command/runtime/schema
@@ -119,4 +151,5 @@ edge directly — don't fall back to stale pre-upgrade assumptions.
 
 ## See also
 
-- `rig queue --help` — full CLI surface for queue items, handoffs, and closure-reason discipline
+- `looping-workflows` skill — operating discipline for self-driving rig-shaped loops; queue-handoff is its current handoff substrate
+- `intake-routing` skill — how raw signals enter the system and become routed work that flows through the queue

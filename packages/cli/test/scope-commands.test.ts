@@ -193,6 +193,29 @@ describe("rig scope slice create", () => {
     expect(content).toContain("Implementation complete");
   });
 
+  it("OPR.0.4.1.23 AC-1/AC-3: slice create scaffolds root PROOF.md + sibling empty proof/ dir", async () => {
+    const r = await run([
+      "slice", "create", "release-0.3.2", "proof-contract", "--json",
+    ], env.missionsRoot);
+    const parsed = JSON.parse(r.stdout);
+    const proofPath = path.join(parsed.slice.path, "PROOF.md");
+    const proofDir = path.join(parsed.slice.path, "proof");
+
+    expect(fs.existsSync(proofPath)).toBe(true);
+    expect(fs.statSync(proofPath).isFile()).toBe(true);
+    expect(fs.existsSync(proofDir)).toBe(true);
+    expect(fs.statSync(proofDir).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(proofDir, "PROOF.md"))).toBe(false);
+    expect(fs.readdirSync(proofDir)).toEqual([]);
+
+    const proof = fs.readFileSync(proofPath, "utf8");
+    expect(proof).toContain("# PROOF — OPR.0.3.2.2 Proof Contract");
+    expect(proof).toContain("Closed by:");
+    expect(proof).toContain("## What this proves");
+    expect(proof).toContain("## Artifacts (media in proof/)");
+    expect(proof).toContain("## Residue / caveats (if any)");
+  });
+
   it("AC-1: slice create --readme-only writes marker instead of PROGRESS.md", async () => {
     const r = await run([
       "slice", "create", "release-0.3.2", "no-progress", "--readme-only", "--json",
@@ -516,6 +539,31 @@ describe("rig scope mission create (HG-14 + HG-15)", () => {
     expect(content).toContain("# Progress");
     expect(content).toContain("Scope complete");
   });
+
+  it("OPR.0.4.1.16: mission create scaffolds root MISSION_BRIEF.md with the locked 7-section schema", async () => {
+    const r = await run(["mission", "create", "release-0.6.2", "--json"], env.missionsRoot);
+    expect(r.exitCode).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    const briefPath = path.join(parsed.mission.path, "MISSION_BRIEF.md");
+
+    expect(fs.existsSync(briefPath)).toBe(true);
+    expect(fs.statSync(briefPath).isFile()).toBe(true);
+    expect(fs.existsSync(path.join(parsed.mission.path, "brief", "MISSION_BRIEF.md"))).toBe(false);
+
+    const content = fs.readFileSync(briefPath, "utf8");
+    const headers = Array.from(content.matchAll(/^#{1,2} .+$/gm)).map((m) => m[0]);
+    expect(headers).toEqual([
+      "# 0.6.2 — Brief",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ]);
+    expect(content).toContain("<optional one-line italic TL;DR>");
+    expect(content).toContain("→ MISSION_NOTES.md (continuity / restore) · → PROGRESS.md (active / next) · other key links");
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -733,6 +781,77 @@ describe("rig scope audit edge cases (guard BLOCKING fixes)", () => {
     const sliceEntry = parsed.slices.find((s: { name: string }) => s.name === "random-notes");
     expect(sliceEntry).toBeDefined();
     expect(sliceEntry.findings.some((f: { kind: string }) => f.kind === "id_convention_violation" || f.kind === "slice_naming_convention")).toBe(true);
+  });
+
+  it("done slice without proof emits advisory missing_proof with exact fix guidance", async () => {
+    const missionDir = path.join(substrate.missionsRoot, "release-0.4.1");
+    fs.mkdirSync(missionDir, { recursive: true });
+    writeFile(path.join(missionDir, "README.md"), "---\nid: OPR.0.4.1\n---\n# release-0.4.1\n");
+    writeFile(path.join(missionDir, "PROGRESS.md"), "# Progress\n");
+    writeFile(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n");
+    writeFile(path.join(missionDir, "MISSION_BRIEF.md"), [
+      "# release-0.4.1 — Brief",
+      "",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ].join("\n"));
+    const doneSlice = path.join(missionDir, "slices", "01-done");
+    writeFile(path.join(doneSlice, "README.md"), "---\nid: OPR.0.4.1.1\nstatus: done\n---\n# done\n");
+    writeFile(path.join(doneSlice, "PROGRESS.md"), "# Progress\n");
+    fs.mkdirSync(path.join(doneSlice, "proof"), { recursive: true });
+    const wipSlice = path.join(missionDir, "slices", "02-wip");
+    writeFile(path.join(wipSlice, "README.md"), "---\nid: OPR.0.4.1.2\nstatus: wip\n---\n# wip\n");
+    writeFile(path.join(wipSlice, "PROGRESS.md"), "# Progress\n");
+
+    const result = await run(["audit", "--mission", "release-0.4.1", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.ok).toBe(true);
+    const doneEntry = parsed.slices.find((s: { name: string }) => s.name === "01-done");
+    const wipEntry = parsed.slices.find((s: { name: string }) => s.name === "02-wip");
+    const proofFinding = doneEntry.findings.find((f: { kind: string }) => f.kind === "missing_proof");
+    expect(proofFinding).toMatchObject({
+      severity: "medium",
+      path: path.join(doneSlice, "PROOF.md"),
+    });
+    expect(proofFinding.remediation).toMatch(/proof\//);
+    expect(wipEntry.findings.some((f: { kind: string }) => f.kind === "missing_proof")).toBe(false);
+  });
+
+  it("proof-packet-backed proven slice without root proof emits missing_proof", async () => {
+    const missionDir = path.join(substrate.missionsRoot, "release-0.4.1");
+    fs.mkdirSync(missionDir, { recursive: true });
+    writeFile(path.join(missionDir, "README.md"), "---\nid: OPR.0.4.1\n---\n# release-0.4.1\n");
+    writeFile(path.join(missionDir, "PROGRESS.md"), "# Progress\n");
+    writeFile(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n");
+    writeFile(path.join(missionDir, "MISSION_BRIEF.md"), [
+      "# release-0.4.1 — Brief",
+      "",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ].join("\n"));
+    const sliceDir = path.join(missionDir, "slices", "03-proof-backed");
+    writeFile(path.join(sliceDir, "README.md"), "---\nid: OPR.0.4.1.3\nstatus: active\n---\n# proof backed\n");
+    writeFile(path.join(sliceDir, "PROGRESS.md"), "# Progress\n");
+    const dogfoodRoot = path.join(path.dirname(substrate.missionsRoot), "dogfood-evidence");
+    writeFile(path.join(dogfoodRoot, "03-proof-backed-20260625", "capture.md"), "proof packet exists\n");
+
+    const result = await run(["audit", "--mission", "release-0.4.1", "--json"], substrate.missionsRoot);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.ok).toBe(true);
+    const entry = parsed.slices.find((s: { name: string }) => s.name === "03-proof-backed");
+    const proofFinding = entry.findings.find((f: { kind: string }) => f.kind === "missing_proof");
+    expect(proofFinding).toMatchObject({
+      severity: "medium",
+      path: path.join(sliceDir, "PROOF.md"),
+    });
   });
 });
 

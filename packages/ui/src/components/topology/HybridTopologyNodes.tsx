@@ -189,21 +189,56 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
         />
       ) : null}
       {data.rigId ? (
+        <>
         <button
           type="button"
           data-testid={`hybrid-cmux-open-${data.logicalId}`}
           aria-busy={cmuxLaunch.isPending || undefined}
-          aria-label={`${cmuxLaunch.isPending ? "Opening" : "Open"} ${data.logicalId} in cmux`}
-          title={cmuxLaunch.isPending ? "Opening in cmux" : "Open in cmux"}
-          disabled={cmuxLaunch.isPending}
+          aria-label={
+            cmuxLaunch.isPending
+              ? `Opening ${data.logicalId} in cmux`
+              : cmuxLaunch.isError
+                ? `Open ${data.logicalId} in cmux failed: ${cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)}. Click to retry.`
+                : `Open ${data.logicalId} in cmux`
+          }
+          title={
+            cmuxLaunch.isPending
+              ? "Opening in cmux"
+              : cmuxLaunch.isError
+                ? `Failed: ${cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)} — click to retry`
+                : "Open in cmux"
+          }
+          disabled={cmuxLaunch.isPending || !data.logicalId}
+          data-error={cmuxLaunch.isError || undefined}
           onClick={(event) => {
             event.stopPropagation();
+            // OPR.0.4.1.31 part D (rev1-r2) — symmetric to the table guard: never
+            // POST open-cmux for a malformed node (a null/empty logicalId would
+            // build /nodes/"null"/open-cmux). The button is also disabled above.
+            if (!data.logicalId) return;
+            // part B — reset a prior error then retry; the failure is no longer
+            // silent (data-error + title/aria carry the message).
+            if (cmuxLaunch.isError) cmuxLaunch.reset();
             cmuxLaunch.mutate({ rigId: data.rigId!, logicalId: data.logicalId });
           }}
-          className={cn("absolute right-1.5 top-6 z-10 disabled:cursor-wait disabled:opacity-60", hoverIconClass)}
+          className={cn("absolute right-1.5 top-6 z-10 disabled:cursor-wait disabled:opacity-60", cmuxLaunch.isError ? "text-rose-700" : "", hoverIconClass)}
         >
           <ToolMark tool="cmux" size="sm" />
         </button>
+        {cmuxLaunch.isError ? (
+          // OPR.0.4.1.31 B2 (dev1-guard) — a stable, VISIBLE error message (not
+          // just title/aria/color): a persistent role=alert chip near the button
+          // carrying the daemon message so a failed open-cmux is readable, not a
+          // dead-looking button.
+          <span
+            data-testid={`hybrid-cmux-error-${data.logicalId}`}
+            role="alert"
+            className="absolute right-1.5 top-14 z-20 max-w-[180px] border border-rose-300 bg-rose-50 px-1.5 py-1 font-mono text-[8px] leading-tight text-rose-700 whitespace-normal break-words shadow-sm"
+          >
+            {cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)}
+          </span>
+        ) : null}
+        </>
       ) : null}
       <div className="space-y-1 px-2 py-1.5">
         <div className="truncate font-mono text-[8px] leading-tight text-stone-500">

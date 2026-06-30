@@ -3,8 +3,8 @@
 // Each canonical slice tab (story/overview/progress/artifacts/tests/queue/
 // topology) renders its mounted component once /api/slices/:name resolves.
 // Loading + error states get their own EmptyState renders. The fold
-// mapping (AcceptanceTab → progress; DocsTab+DecisionsTab → artifacts;
-// QueueItemTrigger → queue) is verified via testid presence.
+// mapping (AcceptanceTab → progress; ArtifactsNavigator → artifacts per
+// OPR.0.4.1 AC-4-FF; QueueItemTrigger → queue) is verified via testid presence.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, cleanup, waitFor, fireEvent } from "@testing-library/react";
@@ -54,6 +54,12 @@ function renderSliceScope(opts: {
     }
     if (url.includes("/api/queue/qitem-B")) {
       return new Response(JSON.stringify(makeQueueItem("qitem-B", "Body for qitem-B")));
+    }
+    if (url.includes("/api/files/roots")) {
+      // OPR.0.4.1 AC-4-FF: the Artifacts tab now mounts ArtifactsNavigator. With no
+      // allowlist roots it deterministically renders its unavailable setup hint
+      // (only the navigator renders that testid — proves the swap from the card wall).
+      return new Response(JSON.stringify({ roots: [] }));
     }
     return new Response("[]");
   });
@@ -170,6 +176,20 @@ describe("SliceScopePage P5-2 tab content piping", () => {
     expect(storyTabAfter?.getAttribute("data-active")).toBe("true");
   });
 
+  it("OPR.0.4.1.20: the project-area Topology tab is relabeled WORKFLOW (id stays 'topology')", async () => {
+    const { container, findByTestId } = renderSliceScope({
+      sliceId: "idea-ledger",
+      detail: makeDetail(),
+    });
+    await findByTestId("project-tab-nav");
+    // id-stable rename: the tab keeps id=topology (routing / active-state /
+    // test-ids unchanged) but the visible LABEL is now Workflow.
+    const tab = container.querySelector("[data-testid='project-tab-topology']");
+    expect(tab).toBeTruthy();
+    expect(tab?.textContent).toContain("Workflow");
+    expect(tab?.textContent).not.toContain("Topology");
+  });
+
   it("progress tab mounts AcceptanceTab (FOLDED per code-map)", async () => {
     const { container, findByTestId } = renderSliceScope({
       sliceId: "idea-ledger",
@@ -184,33 +204,24 @@ describe("SliceScopePage P5-2 tab content piping", () => {
     });
   });
 
-  it("artifacts tab mounts FOLDED Docs + Decisions sections", async () => {
+  it("artifacts tab mounts the ArtifactsNavigator; the old Files/Commits/Docs/Decisions card wall is gone (OPR.0.4.1 AC-4-FF)", async () => {
     const { container, findByTestId } = renderSliceScope({
       sliceId: "idea-ledger",
-      detail: makeDetail({
-        tests: {
-          aggregate: { passCount: 1, failCount: 0 },
-          proofPackets: [{
-            dirName: "dogfood-evidence-demo",
-            primaryMarkdown: null,
-            additionalMarkdown: [],
-            screenshots: ["screenshots/demo.png"],
-            videos: [],
-            traces: [],
-            passFailBadge: "pass",
-          }],
-        },
-      }),
+      detail: makeDetail(),
     });
     await findByTestId("project-tab-nav");
     fireEvent.click(container.querySelector("[data-testid='project-tab-artifacts']")!);
-    expect(await findByTestId("slice-artifacts-tab")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-files']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-commits']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-files'] svg")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-proof'] svg")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-docs']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='slice-artifacts-decisions']")).toBeTruthy();
+    // The slice Artifacts view IS the ArtifactsNavigator now (slice 21's pattern at
+    // slice altitude). With no allowlist roots it mounts the navigator's unavailable
+    // setup hint — only the navigator renders this, proving the swap from the card wall.
+    expect(await findByTestId("artifacts-navigator-unavailable")).toBeTruthy();
+    // The dropped sections are gone: Commits + Decisions re-homed; Files + Docs
+    // subsumed by the navigator; the SliceArtifactsTab wrapper is removed.
+    expect(container.querySelector("[data-testid='slice-artifacts-tab']")).toBeNull();
+    expect(container.querySelector("[data-testid='slice-artifacts-files']")).toBeNull();
+    expect(container.querySelector("[data-testid='slice-artifacts-commits']")).toBeNull();
+    expect(container.querySelector("[data-testid='slice-artifacts-docs']")).toBeNull();
+    expect(container.querySelector("[data-testid='slice-artifacts-decisions']")).toBeNull();
   });
 
   it("overview tab mounts a distinct summary surface rather than the docs browser", async () => {
@@ -274,15 +285,14 @@ describe("SliceScopePage P5-2 tab content piping", () => {
     });
   });
 
-  it("tests tab mounts TestsVerificationTab", async () => {
+  it("proof tab mounts SliceProofTab (Tests renamed → Proof, OPR.0.4.1.23)", async () => {
     const { container, findByTestId } = renderSliceScope({
       sliceId: "idea-ledger",
       detail: makeDetail(),
     });
     await findByTestId("project-tab-nav");
-    fireEvent.click(container.querySelector("[data-testid='project-tab-tests']")!);
-    // TestsVerificationTab renders a diagnostic empty-state when no proofPackets.
-    expect(await findByTestId("tests-empty")).toBeTruthy();
-    expect(container.querySelector("[data-testid='tests-empty-diagnostics']")).toBeTruthy();
+    fireEvent.click(container.querySelector("[data-testid='project-tab-proof']")!);
+    // The PROOF tab projects the slice's proof/ + PROOF.md AS-IS via /api/files.
+    expect(await findByTestId("proof-tab")).toBeTruthy();
   });
 });

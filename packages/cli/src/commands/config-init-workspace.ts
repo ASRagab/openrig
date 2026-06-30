@@ -19,7 +19,7 @@ import { Command } from "commander";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigStore } from "../config-store.js";
-import { renderMissionNotesTemplate } from "../lib/scope/templates.js";
+import { renderMissionBriefTemplate, renderMissionNotesTemplate, renderSliceProofTemplate } from "../lib/scope/templates.js";
 
 export interface InitWorkspaceOpts {
   root?: string;
@@ -101,7 +101,10 @@ const WORKSPACE_DIRS = [
   ...DEFAULT_MISSIONS.flatMap((mission) => [
     `missions/${mission.id}`,
     `missions/${mission.id}/slices`,
-    ...mission.slices.map((slice) => `missions/${mission.id}/slices/${slice.id}`),
+    ...mission.slices.flatMap((slice) => [
+      `missions/${mission.id}/slices/${slice.id}`,
+      `missions/${mission.id}/slices/${slice.id}/proof`,
+    ]),
   ]),
 ] as const;
 
@@ -540,6 +543,7 @@ export function workspaceScaffoldFiles(): Array<{ relPath: string; content: stri
     files.push(
       { relPath: `missions/${mission.id}/README.md`, content: missionReadme(mission) },
       { relPath: `missions/${mission.id}/PROGRESS.md`, content: missionProgress(mission) },
+      { relPath: `missions/${mission.id}/MISSION_BRIEF.md`, content: renderMissionBriefTemplate(mission.title) },
       // FR-5e A1 — reuse the FR-3 MISSION_NOTES scaffold helper so a
       // fresh `rig config init-workspace` produces a getting-started
       // mission that doctor check #7 (mission_notes_presence) marks
@@ -559,6 +563,7 @@ export function workspaceScaffoldFiles(): Array<{ relPath: string; content: stri
       files.push(
         { relPath: `missions/${mission.id}/slices/${slice.id}/README.md`, content: sliceReadme(mission, slice) },
         { relPath: `missions/${mission.id}/slices/${slice.id}/PROGRESS.md`, content: sliceProgress(mission, slice) },
+        { relPath: `missions/${mission.id}/slices/${slice.id}/PROOF.md`, content: renderSliceProofTemplate({ id: slice.dotId, title: slice.title }) },
         { relPath: `missions/${mission.id}/slices/${slice.id}/IMPLEMENTATION-PRD.md`, content: slicePrd(mission, slice) },
       );
       // V0.3.1 slice 21: getting-started slices ship timeline.md.

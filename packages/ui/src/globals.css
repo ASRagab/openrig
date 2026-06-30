@@ -501,11 +501,15 @@
     animation: activity-ring-flash-frames 700ms ease-out 1;
   }
 
+  /* OPR.0.4.1.26 — BRIGHTEN while a handoff is live; the 450ms ease-out is the
+     explicit SETTLE: when the packet expires the class drops and the edge eases
+     back to static (a calm settle on camera, not an abrupt snap). */
   .hot-potato-edge-active .react-flow__edge-path,
   .react-flow__edge.hot-potato-edge-active .react-flow__edge-path {
-    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.42)) !important;
+    filter: drop-shadow(0 0 7px rgba(16, 185, 129, 0.55)) !important;
+    stroke: #059669 !important;
     stroke-width: 4px !important;
-    transition: stroke-width 180ms ease-out, filter 180ms ease-out;
+    transition: stroke-width 450ms ease-out, filter 450ms ease-out, stroke 450ms ease-out;
     vector-effect: non-scaling-stroke;
   }
   .hot-potato-packet,
@@ -515,6 +519,20 @@
   .hot-potato-packet-cross {
     opacity: 0.86;
     filter: drop-shadow(0 0 6px rgba(120, 113, 108, 0.36));
+  }
+  /* OPR.0.4.1.26 — DIRECTION: the dashed overlay marches source -> destination
+     by driving stroke-dashoffset negative (toward the path end). CSS only. */
+  .hot-potato-flow {
+    animation: hot-potato-flow-frames 650ms linear infinite;
+    filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.45));
+  }
+  .hot-potato-flow-cross {
+    animation-duration: 900ms;
+    filter: drop-shadow(0 0 3px rgba(120, 113, 108, 0.4));
+  }
+  @keyframes hot-potato-flow-frames {
+    from { stroke-dashoffset: 0; }
+    to   { stroke-dashoffset: -13; }
   }
 
   @keyframes rig-activity-frame-frames {
@@ -538,6 +556,7 @@
   .activity-pulse-running,
   .terminal-card-active,
   .edge-just-fired,
+  .hot-potato-flow,
   .activity-ring-active,
   .activity-ring-needs-input,
   .activity-ring-blocked,

@@ -27,6 +27,7 @@ import {
   Controls,
   Panel,
   useReactFlow,
+  useNodesInitialized,
   type Node,
   type Edge,
   type NodeTypes,
@@ -399,20 +400,24 @@ export function HostMultiRigGraph() {
 
 function HostGraphAutoFit({ layoutSignature }: { layoutSignature: string }) {
   const { fitView } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
   const lastSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!layoutSignature || lastSignatureRef.current === layoutSignature) return;
+    // OPR.0.4.2.17 — gate fitView on nodesInitialized (xyflow has MEASURED the
+    // nodes), not a fixed 50ms timeout. On the 30s refetch the nodes re-measure;
+    // the old 50ms fired before re-measurement and faithfully fit a
+    // collapsed/unmeasured layout. When measurement completes nodesInitialized
+    // flips true and this effect re-runs, fitting the real (distinct) layout.
+    if (!layoutSignature || !nodesInitialized) return;
+    if (lastSignatureRef.current === layoutSignature) return;
     lastSignatureRef.current = layoutSignature;
-    const timer = window.setTimeout(() => {
-      void fitView({
-        padding: HOST_GRAPH_FIT_PADDING,
-        includeHiddenNodes: false,
-        duration: 250,
-      });
-    }, 50);
-    return () => window.clearTimeout(timer);
-  }, [fitView, layoutSignature]);
+    void fitView({
+      padding: HOST_GRAPH_FIT_PADDING,
+      includeHiddenNodes: false,
+      duration: 250,
+    });
+  }, [fitView, layoutSignature, nodesInitialized]);
 
   return null;
 }

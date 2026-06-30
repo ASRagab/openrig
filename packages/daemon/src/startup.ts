@@ -134,6 +134,7 @@ import { workflowSpecsDiagnosticSchema } from "./db/migrations/040_workflow_spec
 import { rigPolicySchema } from "./db/migrations/041_rig_policy.js";
 import { rigArchiveSchema } from "./db/migrations/042_rig_archive.js";
 import { resumeProvenanceSchema } from "./db/migrations/043_resume_provenance.js";
+import { queueItemSummarySchema } from "./db/migrations/044_queue_item_summary.js";
 import { RigPolicyStore } from "./domain/rig-policy/rig-policy-store.js";
 import { MissionControlActionLog } from "./domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "./domain/mission-control/mission-control-write-contract.js";
@@ -217,7 +218,7 @@ export function collectAllowlistedProviderAuthEnv(
 export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> {
   const dbPath = opts?.dbPath ?? ":memory:";
   const db = createDb(dbPath);
-  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema, inboxEntriesSchema, outboxEntriesSchema, projectClassificationsSchema, classifierLeasesSchema, viewsCustomSchema, watchdogJobsSchema, watchdogHistorySchema, workflowSpecsSchema, workflowInstancesSchema, workflowStepTrailsSchema, watchdogPolicyEnumExtensionSchema, missionControlActionsSchema, workspacePrimitiveSchema, queueTargetRepoSchema, workflowSpecsDiagnosticSchema, rigPolicySchema, rigArchiveSchema, resumeProvenanceSchema]);
+  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema, inboxEntriesSchema, outboxEntriesSchema, projectClassificationsSchema, classifierLeasesSchema, viewsCustomSchema, watchdogJobsSchema, watchdogHistorySchema, workflowSpecsSchema, workflowInstancesSchema, workflowStepTrailsSchema, watchdogPolicyEnumExtensionSchema, missionControlActionsSchema, workspacePrimitiveSchema, queueTargetRepoSchema, workflowSpecsDiagnosticSchema, rigPolicySchema, rigArchiveSchema, resumeProvenanceSchema, queueItemSummarySchema]);
 
   const rigRepo = new RigRepository(db);
   const sessionRegistry = new SessionRegistry(db);
@@ -431,7 +432,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
   const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
   const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: (src: string, dest: string) => fs.copyFileSync(src, dest), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts });
-  const codexAdapter = new CodexRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, homedir: os.homedir() } });
+  const codexAdapter = new CodexRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, homedir: os.homedir() }, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
 
   // plugin-primitive Phase 3a slice 3.5 — ensure Codex feature flag
   // codex_hooks = true is set in ~/.codex/config.toml so plugin-shipped
@@ -460,6 +461,16 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       } catch { /* codex not available — skip feature flag */ }
     }
     codexAdapter.ensureCodexFeatureFlag(enabled, { codexVersion });
+    // OPR.0.4.1.10 FR-A — project the OpenRig activity hooks into the Codex config
+    // layer so Codex seats are hook-PRIMARY for the rig-send prompt guard (and gain
+    // SessionStart/UserPromptSubmit/Stop observability) from clean shipped config.
+    // Same enable gate as the feature flag; trust is auto-cleared at launch.
+    if (enabled) {
+      codexAdapter.ensureCodexActivityHooks();
+    } else {
+      // OPR.0.4.1.10 B3 — durable disable: strip any previously-written managed [hooks] block.
+      codexAdapter.removeCodexActivityHooks();
+    }
   } catch (err) {
     console.error(`[openrig] runtime setup warning: ${(err as Error).message}`);
   }
@@ -736,7 +747,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     runtimeAdapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     transcriptStore,
     sessionTransport: (() => {
-      const t = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter, agentActivityStore });
+      const t = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter, agentActivityStore, eventBus });
       // PL-004 Phase A revision (R1): wire QueueRepository's wake-path so
       // create / handoff / handoff-and-complete nudge by default.
       queueRepoInstance.attachTransport(t);

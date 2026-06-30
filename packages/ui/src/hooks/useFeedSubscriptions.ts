@@ -14,6 +14,7 @@
 
 import { useSettings, useSetSetting } from "./useSettings.js";
 import type { FeedCardKind } from "../lib/feed-classifier.js";
+import { levelToToggles, type FeedLevel } from "../lib/feed-levels.js";
 
 export interface FeedSubscriptionState {
   actionRequired: boolean;
@@ -59,6 +60,10 @@ export interface UseFeedSubscriptionsResult {
    *  cannot be toggled — calling toggle("actionRequired") is intentionally
    *  not part of the API. */
   toggle: (key: FeedSubscriptionToggleKey) => void;
+  /** Apply a named level (OPR.0.4.1.27): writes the 4 toggleable kinds to the
+   *  level's preset, writing ONLY the keys that change. action_required is
+   *  floored ON and is never written. Presentation over the existing model. */
+  setLevel: (level: FeedLevel) => void;
   /** True when the underlying setSetting mutation is in flight. */
   isMutating: boolean;
   /** True when the daemon does not expose /api/config (legacy v0.2.0). */
@@ -106,9 +111,23 @@ export function useFeedSubscriptions(): UseFeedSubscriptionsResult {
     });
   };
 
+  const setLevel = (level: FeedLevel) => {
+    const target = levelToToggles(level);
+    (Object.keys(TOGGLE_KEY_TO_CONFIG_KEY) as FeedSubscriptionToggleKey[]).forEach((key) => {
+      // Only write keys that actually change — action_required is not a toggle
+      // key (TOGGLE_KEY_TO_CONFIG_KEY excludes it), so it is never touched.
+      if (state[key] === target[key]) return;
+      setSetting.mutate({
+        key: TOGGLE_KEY_TO_CONFIG_KEY[key] as Parameters<typeof setSetting.mutate>[0]["key"],
+        value: target[key] ? "true" : "false",
+      });
+    });
+  };
+
   return {
     state,
     toggle,
+    setLevel,
     isMutating: setSetting.isPending,
     unavailable,
   };

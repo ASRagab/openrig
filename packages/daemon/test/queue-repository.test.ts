@@ -6,6 +6,7 @@ import { coreSchema } from "../src/db/migrations/001_core_schema.js";
 import { eventsSchema } from "../src/db/migrations/003_events.js";
 import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
+import { queueItemSummarySchema } from "../src/db/migrations/044_queue_item_summary.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import {
   QueueRepository,
@@ -512,5 +513,71 @@ describe("QueueRepository", () => {
       const whoami = repo.whoami("alice@r");
       expect(whoami.asSource.total).toBe(3);
     });
+  });
+});
+
+describe("QueueRepository summary column (OPR.0.4.1.18)", () => {
+  let db: Database.Database;
+  let repo: QueueRepository;
+
+  beforeEach(() => {
+    db = createDb();
+    // Includes migration 044 so the summary column exists. (The main suite
+    // deliberately omits it, proving the pre-044 degrade path via the guard.)
+    migrate(db, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema, queueItemSummarySchema]);
+    repo = new QueueRepository(db, new EventBus(db));
+  });
+
+  afterEach(() => db.close());
+
+  it("persists --summary on create and round-trips it through getById", async () => {
+    const item = await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "agent-speak body that is long and detailed",
+      summary: "Wire the dashboard version row to the real daemon version.",
+      nudge: false,
+    });
+    expect(item.summary).toBe("Wire the dashboard version row to the real daemon version.");
+    expect(repo.getById(item.qitemId)?.summary).toBe(
+      "Wire the dashboard version row to the real daemon version."
+    );
+  });
+
+  it("summary is null when --summary is omitted (degrade contract)", async () => {
+    const item = await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "no summary here",
+      nudge: false,
+    });
+    expect(item.summary).toBeNull();
+    expect(repo.getById(item.qitemId)?.summary).toBeNull();
+  });
+
+  it("handoff persists the new qitem's own summary, not inherited from source", async () => {
+    const src = await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "source body",
+      summary: "Source summary.",
+      nudge: false,
+    });
+    const result = await repo.handoff({
+      qitemId: src.qitemId,
+      fromSession: "bob@rig",
+      toSession: "carol@rig",
+      summary: "Handoff summary for the new owner.",
+      nudge: false,
+    });
+    expect(result.created.summary).toBe("Handoff summary for the new owner.");
+    // Omitted on the next handoff → null (degrade), NOT inherited from source.
+    const result2 = await repo.handoff({
+      qitemId: result.created.qitemId,
+      fromSession: "carol@rig",
+      toSession: "dan@rig",
+      nudge: false,
+    });
+    expect(result2.created.summary).toBeNull();
   });
 });

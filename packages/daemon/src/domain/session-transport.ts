@@ -3,7 +3,19 @@ import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
+import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
+
+// OPR.0.4.1.10 — send-readiness freshness. The runtime-hook store keeps a 5min freshness for activity
+// DISPLAY, but "safe to send NOW" needs a tight window: a stale "idle" read must not authorize a send
+// into what may since have become a prompt. Beyond this window the hook is ignored for send-readiness
+// and we fall through to the real-time capture-pane probe. Founder-tunable later.
+// Value (15s) is research-shaped, not a prior: terminal-state currency in comparable agent tooling is
+// SECONDS-scale — agtx caches pane status with a ~2s TTL, and the SWE-agent/OpenDevin-derived heuristics
+// (daintree #3938) cite Claude 1-3s / Codex 3-5s inter-tool-call gaps with a 6s idle debounce. A 15s
+// window comfortably spans one inter-tool gap (so a mid-turn reading stays trusted) while refusing to
+// authorize a send from a reading tens of seconds old. (EXA: agtx#14, daintree#3938.)
+const SEND_READINESS_FRESHNESS_MS = 15_000;
 
 // Mid-work detection patterns (cheap heuristics)
 const MID_WORK_PATTERNS = [
@@ -34,6 +46,30 @@ const IDLE_STATUS_BAR_PATTERNS = [
 ];
 
 const IDLE_TERMINAL_COMMANDS = new Set(["zsh", "bash", "sh", "fish", "nu", "tmux"]);
+
+// OPR.0.4.1.10 — permission / confirmation question signatures. The numbered-selector pattern
+// (`❯/› N.`) already catches the highlighted AskUserQuestion / trust-prompt choice; these catch the
+// permission QUESTION line itself so a permission block whose selector has scrolled above an idle-
+// looking footer is still classified as needing input (not idle). Specific phrasings keep the
+// false-positive rate near zero (an agent rarely prints "Do you want to proceed?" as plain output).
+const PERMISSION_PROMPT_PATTERNS = [
+  /\bDo you want to (?:proceed|continue|trust|allow|make|apply|create|run|delete|overwrite|edit)\b/i,
+  /\bDo you trust the\b/i,
+  // Codex v0.139.0 command-approval render (qa-codex-approval-render-research-20260627): the selector
+  // (`› N.`) is already caught above; these question lines make the fallback robust if it scrolls out.
+  /\bWould you like to run the following command\b/i,
+  /\bAllow Codex to run\b/i,
+];
+
+// OPR.0.4.1.10 — how many trailing non-blank lines to scan for an interactive-prompt SIGNATURE (the
+// numbered selector / permission question). Wider than the generic activity window (8) because a real
+// prompt's selector can be pushed UP past the bottom few lines by a tall persistent footer — Claude
+// Code renders status bar + permission-mode hint + separator + input-box border + thinking-budget BELOW
+// the actual "❯ " prompt, and in a narrow tiled pane that footer pushes the prompt out of an 8-line
+// window, causing a false-idle read (the exact footgun). 12 mirrors the window the ntm project adopted
+// after hitting this. Erring toward "prompt detected" is the SAFE direction for this guard: a false
+// refusal is overridable; a false-idle lets a message land on a prompt. (EXA: ntm e28763e; AgentDeck.)
+const PROMPT_SCAN_LINES = 12;
 
 export interface PaneActivityClassification {
   state: "agent_active" | "agent_idle" | "attention" | "unknown";
@@ -92,6 +128,9 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
 
   const recentLines = lastNonBlank.slice(-8);
   const recentWindow = recentLines.join("\n");
+  // Wider window for prompt SIGNATURES so a tall footer can't push a real prompt out of view (see
+  // PROMPT_SCAN_LINES). The generic activity checks below keep the tighter 8-line window.
+  const promptScanLines = lastNonBlank.slice(-PROMPT_SCAN_LINES);
   const trailingNonBlank = lastNonBlank.slice(-3);
   const lastLine = lastNonBlank.at(-1) ?? "";
   const idlePromptLine = trailingNonBlank.find((line) =>
@@ -100,12 +139,24 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
   const idleStatusBarLine = IDLE_STATUS_BAR_PATTERNS.some((pattern) => pattern.test(lastLine))
     ? lastLine
     : null;
-  const selectionPromptEvidence = findPatternEvidence(recentLines, [/^[❯›]\s*\d+\.\s/m]);
+  const selectionPromptEvidence = findPatternEvidence(promptScanLines, [/^[❯›]\s*\d+\.\s/m]);
   if (selectionPromptEvidence) {
     return {
       state: "attention",
       reason: "selection_prompt",
       evidence: selectionPromptEvidence,
+    };
+  }
+
+  // OPR.0.4.1.10 (FR-1c): a permission/confirmation question is attention even when its selector is
+  // not in view — checked before the idle short-circuits so a permission block above an idle-looking
+  // footer never reads as idle (which would let a default send land on it).
+  const permissionPromptEvidence = findPatternEvidence(promptScanLines, PERMISSION_PROMPT_PATTERNS);
+  if (permissionPromptEvidence) {
+    return {
+      state: "attention",
+      reason: "permission_prompt",
+      evidence: permissionPromptEvidence,
     };
   }
 
@@ -269,11 +320,6 @@ function mapPaneState(state: PaneActivityClassification["state"]): AgentActivity
   return "unknown";
 }
 
-function looksLikeMidWork(paneContent: string): boolean {
-  const activity = classifyPaneActivity(paneContent);
-  return activity.state === "agent_active" || activity.state === "attention";
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -305,6 +351,14 @@ export interface SendOpts {
   verify?: boolean;
   force?: boolean;
   waitForIdleMs?: number;
+  // OPR.0.4.1.10 — interactive-prompt / permission guard.
+  // `dangerouslyInteract` is the ONLY override of the prompt/permission guard (force does NOT bypass
+  // it). It requires `reason` and writes an auditable `transport.prompt_override` record before the
+  // send. `actorSession` is the caller identity recorded in that audit. (`--raw` is purely a CLI-side
+  // envelope concern — the daemon guard behaves identically for raw and wrapped text.)
+  dangerouslyInteract?: boolean;
+  reason?: string;
+  actorSession?: string | null;
 }
 
 export interface SendResult {
@@ -357,9 +411,14 @@ interface SessionTransportDeps {
   sessionRegistry: SessionRegistry;
   tmuxAdapter: TmuxAdapter;
   agentActivityStore?: AgentActivityStore;
+  // OPR.0.4.1.10 — required only for the --dangerously-interact audit path. When absent, a dangerous
+  // override fails closed (refuses) rather than sending unaudited. Non-danger sends never need it.
+  eventBus?: EventBus;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   waitForIdlePollMs?: number;
+  // OPR.0.4.1.10 — send-readiness freshness override (default SEND_READINESS_FRESHNESS_MS). Test seam.
+  sendReadinessFreshnessMs?: number;
 }
 
 interface SessionRow { node_id: string; session_name: string; }
@@ -373,9 +432,11 @@ export class SessionTransport {
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
   private agentActivityStore?: AgentActivityStore;
+  private eventBus?: EventBus;
   private now: () => Date;
   private sleep: (ms: number) => Promise<void>;
   private waitForIdlePollMs: number;
+  private sendReadinessFreshnessMs: number;
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -383,9 +444,11 @@ export class SessionTransport {
     this.sessionRegistry = deps.sessionRegistry;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.agentActivityStore = deps.agentActivityStore;
+    this.eventBus = deps.eventBus;
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? delay;
     this.waitForIdlePollMs = deps.waitForIdlePollMs ?? 500;
+    this.sendReadinessFreshnessMs = deps.sendReadinessFreshnessMs ?? SEND_READINESS_FRESHNESS_MS;
   }
 
   private getSessionMeta(sessionName: string): { runtime: string | null; attachmentType: string | null } {
@@ -678,22 +741,70 @@ export class SessionTransport {
       }
     }
 
-    // 2. Legacy mid-work check (unless force or explicit wait mode already proved idle)
-    if (!opts?.force && waitForIdleMs === undefined) {
-      try {
-        if (runtime === "terminal") {
-          const paneCommand = await this.tmuxAdapter.getPaneCommand(sessionName);
-          if (paneCommand && !IDLE_TERMINAL_COMMANDS.has(paneCommand)) {
+    // 2. OPR.0.4.1.10 — robust prompt/permission + mid-work guard on the DEFAULT path.
+    // Runs the same detector previously reachable only via --wait-for-idle: fresh runtime-hook primary
+    // (within the send-readiness window) + hardened capture-pane fallback. This closes the rig-send
+    // prompt-injection footgun — a message can never select/submit/approve another agent's prompt by
+    // default. needs_input/unknown FAIL CLOSED and only --dangerously-interact bypasses them; running
+    // (mid-work) refuses but --force still bypasses (legacy behavior). --force does NOT bypass the
+    // prompt/permission guard (FR-4 — the footgun separation).
+    if (waitForIdleMs === undefined) {
+      const readiness = await this.classifySendReadiness({
+        sessionName,
+        runtime,
+        attachmentType: sessionMeta.attachmentType,
+      });
+
+      if (opts?.dangerouslyInteract) {
+        // Deliberate override. For the states it actually bypasses (needs_input / unknown) require a
+        // reason and persist an auditable record BEFORE the send — fail closed if it cannot be audited
+        // (so a post-send failure can never erase the audit, and an unauditable override never sends).
+        if (readiness.state === "needs_input" || readiness.state === "unknown") {
+          if (!opts.reason || opts.reason.trim().length === 0) {
             return {
               ok: false,
               sessionName,
-              reason: "mid_work",
-              error: `Target pane appears mid-task. Use force: true to send anyway, or wait for the task to settle.`,
+              reason: "dangerously_interact_requires_reason",
+              error: "--dangerously-interact requires --reason explaining why the prompt is being driven. No text was sent.",
+            };
+          }
+          const audit = this.recordPromptOverride({
+            sessionName,
+            readiness,
+            actorSession: opts.actorSession ?? null,
+            overrideReason: opts.reason,
+          });
+          if (!audit.ok) {
+            return {
+              ok: false,
+              sessionName,
+              reason: "prompt_override_audit_unavailable",
+              activity: readiness,
+              error: `Refused: --dangerously-interact requires an auditable override record, which could not be persisted (${audit.reason}). No text was sent.`,
             };
           }
         }
-        const paneContent = await this.tmuxAdapter.capturePaneContent(sessionName, 20);
-        if (paneContent && looksLikeMidWork(paneContent)) {
+        // idle / running: nothing dangerous to override; proceed (CLI sends raw exact text).
+      } else {
+        if (readiness.state === "needs_input") {
+          return {
+            ok: false,
+            sessionName,
+            reason: "target_needs_input",
+            activity: readiness,
+            error: `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`,
+          };
+        }
+        if (readiness.state === "unknown") {
+          return {
+            ok: false,
+            sessionName,
+            reason: "target_activity_unknown",
+            activity: readiness,
+            error: `Refused: '${sessionName}' activity could not be determined (${readiness.reason}); failing closed so a message cannot land on a prompt. Retry once the target settles, or to deliberately drive it: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`,
+          };
+        }
+        if (readiness.state === "running" && !opts?.force) {
           return {
             ok: false,
             sessionName,
@@ -701,8 +812,7 @@ export class SessionTransport {
             error: `Target pane appears mid-task. Use force: true to send anyway, or wait for the task to settle.`,
           };
         }
-      } catch {
-        // Can't check — proceed anyway
+        // idle, or running + force → proceed to send.
       }
     }
 
@@ -833,7 +943,15 @@ export class SessionTransport {
       sessionName: input.sessionName,
       now,
     });
-    if (hookActivity && hookActivity.evidenceSource === "runtime_hook" && hookActivity.stale !== true) {
+    // Use the fresh runtime-hook as the authoritative signal ONLY within the tight send-readiness
+    // window. Beyond it (but still inside the looser display freshness) the hook is too old to prove
+    // "safe to send now" — fall through to the real-time capture-pane probe (also Codex's sole guard).
+    if (
+      hookActivity &&
+      hookActivity.evidenceSource === "runtime_hook" &&
+      hookActivity.stale !== true &&
+      this.hookFreshForSend(hookActivity, now)
+    ) {
       return hookActivity;
     }
 
@@ -844,6 +962,45 @@ export class SessionTransport {
       tmuxAdapter: this.tmuxAdapter,
       now,
     });
+  }
+
+  // OPR.0.4.1.10 — a runtime-hook is authoritative for send-readiness only within the tight send
+  // window. No usable hook timestamp → not send-fresh (fall through to real-time capture).
+  private hookFreshForSend(activity: AgentActivity, now: Date): boolean {
+    const eventMs = activity.eventAt ? Date.parse(activity.eventAt) : NaN;
+    if (!Number.isFinite(eventMs)) return false;
+    return now.getTime() - eventMs <= this.sendReadinessFreshnessMs;
+  }
+
+  // OPR.0.4.1.10 — persist the audit record for a --dangerously-interact prompt override. Audit-all-
+  // or-nothing: if there is no eventBus, the target rig/node can't be resolved, or the event cannot be
+  // persisted, return !ok so the caller fails closed and does NOT send. Payload keeps the caller's
+  // overrideReason distinct from the classifier's detectedReason/evidenceSource (not overloaded).
+  private recordPromptOverride(input: {
+    sessionName: string;
+    readiness: AgentActivity;
+    actorSession: string | null;
+    overrideReason: string | null;
+  }): { ok: true } | { ok: false; reason: string } {
+    if (!this.eventBus) return { ok: false, reason: "audit_unconfigured" };
+    const resolved = this.agentActivityStore?.resolveSession({ sessionName: input.sessionName });
+    if (!resolved) return { ok: false, reason: "session_unresolved" };
+    try {
+      this.eventBus.emit({
+        type: "transport.prompt_override",
+        rigId: resolved.rigId,
+        nodeId: resolved.nodeId,
+        sessionName: resolved.sessionName,
+        actorSession: input.actorSession,
+        detectedState: input.readiness.state,
+        detectedReason: input.readiness.reason,
+        evidenceSource: input.readiness.evidenceSource,
+        overrideReason: input.overrideReason,
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "audit_persist_failed" };
+    }
   }
 
   async capture(sessionName: string, opts?: { lines?: number }): Promise<CaptureResult> {

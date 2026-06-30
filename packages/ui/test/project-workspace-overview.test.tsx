@@ -250,35 +250,28 @@ function renderMissionScope(): ReturnType<typeof render> {
 }
 
 describe("WorkspaceScopePage overview", () => {
-  it("summarizes current qitem-backed work separately from archived slices", async () => {
+  // OPR.0.4.1.24 — the workspace parent altitude now lands on the cross-mission
+  // portfolio (supersedes the prior WorkspaceOverviewPanel mission grid). The
+  // thorough portfolio behavior is covered in workspace-portfolio.test.tsx; these
+  // integration checks assert the landing mounts the portfolio over the real shell.
+  it("OPR.0.4.1.24: the workspace overview lands on the cross-mission portfolio, missions derived from the slice index", async () => {
     const { findByTestId } = renderWorkspaceScope();
 
-    expect(await findByTestId("workspace-overview-panel")).toBeTruthy();
-    const currentMission = await findByTestId("workspace-overview-mission-RELEASE-PROOF");
-    expect(currentMission.getAttribute("data-mission-bucket")).toBe("current");
-    expect((await findByTestId("workspace-overview-slice-idea-ledger-qitems")).textContent).toContain("78");
-
-    const archivedMission = await findByTestId("workspace-overview-mission-unsorted");
-    expect(archivedMission.getAttribute("data-mission-bucket")).toBe("archive");
+    expect(await findByTestId("workspace-portfolio")).toBeTruthy();
+    // Missions are DERIVED by grouping slices: idea-ledger -> RELEASE-PROOF; the
+    // railItem-less slice -> unsorted. Each is a collapsed row.
+    expect(await findByTestId("portfolio-mission-RELEASE-PROOF")).toBeTruthy();
+    expect(await findByTestId("portfolio-mission-unsorted")).toBeTruthy();
   });
 
-  // Slice 19 follow-up: workspace-overview slice items keep title/aria
-  // metadata but replace prose meta with compact qitem/status icons.
-  it("slice 19 follow-up: workspace-overview slice items use wrapped names with queue/status icons", async () => {
-    const { findByTestId } = renderWorkspaceScope();
-    const link = await findByTestId("workspace-overview-slice-idea-ledger");
-    expect(link.className).toMatch(/\bflex\b/);
-    expect(link.className).not.toMatch(/\bblock\b/);
-    expect(link.getAttribute("title")).toContain("78 qitems");
-    expect(link.getAttribute("aria-label")).toContain("78 qitems");
-    const meta = await findByTestId("workspace-overview-slice-idea-ledger-meta");
-    expect(meta.className).toMatch(/\bflex\b/);
-    expect(meta.className).not.toMatch(/\bblock\b/);
-    expect(meta.textContent).toBe("78");
-    expect((await findByTestId("workspace-overview-slice-idea-ledger-qitems")).getAttribute("aria-label")).toBe("78 qitems");
-    expect((await findByTestId("workspace-overview-slice-idea-ledger-status")).getAttribute("data-tone")).toBe("success");
-    expect(link.textContent).not.toContain("qitems");
-    expect(link.firstElementChild?.className).toContain("whitespace-normal");
+  it("OPR.0.4.1.24: portfolio rows are collapsed by default with an Open-mission jump", async () => {
+    const { findByTestId, queryByTestId } = renderWorkspaceScope();
+    // each mission row carries an Open jump to its mission page.
+    expect(await findByTestId("portfolio-open-RELEASE-PROOF")).toBeTruthy();
+    // collapsed by default: no steering glance (and so no MISSION_BRIEF fetch) until expand.
+    expect(queryByTestId("portfolio-glance-RELEASE-PROOF")).toBeNull();
+    expect(queryByTestId("portfolio-glance-loading-RELEASE-PROOF")).toBeNull();
+    expect(queryByTestId("portfolio-glance-empty-RELEASE-PROOF")).toBeNull();
   });
 
   it("workspace progress, queue, and topology tabs render aggregate scoped data", async () => {
@@ -286,13 +279,15 @@ describe("WorkspaceScopePage overview", () => {
 
     fireEvent.click(await findByTestId("project-tab-story"));
     expect(await findByTestId("scope-story-rollup")).toBeTruthy();
-    expect((await findByTestId("story-row-queue.created")).textContent).toContain("Full queue body");
+    // OPR.0.4.1.19 — the Story tab is now the queue-lineage git-graph: one row per
+    // qitem (keyed by qitemId), summary degraded to the first body line.
+    expect((await findByTestId("story-row-qitem-A")).textContent).toContain("Full queue body");
 
     fireEvent.click(await findByTestId("project-tab-progress"));
     expect(await findByTestId("scope-progress-rollup")).toBeTruthy();
 
-    fireEvent.click(await findByTestId("project-tab-tests"));
-    expect(await findByTestId("scope-tests-rollup")).toBeTruthy();
+    fireEvent.click(await findByTestId("project-tab-proof"));
+    expect(await findByTestId("proof-tab")).toBeTruthy();
 
     fireEvent.click(await findByTestId("project-tab-queue"));
     expect(await findByTestId("scope-queue-rollup")).toBeTruthy();
@@ -355,6 +350,9 @@ describe("WorkspaceScopePage overview", () => {
   it("mission scope page filters workspace data to that mission", async () => {
     const { findByTestId, queryByText } = renderMissionScope();
 
+    // OPR.0.4.1.17: the mission now LANDS on the Steering tab; navigate to
+    // Overview to assert the mission-overview filtering behavior.
+    fireEvent.click(await findByTestId("project-tab-overview"));
     expect(await findByTestId("mission-overview-panel")).toBeTruthy();
     expect((await findByTestId("mission-overview-panel")).textContent).toContain("Idea Ledger release proof slice");
     expect((await findByTestId("mission-overview-slice-idea-ledger-qitems")).textContent).toContain("78");

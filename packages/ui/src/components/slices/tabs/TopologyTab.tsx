@@ -39,7 +39,7 @@ export function TopologyTab({ topology }: { topology: SliceDetail["topology"] })
     <div data-testid="topology-tab" className="p-4 space-y-4">
       <header className="flex items-center justify-between border-b border-stone-200 pb-2">
         <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-stone-700">
-          Topology
+          Workflow
         </div>
         <div className="font-mono text-[10px] text-stone-500" data-testid="topology-aggregate">
           {totalSeats} seat{totalSeats === 1 ? "" : "s"}

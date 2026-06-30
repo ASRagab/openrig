@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -694,6 +694,66 @@ describe("init-workspace runner", () => {
     expect(existsSync(join(workspaceRoot, "missions", "getting-started", "slices", "inspect-project-evidence", "IMPLEMENTATION-PRD.md"))).toBe(true);
     const steeringMd = readFileSync(join(workspaceRoot, "STEERING.md"), "utf-8");
     expect(steeringMd).toContain("OpenRig Priority Stack");
+  });
+
+  it("OPR.0.4.1.23 AC-2/AC-3: backfills root PROOF.md + sibling empty proof/ dir for an existing slice", () => {
+    const sliceDir = join(workspaceRoot, "missions", "getting-started", "slices", "first-conveyor-run");
+    mkdirSync(sliceDir, { recursive: true });
+    writeFileSync(join(sliceDir, "README.md"), "operator pre-existing slice", "utf-8");
+
+    const result = runInitWorkspace({ root: workspaceRoot, configPath });
+    const proofFile = result.files.find((f) =>
+      f.relPath === "missions/getting-started/slices/first-conveyor-run/PROOF.md");
+    const proofDir = result.subdirs.find((d) =>
+      d.name === "missions/getting-started/slices/first-conveyor-run/proof");
+
+    expect(proofFile).toBeDefined();
+    expect(proofFile?.created).toBe(true);
+    expect(proofDir).toBeDefined();
+    expect(proofDir?.created).toBe(true);
+
+    const proofPath = join(sliceDir, "PROOF.md");
+    const mediaDir = join(sliceDir, "proof");
+    expect(existsSync(proofPath)).toBe(true);
+    expect(statSync(proofPath).isFile()).toBe(true);
+    expect(existsSync(mediaDir)).toBe(true);
+    expect(statSync(mediaDir).isDirectory()).toBe(true);
+    expect(existsSync(join(mediaDir, "PROOF.md"))).toBe(false);
+    expect(readdirSync(mediaDir)).toEqual([]);
+
+    const proof = readFileSync(proofPath, "utf-8");
+    expect(proof).toContain("# PROOF — OPR.99.0.1.1 First Conveyor Run");
+    expect(proof).toContain("## Artifacts (media in proof/)");
+  });
+
+  it("OPR.0.4.1.16: backfills root MISSION_BRIEF.md for an existing mission", () => {
+    const missionDir = join(workspaceRoot, "missions", "getting-started");
+    mkdirSync(missionDir, { recursive: true });
+    writeFileSync(join(missionDir, "README.md"), "operator pre-existing mission", "utf-8");
+
+    const result = runInitWorkspace({ root: workspaceRoot, configPath });
+    const briefFile = result.files.find((f) =>
+      f.relPath === "missions/getting-started/MISSION_BRIEF.md");
+
+    expect(briefFile).toBeDefined();
+    expect(briefFile?.created).toBe(true);
+
+    const briefPath = join(missionDir, "MISSION_BRIEF.md");
+    expect(existsSync(briefPath)).toBe(true);
+    expect(statSync(briefPath).isFile()).toBe(true);
+    expect(existsSync(join(missionDir, "brief", "MISSION_BRIEF.md"))).toBe(false);
+
+    const content = readFileSync(briefPath, "utf-8");
+    const headers = Array.from(content.matchAll(/^#{1,2} .+$/gm)).map((m) => m[0]);
+    expect(headers).toEqual([
+      "# Getting Started — Brief",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ]);
   });
 
   it("is idempotent: running twice without --force is a no-op for existing files", () => {

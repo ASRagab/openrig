@@ -91,4 +91,25 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(src).toContain("terminalAuthHeaders()");
     expect(src).toContain("open-cmux");
   });
+
+  it("source guard: hook-based open-cmux consumers carry the terminal auth contract via useCmuxLaunch", async () => {
+    // OPR.0.4.1.31 fold (dev1-guard) — the table + hybrid surfaces open cmux
+    // through the useCmuxLaunch hook (which wraps postOpenCmux -> terminalAuthHeaders).
+    // Guard that they keep using the hook and never hand-roll a direct /open-cmux
+    // fetch that would bypass the terminal auth contract.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const srcDir = path.resolve(import.meta.dirname, "../src");
+    const consumers = [
+      "components/topology/TopologyTableView.tsx",
+      "components/topology/HybridTopologyNodes.tsx",
+    ];
+    for (const file of consumers) {
+      const src = fs.readFileSync(path.join(srcDir, file), "utf-8");
+      expect(src, `${file} must use useCmuxLaunch`).toContain("useCmuxLaunch");
+      const lines = src.split("\n");
+      const directFetchLines = lines.filter((l) => l.includes("open-cmux") && l.includes("fetch("));
+      expect(directFetchLines.length, `${file} has direct fetch to /open-cmux`).toBe(0);
+    }
+  });
 });

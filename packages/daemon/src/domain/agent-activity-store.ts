@@ -181,6 +181,16 @@ function normalizeHookActivity(input: {
 
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") {
     state = "running";
+  } else if (rawEvent === "PermissionRequest") {
+    // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
+    // means the agent is BLOCKED waiting on a command / patch / network approval = needs_input. This is
+    // the HOOK-PRIMARY signal for Codex, which emits no Claude-style Notification; classifySendReadiness
+    // already prefers a fresh runtime_hook needs_input runtime-agnostically, so wiring this event makes
+    // the Codex rig-send guard hook-primary by construction (capture-pane scan stays as the fallback).
+    // The official payload carries session_id/turn_id/cwd/model/permission_mode/tool_name/tool_input;
+    // the relay forwards tool_name as the subtype, so `evidence` names the tool being approved.
+    state = "needs_input";
+    normalizedReason = "permission_request";
   } else if (rawEvent === "Notification") {
     if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog") {
       state = "needs_input";

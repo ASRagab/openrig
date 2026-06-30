@@ -221,6 +221,34 @@ describe("TopologyTerminalView P5-7 grid", () => {
     const { findByTestId } = withQueryClient(<TopologyTerminalView scope="host" />);
     expect(await findByTestId("topology-terminal-empty")).toBeTruthy();
   });
+
+  it("host scope demand-loads one rig instead of fetching every rig inventory on tab open", async () => {
+    setupFetch({
+      rigs: [
+        { id: "rig-1", name: "test-rig" },
+        { id: "rig-2", name: "other-rig" },
+      ],
+      seatsByRig: {
+        "rig-1": [makeSeat({ logicalId: "orch.lead", rigId: "rig-1" })],
+        "rig-2": [makeSeat({ logicalId: "ops.lead", rigId: "rig-2" })],
+      },
+    });
+
+    const { findByTestId } = withQueryClient(<TopologyTerminalView scope="host" />);
+    expect(await findByTestId("topology-terminal-host-picker")).toBeTruthy();
+    expect(
+      mockFetch.mock.calls.filter(([url]) => String(url).includes("/nodes")),
+    ).toHaveLength(0);
+
+    fireEvent.click(await findByTestId("topology-terminal-host-rig-rig-1"));
+    expect(await findByTestId("terminal-card-rig-1-orch.lead")).toBeTruthy();
+
+    const nodeFetches = mockFetch.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes("/nodes"));
+    expect(nodeFetches).toHaveLength(1);
+    expect(nodeFetches[0]).toContain("/api/rigs/rig-1/nodes");
+  });
 });
 
 // OPR.0.4.0.39 (FR-6 founder spec-correction -- REVERSES the slice-01 expand-out):

@@ -9,6 +9,10 @@ import { describe, it, expect } from "vitest";
 import { buildStorytellingFeedItems } from "../src/components/feed/cards/storytelling-cards.js";
 import type { FeedCard } from "../src/lib/feed-classifier.js";
 import type { ActivityEvent } from "../src/hooks/useActivityFeed.js";
+import {
+  isCardKindSubscribed,
+  type FeedSubscriptionState,
+} from "../src/hooks/useFeedSubscriptions.js";
 
 function makeApprovalFeedCard(opts: {
   qitemId?: string;
@@ -356,5 +360,42 @@ describe("buildStorytellingFeedItems — production adapter", () => {
     if (items[0]!.kind === "approval") {
       expect(items[0]!.source.qitemId).toBe("queue.created-42");
     }
+  });
+
+  // OPR.0.4.1.27 qa forward-fix — the preview band must reflect the
+  // SUBSCRIPTION-FILTERED set, not the raw feed. The adapter renders an
+  // approval preview iff its caller includes an approval card, so the caller
+  // (Feed.tsx) MUST pass the level-filtered `cards`, not `rawCards`. These pin
+  // both the bug and the fix at the caller-contract level.
+  describe("preview follows the subscription-filtered set (level honesty)", () => {
+    const needsYou: FeedSubscriptionState = {
+      actionRequired: true,
+      approvals: false,
+      shipped: false,
+      progress: false,
+      auditLog: false,
+    };
+    const actionCard: FeedCard = {
+      ...makeApprovalFeedCard({ qitemId: "act-1", title: "Your turn" }),
+      kind: "action-required",
+      id: "action-1",
+    };
+    const approvalCard = makeApprovalFeedCard({ qitemId: "ap-1", title: "Needs approval" });
+
+    it("Needs-you (approvals OFF): the filtered set excludes approval, so the preview emits NO approval item; action-required survives", () => {
+      const raw: FeedCard[] = [actionCard, approvalCard];
+      // What Feed must pass to the adapter: the subscription-filtered set.
+      const visible = raw.filter((c) => isCardKindSubscribed(c.kind, needsYou));
+      expect(visible.some((c) => c.kind === "action-required")).toBe(true); // floor survives
+      expect(visible.some((c) => c.kind === "approval")).toBe(false); // approval filtered out
+      const items = buildStorytellingFeedItems([], [], undefined, visible);
+      expect(items.some((i) => i.kind === "approval")).toBe(false);
+    });
+
+    it("documents the BUG: passing the RAW (unfiltered) set surfaces approval at Needs-you — the pre-fix wiring", () => {
+      const raw: FeedCard[] = [actionCard, approvalCard];
+      const items = buildStorytellingFeedItems([], [], undefined, raw);
+      expect(items.some((i) => i.kind === "approval")).toBe(true);
+    });
   });
 });

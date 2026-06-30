@@ -183,6 +183,45 @@ describe("transport routes", () => {
     expect(body.reason).toBe("mid_work");
   });
 
+  // OPR.0.4.1.10 — prompt/permission guard surfaces through the route as 409 target_needs_input.
+  it("POST /send to an interactive prompt returns 409 target_needs_input (default, no override)", async () => {
+    seedRig();
+    const tmux = { ...mockTmux(), capturePaneContent: async () => "❯ 1. Authorize\n  2. Hold" } as unknown as TmuxAdapter;
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux });
+    const app = createApp({ sessionTransport: transport });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "stand down" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).reason).toBe("target_needs_input");
+  });
+
+  // OPR.0.4.1.10 — the route rejects contradictory / unauditable override requests before transport.
+  it("POST /send rejects --dangerously-interact + --wait-for-idle with 400", async () => {
+    seedRig();
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux() });
+    const app = createApp({ sessionTransport: transport });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "x", dangerouslyInteract: true, reason: "y", waitForIdleMs: 1000 }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).reason).toBe("invalid_dangerously_interact");
+  });
+
+  it("POST /send rejects --dangerously-interact without a reason with 400", async () => {
+    seedRig();
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux() });
+    const app = createApp({ sessionTransport: transport });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "x", dangerouslyInteract: true }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).reason).toBe("dangerously_interact_requires_reason");
+  });
+
   it("POST /send with waitForIdleMs waits for idle and returns activity evidence", async () => {
     seedRig();
     let captureCount = 0;

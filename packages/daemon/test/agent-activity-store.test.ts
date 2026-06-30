@@ -147,6 +147,30 @@ describe("AgentActivityStore", () => {
     });
   });
 
+  it("normalizes a Codex PermissionRequest hook to needs_input (OPR.0.4.1.10 hook-primary producer)", () => {
+    const { node, sessionName } = seedSession("codex");
+    const store = new AgentActivityStore({ db, eventBus, now: () => NOW });
+
+    // Official Codex approval hook (openai/codex PR #17563): hook_event_name=PermissionRequest, the
+    // relay forwards tool_name (e.g. "Bash") as the subtype.
+    store.recordHookEvent({
+      runtime: "codex",
+      sessionName,
+      hookEvent: "PermissionRequest",
+      subtype: "Bash",
+      occurredAt: "2026-04-24T11:59:30.000Z",
+    });
+
+    const latest = store.getLatestForNode({ nodeId: node.id, sessionName, now: NOW });
+    expect(latest).toMatchObject({
+      state: "needs_input",
+      reason: "permission_request",
+      evidenceSource: "runtime_hook",
+      rawEvent: "PermissionRequest",
+      evidence: "Bash", // names the tool being approved
+    });
+  });
+
   it("records Codex SessionStart as observed but not active", () => {
     const { node, sessionName } = seedSession("codex");
     const store = new AgentActivityStore({ db, eventBus, now: () => NOW });

@@ -39,6 +39,7 @@ import { captureCommand } from "./commands/capture.js";
 import { broadcastCommand } from "./commands/broadcast.js";
 import { configCommand } from "./commands/config.js";
 import { preflightCommand } from "./commands/preflight.js";
+import { authCommand } from "./commands/auth.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { expandCommand } from "./commands/expand.js";
 import { addMemberCommand } from "./commands/add.js";
@@ -187,6 +188,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(whoamiCommand(depsOverride?.whoamiDeps));
   program.addCommand(configCommand(depsOverride?.configPath));
   program.addCommand(preflightCommand());
+  program.addCommand(authCommand());
   program.addCommand(doctorCommand());
   program.addCommand(expandCommand(depsOverride?.expandDeps));
   program.addCommand(addMemberCommand(depsOverride?.addDeps));

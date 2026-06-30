@@ -282,3 +282,133 @@ describe("precompact-hook.mjs (slice 27 custom message append)", () => {
     expect(payload.systemMessage).toContain("Pre-compaction restore seed packet prepared");
   });
 });
+
+// OPR.0.4.1.09 (part 2 guard blocker de2d25c7): the product-owned PreCompact writer must
+// GENERATE the restore packet (run restore-from-jsonl) and persist the REAL on-disk
+// outputDir + the operator customMessage — never a hard-coded/nonexistent outputDir or an
+// emptied message. (The bridge-writer draft hard-coded both: marker pointed at an
+// ungenerated packet.) Plus the new per-seat restoreMapPath pointer (the part-1 extra dir).
+describe("OPR.0.4.1.09 — PreCompact writer generates a real packet + records restoreMapPath", () => {
+  let tmpDir: string;
+  let openrigHome: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "precompact-0419-"));
+    openrigHome = join(tmpDir, ".openrig");
+  });
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function readMarker(): Record<string, unknown> {
+    const markerPath = join(openrigHome, "compaction", "restore-pending", "test-seat@kernel.json");
+    return JSON.parse(readFileSync(markerPath, "utf8"));
+  }
+
+  it("GUARD REGRESSION: marker.outputDir is a REAL generated packet that EXISTS on disk (not hard-coded/ungenerated)", () => {
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    const marker = readMarker();
+    expect(marker["outputDir"]).toMatch(/^\/tmp\/claude-compaction-restore\//);
+    // The writer RAN restore-from-jsonl, so the packet directory actually exists on disk.
+    expect(existsSync(marker["outputDir"] as string)).toBe(true);
+  });
+
+  it("GUARD REGRESSION: the operator customMessage is preserved in the marker (not emptied)", () => {
+    writePolicyConfig(openrigHome, { messageInline: "Operator: read the queue before resuming." });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    const marker = readMarker();
+    expect(marker["postCompactInstruction"]).toContain("Operator: read the queue before resuming.");
+    expect(existsSync(marker["outputDir"] as string)).toBe(true);
+  });
+
+  it("records restoreMapPath = the per-seat post-compact-extra/<seat>.md when it EXISTS", () => {
+    const extra = join(openrigHome, "compaction", "post-compact-extra", "test-seat@kernel.md");
+    mkdirSync(dirname(extra), { recursive: true });
+    writeFileSync(extra, "my per-seat restore map");
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(readMarker()["restoreMapPath"]).toBe(extra);
+  });
+
+  it("records restoreMapPath = null when no per-seat extra exists (never an unresolvable pointer)", () => {
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(readMarker()["restoreMapPath"]).toBeNull();
+  });
+});
+
+// OPR.0.4.1.09 (rev1-r2 blocker dcd95bd9): the PreCompact hook path must apply the SAME
+// wrong-seat refusal as the enforcer's resolvePostCompactExtra. Before the fix, the hook
+// read the GLOBAL policy.messageFilePath into marker.postCompactInstruction with NO
+// seat-check, so a foreign-seat global extra (which the enforcer path refuses) LEAKED via
+// the hook path. The FILE portion is now seat-safe: per-seat extra preferred; a global
+// declaring a DIFFERENT seat (well-formed frontmatter only) is refused.
+describe("OPR.0.4.1.09 (rev1-r2) — hook-path post-compact extra is seat-safe (no wrong-seat leak)", () => {
+  let tmpDir: string;
+  let openrigHome: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "precompact-0419-seat-"));
+    openrigHome = join(tmpDir, ".openrig");
+  });
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function markerPostInstruction(): string {
+    const markerPath = join(openrigHome, "compaction", "restore-pending", "test-seat@kernel.json");
+    return JSON.parse(readFileSync(markerPath, "utf8"))["postCompactInstruction"] as string;
+  }
+
+  it("REGRESSION: a foreign-seat GLOBAL messageFilePath is REFUSED — content never reaches the marker (mirrors the enforcer)", () => {
+    const globalExtra = join(tmpDir, "global-extra.md");
+    writeFileSync(globalExtra, "---\nseat: advisor-lead@kernel\n---\nADVISOR SECRET restore steps.");
+    writePolicyConfig(openrigHome, { messageFilePath: globalExtra });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(markerPostInstruction()).not.toContain("ADVISOR SECRET restore steps.");
+    expect(markerPostInstruction()).not.toContain("Additional restore instruction file");
+  });
+
+  it("prefers the PER-SEAT extra content over a foreign global (seat-safe by construction)", () => {
+    const perSeat = join(openrigHome, "compaction", "post-compact-extra", "test-seat@kernel.md");
+    mkdirSync(dirname(perSeat), { recursive: true });
+    writeFileSync(perSeat, "MY OWN seat restore steps.");
+    const globalExtra = join(tmpDir, "global-extra.md");
+    writeFileSync(globalExtra, "---\nseat: advisor-lead@kernel\n---\nNOT MINE.");
+    writePolicyConfig(openrigHome, { messageFilePath: globalExtra });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(markerPostInstruction()).toContain("MY OWN seat restore steps.");
+    expect(markerPostInstruction()).not.toContain("NOT MINE.");
+  });
+
+  it("injects a GENERIC global extra (no frontmatter -> valid for any seat)", () => {
+    const globalExtra = join(tmpDir, "global-extra.md");
+    writeFileSync(globalExtra, "Generic restore note for all seats.");
+    writePolicyConfig(openrigHome, { messageFilePath: globalExtra });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(markerPostInstruction()).toContain("Generic restore note for all seats.");
+  });
+
+  it("injects a global extra whose WELL-FORMED frontmatter declares THIS seat", () => {
+    const globalExtra = join(tmpDir, "global-extra.md");
+    writeFileSync(globalExtra, "---\nseat: test-seat@kernel\n---\nMine, by frontmatter.");
+    writePolicyConfig(openrigHome, { messageFilePath: globalExtra });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(markerPostInstruction()).toContain("Mine, by frontmatter.");
+  });
+
+  it("injects a MALFORMED-frontmatter global extra (unclosed fence -> generic, not refused)", () => {
+    const globalExtra = join(tmpDir, "global-extra.md");
+    writeFileSync(globalExtra, "---\nseat: advisor-lead@kernel\n# no closing fence\nStill generic content.");
+    writePolicyConfig(openrigHome, { messageFilePath: globalExtra });
+    const { status } = runHook(openrigHome);
+    expect(status).toBe(0);
+    expect(markerPostInstruction()).toContain("Still generic content.");
+  });
+});

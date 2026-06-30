@@ -10,6 +10,14 @@ function extractFrontmatterRaw(content: string): string | null {
   return match ? match[1]! : null;
 }
 
+function directoryHasEntries(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).some((entry) => !entry.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+
 export function scopeAuditRoutes(): Hono {
   const app = new Hono();
 
@@ -35,8 +43,11 @@ export function scopeAuditRoutes(): Hono {
 
     const missionReadme = path.join(missionDir, "README.md");
     const missionProgress = path.join(missionDir, "PROGRESS.md");
+    const missionBrief = path.join(missionDir, "MISSION_BRIEF.md");
+    const missionNotes = path.join(missionDir, "MISSION_NOTES.md");
     const missionReadmeExists = fs.existsSync(missionReadme);
     const missionProgressExists = fs.existsSync(missionProgress);
+    const missionBriefExists = fs.existsSync(missionBrief);
 
     let missionResult: ScopeAuditResult;
     if (!missionReadmeExists && missionProgressExists) {
@@ -59,11 +70,16 @@ export function scopeAuditRoutes(): Hono {
         id: null,
         path: missionDir,
         readmeFrontmatterRaw: missionFm,
-        progressFileExists: missionProgressExists,
-        readmeOnlyMarker: false,
-        isActiveRelease: true,
-        level: "mission",
-      });
+          progressFileExists: missionProgressExists,
+          readmeOnlyMarker: false,
+          isActiveRelease: true,
+          level: "mission",
+          missionBriefExists,
+          missionBriefPath: missionBrief,
+          missionBriefContent: missionBriefExists ? fs.readFileSync(missionBrief, "utf-8") : null,
+          missionNotesExists: fs.existsSync(missionNotes),
+          missionNotesPath: missionNotes,
+        });
     }
 
     const slicesDir = path.join(missionDir, "slices");
@@ -75,6 +91,8 @@ export function scopeAuditRoutes(): Hono {
         if (!fs.statSync(sliceDir).isDirectory()) continue;
         const sliceReadme = path.join(sliceDir, "README.md");
         const sliceProgress = path.join(sliceDir, "PROGRESS.md");
+        const proofFile = path.join(sliceDir, "PROOF.md");
+        const proofDir = path.join(sliceDir, "proof");
 
         if (!fs.existsSync(sliceReadme)) {
           if (fs.existsSync(sliceProgress)) {
@@ -109,6 +127,7 @@ export function scopeAuditRoutes(): Hono {
 
         const sliceFm = extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"));
         const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
+        const indexedSlice = indexer.get(entry);
 
         const sliceResult = classifyScopeItem({
           id: null,
@@ -118,6 +137,13 @@ export function scopeAuditRoutes(): Hono {
           readmeOnlyMarker,
           isActiveRelease: true,
           level: "slice",
+          proofFileExists: fs.existsSync(proofFile),
+          proofFilePath: proofFile,
+          proofDirExists: fs.existsSync(proofDir),
+          proofDirPath: proofDir,
+          proofDirHasEntries: directoryHasEntries(proofDir),
+          hasProofPacket: indexedSlice?.proofPacket !== null && indexedSlice?.proofPacket !== undefined,
+          sliceStatus: indexedSlice?.rawStatus ?? null,
         });
 
         if (!/^\d{2}-/.test(entry)) {
@@ -138,9 +164,10 @@ export function scopeAuditRoutes(): Hono {
       ...missionResult.findings,
       ...sliceResults.flatMap((s) => s.result.findings),
     ];
+    const hardFindings = allFindings.filter((f) => f.severity === "high");
 
     return c.json({
-      ok: allFindings.length === 0,
+      ok: hardFindings.length === 0,
       mission: {
         name: missionName,
         railStatus: missionResult.railStatus,

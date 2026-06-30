@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import http from "node:http";
 import { Command } from "commander";
-import { sendCommand } from "../src/commands/send.js";
+import { sendCommand, type SendDeps } from "../src/commands/send.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -233,12 +233,80 @@ describe("Send CLI", () => {
     expect(lastSendBody).toBeNull();
   });
 
-  it("send --help includes rediscovery examples", () => {
+  // OPR.0.4.1.10 — --raw sends exact text with NO messaging envelope (still guarded server-side).
+  it("send --raw posts the exact text without the From/To envelope", async () => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "/compact", "--raw"]);
+    });
+    expect(lastSendBody?.text).toBe("/compact");
+    expect(String(lastSendBody?.text)).not.toContain("To: dev-impl@my-rig");
+    expect(String(lastSendBody?.text)).not.toContain("↩ Reply");
+  });
+
+  it("default send (no --raw) wraps the From/To messaging envelope", async () => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
+    });
+    expect(String(lastSendBody?.text)).toContain("To: dev-impl@my-rig");
+    expect(String(lastSendBody?.text)).toContain("---\nhello\n---");
+  });
+
+  it("send --dangerously-interact --reason posts the override fields with raw (exact) text", async () => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--dangerously-interact", "--reason", "unblock stuck prompt"]);
+    });
+    expect(lastSendBody?.dangerouslyInteract).toBe(true);
+    expect(lastSendBody?.reason).toBe("unblock stuck prompt");
+    expect(lastSendBody?.text).toBe("1"); // implies --raw: no envelope
+    expect("actorSession" in (lastSendBody ?? {})).toBe(true);
+  });
+
+  it("send --dangerously-interact without --reason is rejected before contacting the daemon", async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--dangerously-interact"]);
+    });
+    expect(logs.join("\n")).toContain("requires --reason");
+    expect(exitCode).toBe(1);
+    expect(lastSendBody).toBeNull();
+  });
+
+  it("send --dangerously-interact + --wait-for-idle is rejected before contacting the daemon", async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--dangerously-interact", "--reason", "x", "--wait-for-idle", "30"]);
+    });
+    expect(logs.join("\n")).toContain("cannot be combined with --wait-for-idle");
+    expect(exitCode).toBe(1);
+    expect(lastSendBody).toBeNull();
+  });
+
+  // OPR.0.4.1.10 — cross-host argv must forward the new flags so the remote rig applies the same guard.
+  it("send --host forwards --raw/--dangerously-interact/--reason in the reconstructed remote argv", async () => {
+    let captured: readonly string[] | null = null;
+    const deps: SendDeps = {
+      ...runningDeps(port),
+      hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "remote ok", stderr: "" }; },
+    };
+    await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--host", "vm-test", "--raw", "--dangerously-interact", "--reason", "why now"]);
+    });
+    expect(captured).not.toBeNull();
+    const argv = captured as unknown as string[];
+    expect(argv).toContain("--raw");
+    expect(argv).toContain("--dangerously-interact");
+    const ri = argv.indexOf("--reason");
+    expect(ri).toBeGreaterThan(-1);
+    expect(argv[ri + 1]).toBe("why now");
+  });
+
+  it("send --help includes rediscovery examples + the new guard flags", () => {
     const cmd = sendCommand(runningDeps(port));
     const helpText = cmd.helpInformation();
     expect(helpText).toContain("--verify");
     expect(helpText).toContain("--force");
     expect(helpText).toContain("--wait-for-idle");
+    expect(helpText).toContain("--raw");
+    expect(helpText).toContain("--dangerously-interact");
     expect(helpText).toContain("pane only");
     expect(helpText).toContain("dev-impl@my-rig");
   });

@@ -299,12 +299,17 @@ export class SliceDetailProjector {
       // a "create" event keyed on ts_created, plus per-row state field at
       // ts_updated. queue_transitions provides the per-transition history.
       try {
+        // OPR.0.4.1.18: SELECT * (not an explicit column list) so a queue_items
+        // schema that predates migration 044 (no `summary` column — e.g. minimal
+        // test fixtures) does not throw here; r.summary is then undefined and the
+        // degrade below kicks in. summary is optional in the row type for the
+        // same reason.
         const qrows = this.db.prepare(
-          `SELECT qitem_id, ts_created, source_session, destination_session, state, body, tier
-             FROM queue_items WHERE qitem_id IN (${placeholders})`
+          `SELECT * FROM queue_items WHERE qitem_id IN (${placeholders})`
         ).all(...slice.qitemIds) as Array<{
           qitem_id: string; ts_created: string; source_session: string;
           destination_session: string; state: string; body: string; tier: string | null;
+          summary?: string | null;
         }>;
         for (const r of qrows) {
           events.push({
@@ -313,7 +318,10 @@ export class SliceDetailProjector {
             kind: "queue.created",
             actorSession: r.source_session,
             qitemId: r.qitem_id,
-            summary: `${r.source_session} → ${r.destination_session}: ${truncate(r.body, 100)}`,
+            // OPR.0.4.1.18 (THE compat fix): prefer the authored human summary;
+            // degrade to source→dest + body-truncation when null/absent (pre-18
+            // qitems + any an author omitted). Keeps StoryEvent.summary non-null.
+            summary: r.summary ?? `${r.source_session} → ${r.destination_session}: ${truncate(r.body, 100)}`,
             detail: { tier: r.tier, state: r.state },
           });
         }

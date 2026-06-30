@@ -40,6 +40,10 @@ export interface QueueItem {
   expiresAt: string | null;
   chainOfRecord: string[] | null;
   body: string;
+  /** OPR.0.4.1.18 — optional short human-readable summary (~1–2 sentences).
+   *  NULL for pre-18 qitems + any an author omitted (the Story consumer
+   *  degrades on null). The agent-speak `body` stays the source of truth. */
+  summary: string | null;
   closureReason: ClosureReason | null;
   closureTarget: string | null;
   closureRequiredAt: string | null;
@@ -71,6 +75,7 @@ interface QueueItemRow {
   expires_at: string | null;
   chain_of_record: string | null;
   body: string;
+  summary: string | null;
   closure_reason: string | null;
   closure_target: string | null;
   closure_required_at: string | null;
@@ -112,6 +117,9 @@ export interface QueueCreateInput {
   /** PL-007 — typed repo scope for this qitem. Route validates against
    *  source rig's workspace.repos[]; unknown names rejected upstream. */
   targetRepo?: string | null;
+  /** OPR.0.4.1.18 — optional ~1–2 sentence human-readable summary. Persisted
+   *  when present; omitted → NULL → Story degrade. */
+  summary?: string | null;
   /**
    * R1 fix (PL-004 Phase A revision): Phase A is durable + waking by default.
    * When true (or omitted), the repository nudges the destination after the
@@ -157,6 +165,10 @@ export interface QueueHandoffInput {
   /** PL-007 — typed repo scope for the new qitem. When omitted, the new
    *  qitem inherits the source's targetRepo. */
   targetRepo?: string | null;
+  /** OPR.0.4.1.18 — optional ~1–2 sentence summary for the NEW qitem. NOT
+   *  inherited from the source (a handoff authors its own summary); omitted
+   *  → NULL → Story degrade. */
+  summary?: string | null;
 }
 
 /**
@@ -237,6 +249,7 @@ export class QueueRepository {
    *  the pre-PL-007 statement and target_repo input is silently dropped.
    *  Production daemons always have the column (migration is in startup.ts). */
   private readonly hasTargetRepoColumn: boolean;
+  private readonly hasSummaryColumn: boolean;
 
   constructor(
     db: Database.Database,
@@ -260,6 +273,7 @@ export class QueueRepository {
     this.validateRig = opts?.validateRig ?? (() => true);
     this.transport = opts?.transport;
     this.hasTargetRepoColumn = detectQueueColumn(db, "target_repo");
+    this.hasSummaryColumn = detectQueueColumn(db, "summary");
 
     // OPR.0.3.2.20 — register the EXACT human-seat regex predicate as
     // a SQLite function so the attention query can apply the strict
@@ -429,6 +443,7 @@ export class QueueRepository {
         )
         .run(id, ts, ts, input.sourceSession, input.destinationSession, priority, tier, tags, expiresAt, chain, input.body);
     }
+    this.persistSummary(id, input.summary ?? null);
     this.transitionLog.append({
       qitemId: id,
       state: "pending",
@@ -524,6 +539,8 @@ export class QueueRepository {
           )
           .run(newId, ts, ts, input.fromSession, input.toSession, priority, tier, tags, source.qitemId, chain, body);
       }
+
+      this.persistSummary(newId, input.summary ?? null);
 
       this.transitionLog.append({
         qitemId: newId,
@@ -645,6 +662,8 @@ export class QueueRepository {
           )
           .run(newId, ts, ts, input.fromSession, input.toSession, priority, tier, tags, source.qitemId, chain, body);
       }
+
+      this.persistSummary(newId, input.summary ?? null);
 
       this.transitionLog.append({
         qitemId: newId,
@@ -1199,6 +1218,17 @@ export class QueueRepository {
     return item;
   }
 
+  /** OPR.0.4.1.18 — persist the optional human-readable summary additively.
+   *  Guarded by detectQueueColumn so fixtures on a pre-044 schema (no summary
+   *  column) are unaffected; only writes when a value is present (NULL is the
+   *  default and degrades in the Story consumer). Runs inside the caller's
+   *  transaction (create / handoff / handoff-and-complete). */
+  private persistSummary(qitemId: string, summary: string | null): void {
+    if (this.hasSummaryColumn && summary !== null) {
+      this.db.prepare("UPDATE queue_items SET summary = ? WHERE qitem_id = ?").run(summary, qitemId);
+    }
+  }
+
   private rowToItem(row: QueueItemRow): QueueItem {
     return {
       qitemId: row.qitem_id,
@@ -1216,6 +1246,9 @@ export class QueueRepository {
       expiresAt: row.expires_at,
       chainOfRecord: row.chain_of_record ? (JSON.parse(row.chain_of_record) as string[]) : null,
       body: row.body ?? "",
+      // OPR.0.4.1.18: summary present only when migration 044 has applied;
+      // legacy/minimal fixtures supply rows where summary is undefined → null.
+      summary: row.summary ?? null,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

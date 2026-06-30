@@ -8,6 +8,85 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.4.1] - 2026-06-30
+
+**Status**: shipped; observability + operator-UI overhaul.
+
+### Summary For Installing Agents
+
+- **Package version**: bumps from `0.4.0`.
+- **Migrations**: additive only. Migration 044 adds a nullable `queue_items.summary` column; pre-0.4.1 items degrade cleanly to a body-fallback label. Existing v0.4.0 databases upgrade by running `rig daemon start` on the new daemon.
+- **Node engines**: unchanged.
+- **Backward compatibility**: `rig send` defaults now refuse a send when the target pane is at an interactive prompt or permission block (3-layer guard: L0 default-blocked, L1 `--raw` still guarded, L2 `--dangerously-interact --reason "..."` audited override). `rig queue create` + `rig queue handoff` gain an optional `--summary` field with WARN-on-author (does not hard-break existing callers). Cosmetic Project tab renames: Topology → Workflow (test-id stable as `project-tab-topology`); Queue folds into Story.
+
+### Headline
+
+OpenRig v0.4.1 is the **workspace-as-mission-cockpit** release: a coherent altitude projection (workspace → mission → slice), a Mission **Steering** landing tab (`STEERING.md` + `MISSION_BRIEF.md`), a **Story** queue-item DAG git-graph that reconstructs what actually happened on a mission, a **Workflow** spec visualizer, a **Proof** tab, a Workspace **Portfolio** panel, an **Artifacts** navigator, and a **Progress** heat-map — all derived through a new UI digital twin so visual intent can be approved before any UI slice is built.
+
+### New Top-Level CLI Verbs
+
+- **`rig auth`** — product-native, CLI-local Codex auth-profile management with a hardened secret boundary (refuses symlinked active auth, hardlink + symlinked-parent escapes out of `CODEX_HOME`). List / show / switch / capture / forget profiles under `~/.openrig/codex-auth/`.
+
+### `rig send` — Interactive-Prompt Guard
+
+- **L0 (default)** — blocks `rig send` when the target pane is at an interactive prompt or permission block. Hook-primary (Codex `PermissionRequest`) with a hardened capture-pane fallback (12-line trailing-content scan + 15-second send-readiness freshness).
+- **L1 — `--raw`** — exact keystrokes; the L0 guard still applies.
+- **L2 — `--dangerously-interact --reason "..."`** — explicit override, implies `--raw`, requires `--reason`, writes an audit row.
+
+### Workspace Observability Surfaces
+
+- **Mission Steering tab** — landing tab when you click into a mission. Panel 1 projects `STEERING.md` (what agents are currently being told to do); Panel 2 projects the new mission `MISSION_BRIEF.md` doctype (the locked 7-section template).
+- **Mission Brief doc-type + projection** — `rig scope init-workspace` / `rig scope mission create` emit a root `MISSION_BRIEF.md` from the 7-section template (Brief / What & why / Building / Progress / Proven / Needs you / Pointers); the Steering tab renders it markdown → UI.
+- **Story tab — queue-item DAG git-graph** — scrollable, upward-growing git-graph derived from `chain_of_record` + handoff lineage; single-parent edges only (no invented merge state); one-line rows over a curved gutter; Tier-3 drawer with the full agent-speak body + chain. Mission + slice altitudes; client-side from `/api/queue` (no new surface). Queue tab folds into Story.
+- **Workflow tab — spec visualizer** — finishes the half-built Project Topology tab into a real read-only visualizer of the configured workflow spec (dotted-grid canvas, dark-header step cards, per-step state dot, dagre LR layout, amber reject → rework loop-back). Label rename Topology → Workflow (`project-tab-topology` id-stable). Mission + slice altitudes.
+- **Proof tab** — per-slice proof galleries + empty-state for scaffolded-but-unpopulated slices; reads from each slice's `proof/` directory and an optional `PROOF.md` summary.
+- **Progress heat-map** — Project Progress tab consolidates to the heat-map (per-slice rollup cards retired).
+- **Artifacts navigator** — slice-altitude `ArtifactsNavigator` replaces the prior `SliceArtifactsTab` card wall; resolves via the existing `/api/files/*` surface; Decisions surface routes through Story (decision-of-record items are Story nodes).
+- **Workspace portfolio** — workspace parent-altitude cross-mission portfolio panel (mission list + steering glance on expand, lazy `MISSION_BRIEF.md` fetch); rollup metric counts *proven* (from `hasProofPacket`) rather than `done`.
+
+### UI Digital Twin + Visual-Intent Convention
+
+- **UI digital twin (harness)** — a derive-from-source twin renders all six real Project UI surfaces 1:1 daemon-free from typed fixtures (cache-seed + a thin fetch override + a seeded SSE stream; **not** MSW). One self-contained `intent.html` per surface; tsc compile-time drift-guard; ~2-step per-slice authoring loop; production-isolated dev-only target. Per-surface build: `TWIN_ROUTE=<route> npm run twin:build`.
+- **`rig scope` intent-visual slot** — `rig scope slice create` scaffolds an `## Intent visual` slot in the slice `README.md` (with `[change.diff]` + the `TWIN_ROUTE=<route> npm run twin:build` rebuild command). Non-visual slices get an explicit `N/A` line.
+- **Visual intent → proof convention** — adopted alongside the harness.
+
+### Topology + For-You
+
+- **Topology edge-flow animation** — when a real queue handoff or `rig send` travels an edge, the edge animates in the handoff direction, brightens while live, then settles static after TTL. Animates **only** on a real queue/send signal (no workflow DAG, no ambient motion); reduced-motion omits the flow.
+- **For-You phone restyle + real-data fidelity** — the Dashboard restyle reaches For-You as a phone-friendly cards layout with an altitude-dial level filter (All activity → Highlights → Needs you). The internal `source.type` wrapper string no longer renders, and the vestigial storytelling-preview band that ignored the level filters is removed.
+
+### Reliability + Correctness
+
+- **Fresh-install daemon-start fix** — `@hono/node-ws` is now declared in `@openrig/cli` (the CLI vendors the built daemon and does not depend on `@openrig/daemon`, so its `package.json` must mirror the daemon runtime deps for a global install to resolve them). A packaging-completeness gate now fails the test suite if a daemon runtime dep is not mirrored in the CLI.
+- **Table / hybrid terminal-action reliability** — terminal-action errors surface as a visible alert instead of silent failure on the topology Table view + the hybrid surface; the Table terminal now opens cleanly.
+- **Queue-item human-readable summary** — additive nullable `summary` field on queue items (migration 044). The Story-row label prefers the authored summary and degrades to the body fallback for pre-0.4.1 items. The agent-speak body remains the source of truth and is inspectable in the queue-item drawer.
+- **Seat-scoped post-compaction restore** — Claude Code seats get a scoped, idempotent restore packet derived from the JSONL transcript.
+- **Table-view crash fix** — null-safe TanStack filter + an `ErrorBoundary` on all three topology Table mounts (host / rig / pod).
+- **Dashboard route refresh** — cosmetic visual overhaul of the welcome / home launcher route (paper-draft launcher grid + six cards + Field Environment).
+
+### Conventions Adopted
+
+- **Visual intent → proof** (the digital-twin convention) — derive-from-source twin (no MSW), one `intent.html` per surface, twin-data-freshness as the residual release-close check.
+- **Release-durability close AC-9 — skill-cascade integrity**.
+- **Release-durability close AC-10 — twin-data-freshness**.
+
+### Known Limitations + Follow-ons
+
+- The skill-layer cut still awaits a decision on the load-bearing set; the cut does not execute in this release. The shipping cascade-drift checker (slice 04.3) is not in this cut.
+- Convention drift control (slice 28) is partially delivered (convention ratified + folded into the release-close gate; product skill + audit-code in flight).
+- Twin capture tooling (slice 11.2) is in flight; the twin harness ships.
+- Workspace UX architecture (slice 15) design-discovery scope is approved; remaining mockups are in flight.
+- For-You embedded terminal phone-UX is a non-gating polish check, not yet phone-verified.
+- `rig send` hook-primary `PermissionRequest` path lands with this release; the fallback capture-pane guard is fully proven; the hook-primary path rides its full proof on the next iteration.
+- `rig auth` deeper structured secret-boundary follow-on is tracked separately, not in this cut.
+- Inherited cascade-metadata hygiene from v0.4.0 remains the documented residue; bulk fix is a separate work item.
+
+### Carry-Forward From v0.4.0
+
+The v0.4.0 cascade-metadata hygiene findings (`missing_provenance` + `missing_verified` on the skill layer) remain the documented residue. Other v0.4.0 known issues (managed-seat Codex hook-trust ID-scrape, resume auto-capture-on-reconcile, post-host-adoption smoke for `rig seat clear-attention` + Codex resume posture) carry forward to subsequent releases.
+
+---
+
 ## [0.4.0] - 2026-06-20
 
 **Status**: wrap-gate CLEAR; lifecycle push / npm publish / tag held for founder-auth.

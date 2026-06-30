@@ -16,10 +16,29 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       verify?: boolean;
       force?: boolean;
       waitForIdleMs?: number;
+      dangerouslyInteract?: boolean;
+      reason?: string;
+      actorSession?: string | null;
     }>();
 
     if (!body.session || !body.text) {
       return c.json({ error: "Missing required fields: session, text" }, 400);
+    }
+    // OPR.0.4.1.10 — the danger override and wait mode are contradictory; reject before transport.
+    if (body.dangerouslyInteract && body.waitForIdleMs !== undefined) {
+      return c.json({
+        ok: false,
+        reason: "invalid_dangerously_interact",
+        error: "--dangerously-interact cannot be combined with --wait-for-idle. No text was sent.",
+      }, 400);
+    }
+    // The override must carry a reason for the audit record.
+    if (body.dangerouslyInteract && (!body.reason || body.reason.trim().length === 0)) {
+      return c.json({
+        ok: false,
+        reason: "dangerously_interact_requires_reason",
+        error: "--dangerously-interact requires --reason explaining why the prompt is being driven. No text was sent.",
+      }, 400);
     }
     if (body.waitForIdleMs !== undefined) {
       if (body.force) {
@@ -49,6 +68,9 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       verify: body.verify,
       force: body.force,
       waitForIdleMs: body.waitForIdleMs,
+      dangerouslyInteract: body.dangerouslyInteract,
+      reason: body.reason,
+      actorSession: body.actorSession ?? null,
     });
 
     if (!result.ok) {
@@ -58,9 +80,12 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         transport_unavailable: 409,
         mid_work: 409,
         invalid_wait_for_idle: 400,
+        invalid_dangerously_interact: 400,
+        dangerously_interact_requires_reason: 400,
         wait_for_idle_timeout: 409,
         target_needs_input: 409,
         target_activity_unknown: 409,
+        prompt_override_audit_unavailable: 500,
         submit_failed: 502,
         send_failed: 502,
       };

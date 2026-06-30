@@ -248,12 +248,16 @@ function SurfaceBody({
     // The PRIMARY UX of /for-you is the FEED in the center; subscriptions live
     // here as a small on-demand list. NOT dominating.
     //
-    // V1 attempt-3 Phase 5 P5-3: live ConfigStore-wired toggles via
-    // SubscriptionToggleList. action_required is forced ON; the other 4
-    // toggle interactively. Settings endpoint unreachable → canonical
-    // defaults rendered with CLI-fallback hint.
+    // OPR.0.4.1.27: the PRIMARY subscription control is the plain-language
+    // LevelControl at the TOP OF THE FEED (Feed.tsx) — phone-reachable per the
+    // v5 mockup. This Explorer sidebar holds the 5 individual toggles as the
+    // ADVANCED view (desktop). action_required is forced ON. Settings
+    // unreachable → canonical defaults + CLI hint.
     return (
       <div data-testid="explorer-for-you-subscriptions" className="flex-1 overflow-y-auto py-3 px-3">
+        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-stone-500 mb-2">
+          Advanced · individual toggles
+        </div>
         <SubscriptionToggleList />
       </div>
     );

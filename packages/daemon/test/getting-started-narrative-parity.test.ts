@@ -85,4 +85,26 @@ describe("getting-started narrative parity — slice 21", () => {
     expect(daemonContent, `daemon scaffold missing ${rel}`).toBeDefined();
     expect(cliContent).toBe(daemonContent);
   });
+
+  it("CLI and daemon emit byte-identical missions/getting-started/MISSION_BRIEF.md", () => {
+    const cliFiles = cliScaffold();
+    const daemonFiles = daemonScaffold();
+    const rel = "missions/getting-started/MISSION_BRIEF.md";
+    const cliContent = findContent(cliFiles, rel);
+    const daemonContent = findContent(daemonFiles, rel);
+    expect(cliContent, `CLI scaffold missing ${rel}`).toBeDefined();
+    expect(daemonContent, `daemon scaffold missing ${rel}`).toBeDefined();
+    expect(cliContent).toBe(daemonContent);
+
+    const headers = Array.from(cliContent!.matchAll(/^#{1,2} .+$/gm)).map((m) => m[0]);
+    expect(headers).toEqual([
+      "# Getting Started — Brief",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ]);
+  });
 });

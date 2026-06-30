@@ -44,19 +44,12 @@ import {
   useFeedSubscriptions,
   isCardKindSubscribed,
 } from "../../hooks/useFeedSubscriptions.js";
+import { LevelControl } from "./LevelControl.js";
 import { useDismissedSeqs } from "../../hooks/useDismissedSeqs.js";
 import { useDismissedCardIds } from "../../hooks/useDismissedCardIds.js";
-import { useCompletedMissions } from "../../hooks/useCompletedMissions.js";
-import { useMissionStatuses } from "../../hooks/useMissionStatuses.js";
 import { FeedCard } from "./FeedCard.js";
 import { UndoToast } from "./UndoToast.js";
 import type { FeedActionOutcome, FeedProofPreview } from "./FeedCard.js";
-import {
-  StorytellingFeed,
-  buildStorytellingFeedItems,
-  type FeedCardItem as StorytellingFeedItem,
-} from "../feed/cards/storytelling-cards.js";
-import { useMissionDiscovery } from "../../hooks/useMissionDiscovery.js";
 import {
   useMissionControlAudit,
   type AuditEntry,
@@ -368,64 +361,12 @@ export function Feed() {
   }, [cards, queueItems.itemsById, sliceRows]);
   const proofSlices = useSliceDetails(proofSliceNames);
 
-  // 0.3.1 slice 06 — adapt the daemon-driven sliceRows + missions
-  // into the new storytelling card primitives so they render in the
-  // live For You surface. Each of the 5 card types is mounted by a
-  // distinct data adapter so the production wire is the real one,
-  // not a stub. The legacy FeedCard list below remains the primary
-  // surface; this section is the storytelling-primitives preview
-  // band at the top of the feed.
-  //
-  // Adapters:
-  //   - Missions (useMissionDiscovery) → ProgressCard for the first 2
-  //     missions; drill-in routes to /project/mission/<id>. Percent
-  //     defaults to 0 at v0 (mission-level percent computation moves
-  //     in a follow-up slice via PROGRESS.md checkbox count).
-  //   - Slices (useSlices) → ShippedCard for status=shipped/done,
-  //     IncidentCard for everything else, capped at 3.
-  const missionsResult = useMissionDiscovery();
-  const { completedMissionIds, markCompleted } = useCompletedMissions();
-  const discoveredMissionIds = useMemo(
-    () => (Array.isArray(missionsResult.missions) ? missionsResult.missions.map((m) => m.name) : []),
-    [missionsResult.missions],
-  );
-  const { statuses: missionStatuses } = useMissionStatuses(discoveredMissionIds);
-  // Slice 18 §3.5 — thread the daemon-derived status onto each mission
-  // row so buildStorytellingFeedItems filters durably on `status ===
-  // "complete"` (survives browser/localStorage reset).
-  const missionsWithStatus = useMemo(
-    () => (Array.isArray(missionsResult.missions) ? missionsResult.missions : []).map((m) => ({
-      ...m,
-      status: missionStatuses.get(m.name) ?? null,
-    })),
-    [missionsResult.missions, missionStatuses],
-  );
-  const storytellingItems = useMemo<StorytellingFeedItem[]>(
-    () => buildStorytellingFeedItems(
-      missionsWithStatus,
-      Array.isArray(sliceRows) ? sliceRows : [],
-      completedMissionIds,
-      rawCards,
-    ),
-    [missionsWithStatus, sliceRows, completedMissionIds, rawCards],
-  );
-
-  // Slice 18 §3.5 — Getting Started complete-and-hide. Optimistic local
-  // hide via useCompletedMissions; best-effort daemon write to
-  // POST /api/missions/:missionId/complete for the audit trail. Network
-  // errors are swallowed silently (audit is best-effort, UI stays
-  // responsive) so a partial-air-gapped daemon doesn't block the hide.
-  const handleMarkMissionComplete = useCallback(
-    (missionId: string) => {
-      markCompleted(missionId);
-      void fetch(`/api/missions/${encodeURIComponent(missionId)}/complete`, {
-        method: "POST",
-      }).catch(() => {
-        // Swallow — local optimistic state is the user-visible truth.
-      });
-    },
-    [markCompleted],
-  );
+  // OPR.0.4.1.27-foryou (founder-picked option a) — the vestigial 0.3.1
+  // storytelling-preview band was removed. For You is now the slice-27
+  // restyled, subscription/lens-filtering FeedCard list below; the mission/
+  // slice rollups it duplicated stay on Dashboard/Project. The shared
+  // storytelling-cards.tsx primitives remain (the /lab/card-previews gallery
+  // still imports them) — only this band's wiring was dropped.
 
   return (
     <div data-testid="for-you-feed" className="mx-auto w-full max-w-[720px] px-6 py-8">
@@ -435,6 +376,14 @@ export function Feed() {
           For You
         </h1>
       </header>
+
+      {/* OPR.0.4.1.27 — the PRIMARY subscription control at the top of the
+          (phone) feed: a plain-language level (All activity / Highlights /
+          Needs you) over the same toggle model; action items always on. The 5
+          individual toggles remain the advanced view in the Explorer sidebar. */}
+      <div data-testid="feed-level-control" className="mb-4">
+        <LevelControl />
+      </div>
 
       {/* Lens chips — transient filter, doesn't persist (per L156+). Div not
           nav so SC-1 left-chrome count stays at exactly 2. */}
@@ -462,19 +411,6 @@ export function Feed() {
           </button>
         ))}
       </div>
-
-      {storytellingItems.length > 0 && (
-        <section
-          data-testid="for-you-storytelling-preview"
-          aria-label="Storytelling preview"
-          className="mb-4"
-        >
-          <SectionHeader tone="muted">Storytelling preview</SectionHeader>
-          <div className="mt-2">
-            <StorytellingFeed items={storytellingItems} onMarkMissionComplete={handleMarkMissionComplete} />
-          </div>
-        </section>
-      )}
 
       {cards.length === 0 ? (
         <EmptyState

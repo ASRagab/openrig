@@ -477,7 +477,10 @@ const steeringRedirectRoute = createRoute({
 // Route tree
 // =====================================================================
 
-const routeTree = rootRoute.addChildren([
+// Exported so the OPR.0.4.1.11.1 digital-twin harness can build its own router with a
+// MEMORY history (a static double-clickable intent.html has no server path to match) over
+// the SAME real route tree — no forked components.
+export const routeTree = rootRoute.addChildren([
   // Canon destinations
   indexRoute,
   topologyRoute,

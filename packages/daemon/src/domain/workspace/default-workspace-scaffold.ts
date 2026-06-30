@@ -264,6 +264,32 @@ ${slice.objective}
 `;
 }
 
+const MISSION_BRIEF_BUILT_IN = `# {{mission_name}} — Brief
+<optional one-line italic TL;DR>
+
+## What & why
+<orientation, read-first: what this mission delivers + why it matters. MANDATORY.>
+
+## Building
+<what is actively in flight right now — brief-altitude, a few bullets, NOT the PROGRESS task list>
+
+## Progress
+<how far: a high-altitude phase/wave rollup. Points at PROGRESS.md for active/next detail.>
+
+## Proven
+<what has landed WITH proof — brief-altitude proof gauge. Points at the Proof tab / per-slice proof/.>
+
+## Needs you
+<open decisions + reviews waiting on the human/founder — the "never have to ask for status" section. Empty = nothing blocked on you.>
+
+## Pointers
+→ MISSION_NOTES.md (continuity / restore) · → PROGRESS.md (active / next) · other key links
+`;
+
+export function renderDaemonMissionBrief(missionName: string): string {
+  return MISSION_BRIEF_BUILT_IN.replace(/\{\{mission_name\}\}/g, missionName);
+}
+
 // FR-5e A1 (daemon-side symmetry) — MISSION_NOTES template +
 // rendering for the daemon's `/api/config/init-workspace` route so
 // UI-driven init lands the same scaffold as CLI-driven init. The
@@ -419,6 +445,7 @@ export function workspaceScaffoldFiles(): Array<{ relPath: string; content: stri
     files.push(
       { relPath: `missions/${mission.id}/README.md`, content: missionReadme(mission) },
       { relPath: `missions/${mission.id}/PROGRESS.md`, content: missionProgress(mission) },
+      { relPath: `missions/${mission.id}/MISSION_BRIEF.md`, content: renderDaemonMissionBrief(mission.title) },
       // FR-5e A1 (daemon-side symmetry) — match CLI scaffold so UI-init
       // produces a workspace that passes doctor check #7. The template
       // resolution + env-var-pivot mirrors the CLI surface;

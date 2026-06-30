@@ -84,8 +84,9 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
   const activityIsActive = activityVisual
     ? activityVisual.state === "active"
     : fallbackActivityState === "running";
-  const timeInState = getTimeInState(data.agentActivity);
-  const gradeLabel = fallbackActivitySource !== "hook" && fallbackActivitySource !== "none" ? " (activity-grade)" : "";
+  const usingRecentActivityVisual = Boolean(activityVisual?.recent);
+  const timeInState = usingRecentActivityVisual ? null : getTimeInState(data.agentActivity);
+  const gradeLabel = !usingRecentActivityVisual && fallbackActivitySource !== "hook" && fallbackActivitySource !== "none" ? " (activity-grade)" : "";
 
   const contextPercentage =
     data.contextUsage?.availability === "known" &&
@@ -106,7 +107,7 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
     <span
       data-testid="seat-overview-activity-state"
       data-activity-state={activityState}
-      data-activity-source={activityVisual ? "ring" : fallbackActivitySource}
+      data-activity-source={usingRecentActivityVisual ? "ring" : fallbackActivitySource}
       className={
         activityIsActive
           ? "topology-table-active-shimmer text-emerald-600"

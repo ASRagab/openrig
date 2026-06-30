@@ -85,23 +85,64 @@ function CmuxButton({ row }: { row: AgentRow }) {
   // `opacity-0` + `group-hover:!opacity-100` which hid the affordance
   // off-mouse — operators kept missing the cmux launcher.
   const cmuxLaunch = useCmuxLaunch();
+  // OPR.0.4.1.31 part B — surface the mutation error. Previously the button
+  // tracked only isPending, so a failed open-cmux (no current cmux workspace,
+  // missing terminal bearer, etc.) failed SILENTLY = "the button never works."
+  // Now a failure shows a visible, actionable message (TanStack isError/error)
+  // and a click while errored resets + retries.
+  const failed = cmuxLaunch.isError;
+  const errorMessage = failed
+    ? (cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error))
+    : null;
   return (
-    <button
-      type="button"
-      data-testid={`topology-table-cmux-${row.logicalId}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        cmuxLaunch.mutate({ rigId: row.rigId, logicalId: row.logicalId });
-      }}
-      aria-busy={cmuxLaunch.isPending || undefined}
-      aria-label={`${cmuxLaunch.isPending ? "Opening" : "Open"} ${row.logicalId} in cmux`}
-      title={cmuxLaunch.isPending ? "Opening in cmux" : "Open in cmux"}
-      disabled={cmuxLaunch.isPending}
-      className="inline-flex h-7 w-7 items-center justify-center border border-outline-variant bg-white/65 text-stone-700 shadow-[1px_1px_0_rgba(46,52,46,0.12)] transition-colors hover:bg-stone-100 hover:text-stone-950 focus:outline-none focus:ring-2 focus:ring-stone-900/20 disabled:cursor-wait disabled:opacity-60"
-    >
-      <ToolMark tool="cmux" size="sm" />
-      <span className="sr-only">CMUX</span>
-    </button>
+    <span className="inline-flex items-center gap-1.5">
+      <button
+        type="button"
+        data-testid={`topology-table-cmux-${row.logicalId}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          // OPR.0.4.1.31 part D — never POST open-cmux for a malformed row
+          // (a null/empty logicalId would build /nodes/"null"/open-cmux).
+          if (!row.logicalId) return;
+          if (cmuxLaunch.isError) cmuxLaunch.reset();
+          cmuxLaunch.mutate({ rigId: row.rigId, logicalId: row.logicalId });
+        }}
+        aria-busy={cmuxLaunch.isPending || undefined}
+        aria-label={
+          cmuxLaunch.isPending
+            ? `Opening ${row.logicalId} in cmux`
+            : failed
+              ? `Open ${row.logicalId} in cmux failed: ${errorMessage}. Click to retry.`
+              : `Open ${row.logicalId} in cmux`
+        }
+        title={
+          cmuxLaunch.isPending
+            ? "Opening in cmux"
+            : failed
+              ? `Failed: ${errorMessage} — click to retry`
+              : "Open in cmux"
+        }
+        disabled={cmuxLaunch.isPending}
+        data-error={failed || undefined}
+        className={`inline-flex h-7 w-7 items-center justify-center border bg-white/65 shadow-[1px_1px_0_rgba(46,52,46,0.12)] transition-colors focus:outline-none focus:ring-2 focus:ring-stone-900/20 disabled:cursor-wait disabled:opacity-60 ${
+          failed
+            ? "border-rose-400 text-rose-700 hover:bg-rose-50"
+            : "border-outline-variant text-stone-700 hover:bg-stone-100 hover:text-stone-950"
+        }`}
+      >
+        <ToolMark tool="cmux" size="sm" />
+        <span className="sr-only">CMUX</span>
+      </button>
+      {failed ? (
+        <span
+          data-testid={`topology-table-cmux-error-${row.logicalId}`}
+          role="alert"
+          className="font-mono text-[9px] text-rose-700 max-w-[220px] leading-tight whitespace-normal break-words"
+        >
+          {errorMessage}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -372,12 +413,19 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
       const q = String(filterValue ?? "").toLowerCase();
       if (!q) return true;
       const r = row.original;
+      // OPR.0.4.1.13 (crash fix): NULL-SAFE every field. The table builds a row for
+      // EVERY node and does NOT default rigName (rig.name) or logicalId (n.logicalId)
+      // at build, so a malformed inventory entry (null name / null logicalId - a real
+      // edge data shape) made `r.rigName.toLowerCase()` / `r.logicalId.toLowerCase()`
+      // throw HERE during the filtered-row-model build, white-screening /topology
+      // (no error boundary). `String(v ?? "")` is null-safe for all five fields.
+      const hay = (v: unknown) => String(v ?? "").toLowerCase();
       return (
-        r.rigName.toLowerCase().includes(q) ||
-        r.podName.toLowerCase().includes(q) ||
-        r.logicalId.toLowerCase().includes(q) ||
-        r.runtime.toLowerCase().includes(q) ||
-        r.status.toLowerCase().includes(q)
+        hay(r.rigName).includes(q) ||
+        hay(r.podName).includes(q) ||
+        hay(r.logicalId).includes(q) ||
+        hay(r.runtime).includes(q) ||
+        hay(r.status).includes(q)
       );
     },
   });
@@ -426,15 +474,20 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
                 <tr
                   key={row.id}
                   data-testid={`topology-table-row-${row.original.logicalId}`}
-                  onClick={() =>
+                  onClick={() => {
+                    // OPR.0.4.1.31 part D — guard malformed rows: a null/empty
+                    // logicalId would build /seat/$rigId/"null"
+                    // (encodeURIComponent(null) === "null"). Skip navigation for
+                    // such rows instead of routing to a bogus seat URL.
+                    if (!row.original.logicalId) return;
                     navigate({
                       to: "/topology/seat/$rigId/$logicalId",
                       params: {
                         rigId: row.original.rigId,
                         logicalId: encodeURIComponent(row.original.logicalId),
                       },
-                    })
-                  }
+                    });
+                  }}
                   className="group border-b border-outline-variant last:border-b-0 hover:bg-surface-low focus-within:bg-surface-low cursor-pointer"
                 >
                   {row.getVisibleCells().map((cell) => (

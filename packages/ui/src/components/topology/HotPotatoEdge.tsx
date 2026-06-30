@@ -57,25 +57,43 @@ export function HotPotatoEdge({
             className={crossRig ? "fill-stone-500" : "fill-emerald-600"}
           />
         ) : (
-          <circle
-            key={packet.id}
-            data-testid={`hot-potato-packet-${packet.id}`}
-            data-reduced-motion="false"
-            r={crossRig ? 5 : 6.5}
-            stroke="rgba(255,255,255,0.88)"
-            strokeWidth={crossRig ? 1.75 : 2.25}
-            vectorEffect="non-scaling-stroke"
-            className={crossRig ? "fill-stone-500 hot-potato-packet-cross" : "fill-emerald-600 hot-potato-packet"}
-          >
-            <animateMotion
-              dur={`${packet.durationMs}ms`}
-              path={edgePath}
-              fill="freeze"
-              calcMode="spline"
-              keySplines="0.2 0 0 1"
-              keyTimes="0;1"
+          <>
+            {/* OPR.0.4.1.26 — directional flow: a dashed overlay that travels
+                source -> destination along the edge, so the DIRECTION of the
+                handoff reads at a glance even before the lead pulse arrives.
+                CSS keyframe marches stroke-dashoffset (no framer-motion). */}
+            <path
+              data-testid={`hot-potato-flow-${packet.id}`}
+              d={edgePath}
+              fill="none"
+              stroke={crossRig ? "#a8a29e" : "#10b981"}
+              strokeWidth={crossRig ? 1.5 : 2.5}
+              strokeLinecap="round"
+              strokeDasharray={crossRig ? "1 12" : "2 11"}
+              vectorEffect="non-scaling-stroke"
+              className={crossRig ? "hot-potato-flow hot-potato-flow-cross" : "hot-potato-flow"}
             />
-          </circle>
+            {/* The lead pulse — the head of the handoff travelling the edge. */}
+            <circle
+              key={packet.id}
+              data-testid={`hot-potato-packet-${packet.id}`}
+              data-reduced-motion="false"
+              r={crossRig ? 5 : 6.5}
+              stroke="rgba(255,255,255,0.88)"
+              strokeWidth={crossRig ? 1.75 : 2.25}
+              vectorEffect="non-scaling-stroke"
+              className={crossRig ? "fill-stone-500 hot-potato-packet-cross" : "fill-emerald-600 hot-potato-packet"}
+            >
+              <animateMotion
+                dur={`${packet.durationMs}ms`}
+                path={edgePath}
+                fill="freeze"
+                calcMode="spline"
+                keySplines="0.2 0 0 1"
+                keyTimes="0;1"
+              />
+            </circle>
+          </>
         )
       ) : null}
     </>

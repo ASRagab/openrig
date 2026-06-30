@@ -603,8 +603,8 @@ describe("RigNode", () => {
         agentActivity: {
           state,
           reason: "test",
-          evidenceSource: "pane_heuristic" as const,
-          sampledAt: new Date().toISOString(),
+          evidenceSource: "runtime_hook" as const,
+          sampledAt: "",
           evidence: null,
         },
       };

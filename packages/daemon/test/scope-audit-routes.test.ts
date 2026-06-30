@@ -23,6 +23,17 @@ function buildApp(indexer: SliceIndexer): Hono {
   return app;
 }
 
+const VALID_MISSION_BRIEF = [
+  "# test mission — Brief",
+  "",
+  "## What & why",
+  "## Building",
+  "## Progress",
+  "## Proven",
+  "## Needs you",
+  "## Pointers",
+].join("\n");
+
 let db: Database.Database;
 let cleanupRoot: string;
 let missionsRoot: string;
@@ -97,6 +108,8 @@ describe("GET /api/scope/audit", () => {
     fs.mkdirSync(missionDir, { recursive: true });
     fs.writeFileSync(path.join(missionDir, "README.md"), "---\nid: OPR.99.0.2\n---\n# clean\n", "utf8");
     fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_BRIEF.md"), VALID_MISSION_BRIEF, "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
     const sliceDir = path.join(missionDir, "slices", "01-good");
     fs.mkdirSync(sliceDir, { recursive: true });
     fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.99.0.2.1\n---\n# good\n", "utf8");
@@ -107,5 +120,101 @@ describe("GET /api/scope/audit", () => {
     const body = await res.json() as { ok: boolean; totalFindings: number };
     expect(body.ok).toBe(true);
     expect(body.totalFindings).toBe(0);
+  });
+
+  it("mission missing brief and notes returns advisory findings without hard-failing", async () => {
+    const missionDir = path.join(missionsRoot, "briefless-mission");
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "README.md"), "---\nid: OPR.99.0.3\n---\n# briefless\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+
+    const res = await app.request("/api/scope/audit?mission=briefless-mission");
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      mission: { findings: Array<{ kind: string; severity: string; path: string; remediation: string }> };
+      totalFindings: number;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.totalFindings).toBe(2);
+    expect(body.mission.findings.find((f) => f.kind === "missing_mission_brief")).toMatchObject({
+      severity: "medium",
+      path: path.join(missionDir, "MISSION_BRIEF.md"),
+    });
+    expect(body.mission.findings.find((f) => f.kind === "missing_mission_notes")).toMatchObject({
+      severity: "low",
+      path: path.join(missionDir, "MISSION_NOTES.md"),
+    });
+  });
+
+  it("done slice without PROOF.md or proof packet returns missing_proof guidance", async () => {
+    const missionDir = path.join(missionsRoot, "proof-mission");
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "README.md"), "---\nid: OPR.99.0.4\n---\n# proof\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_BRIEF.md"), VALID_MISSION_BRIEF, "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
+    const doneSlice = path.join(missionDir, "slices", "01-done");
+    fs.mkdirSync(path.join(doneSlice, "proof"), { recursive: true });
+    fs.writeFileSync(path.join(doneSlice, "README.md"), "---\nid: OPR.99.0.4.1\nstatus: done\n---\n# done\n", "utf8");
+    fs.writeFileSync(path.join(doneSlice, "PROGRESS.md"), "# Progress\n", "utf8");
+    const wipSlice = path.join(missionDir, "slices", "02-wip");
+    fs.mkdirSync(wipSlice, { recursive: true });
+    fs.writeFileSync(path.join(wipSlice, "README.md"), "---\nid: OPR.99.0.4.2\nstatus: wip\n---\n# wip\n", "utf8");
+    fs.writeFileSync(path.join(wipSlice, "PROGRESS.md"), "# Progress\n", "utf8");
+
+    const res = await app.request("/api/scope/audit?mission=proof-mission");
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      slices: Array<{ name: string; findings: Array<{ kind: string; severity: string; path: string; remediation: string }> }>;
+      totalFindings: number;
+    };
+    expect(body.ok).toBe(true);
+    const done = body.slices.find((s) => s.name === "01-done");
+    const wip = body.slices.find((s) => s.name === "02-wip");
+    expect(done?.findings.find((f) => f.kind === "missing_proof")).toMatchObject({
+      severity: "medium",
+      path: path.join(doneSlice, "PROOF.md"),
+    });
+    expect(done?.findings.find((f) => f.kind === "missing_proof")?.remediation).toMatch(/proof\//);
+    expect(wip?.findings.some((f) => f.kind === "missing_proof")).toBe(false);
+    expect(body.totalFindings).toBe(1);
+  });
+
+  it("proof-packet-backed proven slice without root proof returns missing_proof", async () => {
+    const dogfoodRoot = path.join(cleanupRoot, "dogfood-evidence");
+    fs.mkdirSync(dogfoodRoot, { recursive: true });
+    indexer = new SliceIndexer({ slicesRoot: missionsRoot, dogfoodEvidenceRoot: dogfoodRoot, db });
+    app = buildApp(indexer);
+
+    const missionDir = path.join(missionsRoot, "proof-packet-mission");
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "README.md"), "---\nid: OPR.99.0.5\n---\n# proof packet\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_BRIEF.md"), VALID_MISSION_BRIEF, "utf8");
+    fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
+    const sliceDir = path.join(missionDir, "slices", "03-proof-backed");
+    fs.mkdirSync(sliceDir, { recursive: true });
+    fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.99.0.5.3\nstatus: active\n---\n# proof backed\n", "utf8");
+    fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    const packetDir = path.join(dogfoodRoot, "03-proof-backed-20260625");
+    fs.mkdirSync(packetDir, { recursive: true });
+    fs.writeFileSync(path.join(packetDir, "capture.md"), "proof packet exists\n", "utf8");
+
+    const res = await app.request("/api/scope/audit?mission=proof-packet-mission");
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      slices: Array<{ name: string; findings: Array<{ kind: string; severity: string; path: string; remediation: string }> }>;
+      totalFindings: number;
+    };
+    expect(body.ok).toBe(true);
+    const slice = body.slices.find((s) => s.name === "03-proof-backed");
+    expect(slice?.findings.find((f) => f.kind === "missing_proof")).toMatchObject({
+      severity: "medium",
+      path: path.join(sliceDir, "PROOF.md"),
+    });
+    expect(body.totalFindings).toBe(1);
   });
 });

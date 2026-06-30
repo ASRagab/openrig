@@ -113,6 +113,29 @@ describe("P5.3 ActivityRing and HotPotatoEdge", () => {
     expect(screen.getByTestId("hot-potato-packet-packet-1").getAttribute("data-reduced-motion")).toBe("true");
   });
 
+  it("HotPotatoEdge renders a directional flow path when motion is allowed (OPR.0.4.1.26)", () => {
+    const { container } = render(
+      <svg>
+        <HotPotatoEdge {...edgeProps(false)} />
+      </svg>,
+    );
+    const flow = screen.getByTestId("hot-potato-flow-packet-1");
+    expect(flow.tagName.toLowerCase()).toBe("path");
+    expect(flow.getAttribute("class") ?? "").toContain("hot-potato-flow");
+    // the flow rides the edge geometry and marches via a dash pattern (direction read).
+    expect(flow.getAttribute("stroke-dasharray")).not.toBeNull();
+    expect(container.querySelector("path[data-testid='hot-potato-flow-packet-1']")).not.toBeNull();
+  });
+
+  it("HotPotatoEdge omits the directional flow under reduced motion (OPR.0.4.1.26)", () => {
+    render(
+      <svg>
+        <HotPotatoEdge {...edgeProps(true)} />
+      </svg>,
+    );
+    expect(screen.queryByTestId("hot-potato-flow-packet-1")).toBeNull();
+  });
+
   it("whole-card activity classes make active and handoff states visible", () => {
     expect(fallbackActivityCardState("running")).toBe("active");
     expect(fallbackActivityCardState("idle")).toBe("idle");

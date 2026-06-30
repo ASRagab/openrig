@@ -71,6 +71,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | `chatroom` | Chat room for rig communication |
 | `specs` | Browse, preview, and manage the spec library |
 | `whoami` | Show current managed identity in an OpenRig topology |
+| `auth` | Manage agent auth profiles per runtime (CLI-local; tokens never printed) |
 | `config` | Inspect and change OpenRig configuration |
 | `preflight` | Check system readiness for OpenRig |
 | `doctor` | Verify OpenRig install health |
@@ -166,6 +167,44 @@ Notes:
 
 Legacy env compatibility: the original runtime keys still accept deprecated
 `RIGGED_*` aliases. New typed config keys use `OPENRIG_*` only.
+
+### `rig auth`
+
+Manage agent auth profiles. The command is **CLI-local** — it never touches the daemon, so a token
+value never enters the daemon queue, stream, database, or logs. The runtime is an orthogonal axis via
+`--runtime` (MVP: `codex`, also the default), modeled on `gh auth switch/status` and `aws --profile` /
+`kubectl config use-context`. It is deliberately NOT `rig codex-auth` and NOT a `rig codex` vendor-noun
+family — the harness is a flag, not a command noun (see `conventions/cli-read-command-grammar`).
+
+Usage:
+- `rig auth status [--runtime codex]` — auth-file presence, file mode, saved-profile count, and login
+  state. **No secrets**: login state is derived from the runtime CLI's exit code only, never its output.
+- `rig auth list [--runtime codex]` — saved profile names.
+- `rig auth save <profile> [--runtime codex]` — snapshot the active auth file into a named profile (a
+  mode-guarded byte copy; contents are never read into or echoed by the command).
+- `rig auth switch <profile> [--runtime codex]` — activate a saved profile (copy it onto the active
+  auth file at `0600`).
+- `rig auth validate <profile> [--runtime codex]` — check a profile's file mode + JSON parseability.
+  This is **not** a live-auth check; a parse failure reports a fixed reason, never the file content.
+- `rig auth seats list|show <seat>|set …|report [--runtime codex]` — a per-operator seat → profile
+  **metadata** registry.
+
+Profile storage:
+- `CODEX_HOME` (default `$HOME/.codex`, env-overridable) holds the active `auth.json`, the
+  `auth-profiles/` directory (profiles `0600`, directory `0700`), and `auth-seat-registry.tsv`.
+- Ships **empty**: no example or bundled profiles/registry. Profile names use a strict whitelist
+  (alnum-led `[A-Za-z0-9._-]`, ≤64 chars); symlinked or out-of-tree profile paths are refused.
+
+Secret + honesty invariants:
+- **No token value is ever printed, logged, queued, streamed, or committed.** `status`/`validate`
+  report presence/mode/parseability/login-state only.
+- **Seat-registry labels are metadata, not proof of a live account.** A seat labeled with profile "X"
+  does not prove a running session is actually using that account; the command output states this. The
+  registry stores no token/resume secret — its columns are `seat / rig / runtime / cwd / auth_profile /
+  updated_ts`.
+
+Note: live runtime sessions do not switch accounts in place — restart the affected seats to pick up a
+newly switched profile.
 
 ### `rig preflight`
 
@@ -720,12 +759,16 @@ Notes:
 
 ### `rig send`
 
-Usage: `rig send <session> <text> [--verify] [--force] [--wait-for-idle <s>] [--host <id>] [--json]`
+Usage: `rig send <session> <text> [--verify] [--force] [--raw] [--dangerously-interact --reason <text>] [--wait-for-idle <s>] [--host <id>] [--json]`
 
 Notes:
 - Uses the two-step send pattern automatically: paste text, wait, submit Enter.
 - `--verify` requests delivery verification.
-- `--force` overrides mid-task safety checks.
+- The default path refuses to send when the target is at an interactive prompt / permission block (fail-closed: an unknown or stale activity state also blocks). This closes the footgun where a peer message blindly submits another agent's open prompt.
+- `--force` overrides the mid-task safety heuristic but does **NOT** bypass the interactive-prompt/permission guard.
+- `--raw` sends exact text/keystrokes without the From/To messaging envelope; still guarded against interactive prompts.
+- `--dangerously-interact` is the ONLY override of the prompt/permission guard — it deliberately drives an interactive prompt/permission block (e.g. selects an option). It implies `--raw`, requires `--reason <text>`, and is recorded in the audit log. Cannot be combined with `--wait-for-idle`.
+- `--reason <text>` records why the prompt is being driven (required with `--dangerously-interact`).
 - `--host <id>` routes the same command to a remote host declared in `~/.openrig/hosts.yaml` via single-hop ssh; see "Cross-host execution" below. SSH success is NOT verify success — the remote rig's `Verified: yes/no` is what counts and is surfaced verbatim.
 
 ### `rig capture`

@@ -16,7 +16,6 @@ import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundleManifest as normalizeBundleManifest, serializePodBundleManifest, parsePodBundleManifest, validatePodBundleManifest, validateLegacyBundleManifest, normalizeProvenanceBlock, normalizeCompatibilityBlock, isRelativeSafePath } from "../domain/bundle-types.js";
 import type { PodBundleManifest, BundleProvenance, BundleCompatibility, BundlePluginReference } from "../domain/bundle-types.js";
-import { fileURLToPath } from "node:url";
 import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-conflict-detector.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type BundleAuditRecord } from "../domain/bundle-audit.js";
@@ -27,23 +26,7 @@ import { routeWorkflowSpecs, type WorkflowSpecsRouterFsOps, type RouteWorkflowSp
 import { routeContextPacks, type ContextPacksRouterFsOps, type RouteContextPacksResult } from "../domain/bundle-context-packs-router.js";
 import { routeAgentImages, type AgentImagesRouterFsOps, type RouteAgentImagesResult } from "../domain/bundle-agent-images-router.js";
 import { SettingsStore as ContextPackSettingsStore } from "../domain/user-settings/settings-store.js";
-
-/**
- * Read the daemon's own package.json version at call time (Item 1 / slice-05).
- * Function-level read on purpose: module-level constants would mask test
- * isolation per the audit-every-layer discipline. The read is cheap and
- * only happens on bundle create.
- */
-function getDaemonVersion(): string {
-  try {
-    const here = fileURLToPath(import.meta.url);
-    const pkgPath = nodePath.join(nodePath.dirname(here), "..", "..", "package.json");
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
-    return typeof pkg.version === "string" ? pkg.version : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
+import { getDaemonVersion } from "../domain/daemon-version.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if

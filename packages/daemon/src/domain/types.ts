@@ -111,6 +111,10 @@ export type RigEvent =
   // is preserved in the log; this event records the audit trail of the upgrade.
   | { type: "restore.outcome_reconciled"; rigId: string; nodeId: string; attemptId: number; from: "failed" | "attention_required"; to: "operator_recovered"; evidence: { tmux: boolean; fgProcess: "claude" | "codex" | string; resumeTokenUsed: boolean; paneState: "usable" } | { source: string; reason?: string; kind?: string; state?: string; runtimeCwdVerified?: boolean } }
   | { type: "agent.activity"; rigId: string; nodeId: string; sessionName: string; runtime: string | null; activity: AgentActivity }
+  // OPR.0.4.1.10 — audit record for a --dangerously-interact send that drove a target's interactive
+  // prompt / permission block. overrideReason = caller's --reason; detectedReason/evidenceSource =
+  // what the classifier saw (kept distinct so permission_prompt vs selection_prompt vs unknown stays visible).
+  | { type: "transport.prompt_override"; rigId: string; nodeId: string; sessionName: string; actorSession: string | null; detectedState: string; detectedReason: string; evidenceSource: string; overrideReason: string | null }
   | { type: "agent.session_identity"; rigId: string; nodeId: string; sessionName: string; runtime: string; sessionId: string; provenance: "hook" | "scrape" }
   // OPR.0.4.0.22 — append-only audit of a managed resume-token write. Emitted
   // on an operator set (`operator_set`) and on reconcile capture-on-adopt

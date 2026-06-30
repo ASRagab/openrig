@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import dagre from "dagre";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   Handle,
   MarkerType,
@@ -17,8 +18,31 @@ import type { SpecGraphPayload, SpecGraphNode } from "../../../hooks/useSlices.j
 import { ToolMark } from "../../graphics/RuntimeMark.js";
 import { RegistrationMarks } from "../../ui/registration-marks.js";
 
+// OPR.0.4.1.20 — Workspace Workflow tab visualizer.
+//
+// Re-skins the slice's bound workflow-spec graph into the topology
+// visual grammar (matches the approved creative-rig mockup
+// digital-twin/opr-0.4.1.20/workflow-project-tab.intent): dotted-grid
+// canvas, dark-header step cards (role header + state dot + step name +
+// bound seat), curved topology-style edges, and the amber
+// reject->rework back-edge for loop-back hops.
+//
+// Data honesty (founder north-star: represent-the-real-system / map != territory):
+// this renders ONLY what the SpecGraphPayload carries — step identity,
+// role, bound preferredTarget seat, and entry/current/terminal state.
+// The mockup's live telemetry (ctx% / runtime / activity) is illustrative
+// and comes from the SEPARATE node-inventory source (HybridAgentNode);
+// joining it onto each step's bound seat is a tracked follow-up, NOT
+// fabricated here.
+//
+// Layout stays dagre LR so the canvas scales to real multi-branch specs
+// (fan-out, gate rings, loop-backs) rather than a fixed hand-placed graph.
+
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 112;
+
+const FORWARD_STROKE = "#3a4048";
+const LOOPBACK_STROKE = "#b9822f";
 
 interface SliceWorkflowStepData extends Record<string, unknown> {
   step: SpecGraphNode;
@@ -32,6 +56,7 @@ const nodeTypes: NodeTypes = {
 
 export function SliceWorkflowGraph({ specGraph }: { specGraph: SpecGraphPayload }) {
   const { nodes, edges } = useMemo(() => buildSliceWorkflowGraph(specGraph), [specGraph]);
+  const hasLoopBack = specGraph.edges.some((edge) => edge.isLoopBack);
 
   return (
     <section
@@ -41,20 +66,40 @@ export function SliceWorkflowGraph({ specGraph }: { specGraph: SpecGraphPayload 
       data-layout="react-flow-dagre"
       className="border border-outline-variant bg-white/20"
     >
-      <header className="flex items-center justify-between border-b border-outline-variant bg-white/20 px-3 py-2">
-        <div className="font-mono text-[10px] uppercase tracking-[0.10em] text-stone-500">
-          Workflow graph - {specGraph.specName} v{specGraph.specVersion}
+      <header className="flex items-center justify-between gap-3 border-b border-outline-variant bg-white/30 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-mono text-[10px] uppercase tracking-[0.10em] text-stone-500">
+          <span className="text-stone-400">Workflow spec</span>
+          <span className="text-stone-300">·</span>
+          <span className="truncate font-semibold text-stone-700">{specGraph.specName}</span>
+          <span className="text-stone-400">v{specGraph.specVersion}</span>
+          {hasLoopBack && (
+            <>
+              <span className="text-stone-300">·</span>
+              <span className="inline-flex items-center gap-1 text-[var(--amber,#b9822f)]" style={{ color: LOOPBACK_STROKE }}>
+                ↺ reject→rework loop
+              </span>
+            </>
+          )}
         </div>
-        <div className="font-mono text-[9px] uppercase tracking-[0.10em] text-stone-400">
-          {specGraph.nodes.length} steps / {specGraph.edges.length} edges
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="font-mono text-[9px] uppercase tracking-[0.10em] text-stone-400">
+            {specGraph.nodes.length} steps / {specGraph.edges.length} edges
+          </span>
+          <span className="border border-outline-variant px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.14em] text-stone-500">
+            read-only
+          </span>
         </div>
       </header>
-      <div data-testid="slice-workflow-graph" className="h-[420px] bg-[radial-gradient(circle_at_1px_1px,rgba(87,83,78,0.22)_1px,transparent_0)] [background-size:18px_18px]">
+      <div
+        data-testid="slice-workflow-graph"
+        className="h-[460px] bg-[radial-gradient(circle_at_1px_1px,rgba(120,116,104,0.30)_1.1px,transparent_0)] [background-size:21px_21px]"
+      >
         <ReactFlow
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
           fitView
+          fitViewOptions={{ padding: 0.18 }}
           minZoom={0.2}
           maxZoom={1.5}
           nodesDraggable={false}
@@ -62,7 +107,7 @@ export function SliceWorkflowGraph({ specGraph }: { specGraph: SpecGraphPayload 
           elementsSelectable={false}
           proOptions={{ hideAttribution: true }}
         >
-          <Background gap={18} size={0.5} color="#d6d3cd" />
+          <Background variant={BackgroundVariant.Dots} gap={21} size={1.1} color="#b9b4a6" />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
@@ -87,10 +132,10 @@ export function buildSliceWorkflowGraph(specGraph: SpecGraphPayload): { nodes: S
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   dagreGraph.setGraph({
     rankdir: "LR",
-    nodesep: 80,
-    ranksep: 110,
-    marginx: 24,
-    marginy: 24,
+    nodesep: 70,
+    ranksep: 120,
+    marginx: 28,
+    marginy: 28,
   });
 
   specGraph.nodes.forEach((node) => {
@@ -122,20 +167,23 @@ export function buildSliceWorkflowGraph(specGraph: SpecGraphPayload): { nodes: S
     id: `spec-edge-${edge.fromStepId}-${edge.toStepId}`,
     source: edge.fromStepId,
     target: edge.toStepId,
-    type: "smoothstep",
-    markerEnd: { type: MarkerType.ArrowClosed, color: edge.isLoopBack ? "#b45309" : "#57534e" },
+    // Curved topology-style edge; loop-backs ride the amber reject->rework path.
+    type: edge.isLoopBack ? "default" : "smoothstep",
+    markerEnd: { type: MarkerType.ArrowClosed, color: edge.isLoopBack ? LOOPBACK_STROKE : FORWARD_STROKE },
     style: {
-      stroke: edge.isLoopBack ? "#b45309" : "#57534e",
-      strokeWidth: edge.isLoopBack ? 1.5 : 1.25,
-      strokeDasharray: edge.isLoopBack ? "6 5" : undefined,
+      stroke: edge.isLoopBack ? LOOPBACK_STROKE : FORWARD_STROKE,
+      strokeWidth: edge.isLoopBack ? 2.2 : 1.6,
+      strokeDasharray: edge.isLoopBack ? "7 5" : undefined,
     },
-    label: edge.isLoopBack ? "loop" : edge.routingType,
+    label: edge.isLoopBack ? "reject → rework" : undefined,
     labelStyle: {
-      fill: edge.isLoopBack ? "#b45309" : "#78716c",
+      fill: LOOPBACK_STROKE,
       fontSize: 9,
       fontFamily: "monospace",
+      letterSpacing: "0.08em",
       textTransform: "uppercase",
     },
+    labelBgStyle: { fill: "#faf9f5", fillOpacity: 0.85 },
   }));
 
   return { nodes, edges };
@@ -143,6 +191,7 @@ export function buildSliceWorkflowGraph(specGraph: SpecGraphPayload): { nodes: S
 
 function SliceWorkflowStepNode({ data }: NodeProps<SliceWorkflowNode>) {
   const step = data.step;
+  const active = step.isCurrent;
   return (
     <div
       data-testid={`spec-node-${step.stepId}`}
@@ -150,50 +199,67 @@ function SliceWorkflowStepNode({ data }: NodeProps<SliceWorkflowNode>) {
       data-is-entry={step.isEntry}
       data-is-terminal={step.isTerminal}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
-      className={`relative border border-outline-variant bg-white/30 p-3 font-mono hard-shadow ${
-        step.isCurrent ? "ring-2 ring-emerald-500/50 bg-emerald-50/60" : ""
+      className={`relative border bg-white font-mono hard-shadow ${
+        active ? "border-emerald-500/70" : "border-stone-400/80"
       }`}
     >
       <RegistrationMarks testIdPrefix={`slice-workflow-${step.stepId}`} />
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-outline-variant !bg-stone-500" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-outline-variant !bg-stone-500" />
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-[11px] font-bold uppercase tracking-[0.04em] text-stone-950">{step.stepId}</div>
-          <div className="mt-0.5 text-[9px] uppercase tracking-[0.10em] text-stone-500">{step.role}</div>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          {step.isEntry && (
-            <span
-              data-testid={`spec-node-${step.stepId}-entry-badge`}
-              className="border border-blue-300 bg-blue-50 px-1 text-[8px] uppercase tracking-[0.10em] text-blue-900"
-            >
-              entry
-            </span>
-          )}
-          {step.isCurrent && (
-            <span
-              data-testid={`spec-node-${step.stepId}-current-badge`}
-              className="border border-emerald-400 bg-emerald-100 px-1 text-[8px] uppercase tracking-[0.10em] text-emerald-900"
-            >
-              current
-            </span>
-          )}
-          {step.isTerminal && (
-            <span
-              data-testid={`spec-node-${step.stepId}-terminal-badge`}
-              className="inline-flex items-center gap-1 border border-stone-300 bg-stone-100 px-1 text-[8px] uppercase tracking-[0.10em] text-stone-700"
-            >
-              <ToolMark tool="terminal" size="xs" />
-              terminal
-            </span>
-          )}
-        </div>
+      {/* dark topology-style header: role + live-state affordance */}
+      <div className="flex items-center justify-between bg-stone-900 px-2 py-1 text-stone-50">
+        <span className="truncate text-[10px] tracking-[0.04em]">{step.role}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <span className="text-[7px] tracking-[0.14em] text-stone-400">STATE</span>
+          <span
+            data-testid={`spec-node-${step.stepId}-state-dot`}
+            data-active={active ? "true" : "false"}
+            className={`inline-block h-2 w-2 rounded-full ${active ? "bg-emerald-400" : "bg-stone-500"}`}
+          />
+          <span className="inline-block h-2.5 w-2.5 rounded-full border-[1.4px] border-stone-500" />
+        </span>
       </div>
-      <div className="mt-3 text-[10px] leading-4 text-stone-800">{step.label}</div>
-      {step.preferredTarget && (
-        <div className="mt-2 truncate text-[9px] text-stone-500">{step.preferredTarget}</div>
-      )}
+      {/* body: step identity + bound seat + lifecycle markers */}
+      <div className={`px-2 py-1.5 ${active ? "bg-emerald-50/70" : "bg-white"}`}>
+        <div className="flex items-start justify-between gap-2">
+          <span className="truncate text-[11px] font-bold uppercase tracking-[0.04em] text-stone-950">
+            {step.stepId}
+          </span>
+          <span className="flex shrink-0 flex-col items-end gap-0.5">
+            {step.isEntry && (
+              <span
+                data-testid={`spec-node-${step.stepId}-entry-badge`}
+                className="border border-blue-300 bg-blue-50 px-1 text-[8px] uppercase tracking-[0.10em] text-blue-900"
+              >
+                entry
+              </span>
+            )}
+            {step.isCurrent && (
+              <span
+                data-testid={`spec-node-${step.stepId}-current-badge`}
+                className="border border-emerald-400 bg-emerald-100 px-1 text-[8px] uppercase tracking-[0.10em] text-emerald-900"
+              >
+                current
+              </span>
+            )}
+            {step.isTerminal && (
+              <span
+                data-testid={`spec-node-${step.stepId}-terminal-badge`}
+                className="inline-flex items-center gap-1 border border-stone-300 bg-stone-100 px-1 text-[8px] uppercase tracking-[0.10em] text-stone-700"
+              >
+                <ToolMark tool="terminal" size="xs" />
+                terminal
+              </span>
+            )}
+          </span>
+        </div>
+        {step.preferredTarget && (
+          <div className="mt-1 truncate text-[9px] text-stone-500" title={step.preferredTarget}>
+            {step.preferredTarget}
+          </div>
+        )}
+        <div className="mt-0.5 line-clamp-2 text-[9px] leading-snug text-stone-600">{step.label}</div>
+      </div>
     </div>
   );
 }

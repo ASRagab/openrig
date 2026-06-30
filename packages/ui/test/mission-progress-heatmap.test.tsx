@@ -379,6 +379,21 @@ describe("MissionScopePage Progress tab composes heat-map (slice 13.5)", () => {
           status: 200,
         });
       }
+      // The mission Progress panel reads useScopeAudit (GET /api/scope/audit);
+      // mock the real ScopeAuditResponse shape so MissionScopePage does not crash
+      // on scopeAudit.data.mission (an unmocked [] fallback was the pre-existing
+      // cause of the HG-3 / HG-3-DOM ErrorBoundary failures).
+      if (url.includes("/api/scope/audit")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            mission: { name: "RELEASE-PROOF", railStatus: "present", frontmatterError: null, findings: [] },
+            slices: [],
+            totalFindings: 0,
+          }),
+          { status: 200 },
+        );
+      }
       return new Response("[]", { status: 200 });
     });
   }
@@ -413,28 +428,28 @@ describe("MissionScopePage Progress tab composes heat-map (slice 13.5)", () => {
     );
   }
 
-  it("HG-3: Mission Progress tab includes heat-map ALONGSIDE existing rollup", async () => {
-    const { findByTestId } = renderMissionScope();
-    // Sanity: mission overview mounts.
-    expect(await findByTestId("mission-overview-panel")).toBeTruthy();
+  it("HG-3 (slice 22): Mission Progress tab renders the heat-map and CUTS the per-slice rollup cards", async () => {
+    const { findByTestId, queryByTestId } = renderMissionScope();
+    // OPR.0.4.1.17: the mission now LANDS on the Steering tab (not Overview);
+    // assert the landing mounts, then navigate to the target tab below.
+    expect(await findByTestId("steering-tab")).toBeTruthy();
 
     // Switch to Progress tab.
     fireEvent.click(await findByTestId("project-tab-progress"));
 
-    // Heat-map renders.
+    // Heat-map (+ legend) is kept.
     expect(await findByTestId("mission-progress-heatmap")).toBeTruthy();
-    // Per-slice rollup still present (composition, not replacement).
-    expect(await findByTestId("scope-progress-rollup")).toBeTruthy();
+    // OPR.0.4.1.22: the per-slice rollup CARDS are cut — the heat-map IS the
+    // per-slice acceptance view now (founder round-8: remove cards, keep heatmap).
+    expect(queryByTestId("scope-progress-rollup")).toBeNull();
   });
 
-  // Forward-fix-1: heat-map must render BEFORE the PROGRESS.md
-  // markdown section so the new visual gestalt is the first thing on
-  // the Progress tab. Asserting DOM order via Node.compareDocument-
-  // Position protects against silent reordering that the old
-  // "both render" assertion (HG-3 above) would not catch.
+  // Heat-map must render BEFORE the PROGRESS.md markdown section so the
+  // visual gestalt is the first thing on the Progress tab. Asserting DOM
+  // order via Node.compareDocumentPosition protects against silent reordering.
   it("HG-3 (DOM order): heat-map renders BEFORE the PROGRESS.md markdown section", async () => {
-    const { findByTestId } = renderMissionScope();
-    expect(await findByTestId("mission-overview-panel")).toBeTruthy();
+    const { findByTestId, queryByTestId } = renderMissionScope();
+    expect(await findByTestId("steering-tab")).toBeTruthy();
     fireEvent.click(await findByTestId("project-tab-progress"));
 
     const heatmap = await findByTestId("mission-progress-heatmap");
@@ -455,17 +470,14 @@ describe("MissionScopePage Progress tab composes heat-map (slice 13.5)", () => {
       );
     }
 
-    // Heat-map must also precede the rollup; this is the structural
-    // claim of the slice and the legend depends on it visually.
-    const rollup = await findByTestId("scope-progress-rollup");
-    expect(heatmap.compareDocumentPosition(rollup)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
+    // OPR.0.4.1.22: the per-slice rollup cards are cut — the heat-map is the
+    // per-slice gestalt and remains the first thing on the Progress tab.
+    expect(queryByTestId("scope-progress-rollup")).toBeNull();
   });
 
   it("HG-4: Mission Artifacts tab does NOT mount the heat-map", async () => {
     const { findByTestId, queryByTestId } = renderMissionScope();
-    expect(await findByTestId("mission-overview-panel")).toBeTruthy();
+    expect(await findByTestId("steering-tab")).toBeTruthy();
 
     fireEvent.click(await findByTestId("project-tab-artifacts"));
     expect(queryByTestId("mission-progress-heatmap")).toBeNull();

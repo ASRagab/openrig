@@ -19,6 +19,28 @@ export interface QueueItemViewerData {
   createdAt?: string;
   body?: string;
   related?: Array<{ kind: "file" | "commit" | "slice" | "seat"; label: string; href?: string }>;
+  // OPR.0.4.1.19 — Tier-3 drawer = the full queue-item detail: all fields + the
+  // full chain. Optional + render-when-present so existing callsites are unaffected.
+  updatedAt?: string | null;
+  priority?: string | null;
+  tier?: string | null;
+  closureReason?: string | null;
+  closureTarget?: string | null;
+  handedOffFrom?: string | null;
+  handedOffTo?: string | null;
+  blockedOn?: string | null;
+  claimedAt?: string | null;
+  expiresAt?: string | null;
+  closureRequiredAt?: string | null;
+  lastNudgeAttempt?: string | null;
+  lastNudgeResult?: string | null;
+  lastHeartbeat?: string | null;
+  resolution?: string | null;
+  targetRepo?: string | null;
+  chain?: string[] | null;
+  /** Tier-3 full source-of-truth view: render EVERY field labeled, nulls shown as
+   *  "—" (not hidden). Default false keeps other callsites compact. */
+  fullDetail?: boolean;
 }
 
 const PREVIEW_LINES = 30;
@@ -32,6 +54,24 @@ export function QueueItemViewer({
   createdAt,
   body,
   related,
+  updatedAt,
+  priority,
+  tier,
+  closureReason,
+  closureTarget,
+  handedOffFrom,
+  handedOffTo,
+  blockedOn,
+  claimedAt,
+  expiresAt,
+  closureRequiredAt,
+  lastNudgeAttempt,
+  lastNudgeResult,
+  lastHeartbeat,
+  resolution,
+  targetRepo,
+  chain,
+  fullDetail = false,
 }: QueueItemViewerData) {
   const [showFull, setShowFull] = useState(false);
   const bodyLines = body ? body.split("\n") : [];
@@ -87,6 +127,47 @@ export function QueueItemViewer({
         {createdAt ? (
           <MetaRow label="Created">
             <DateChip value={createdAt} />
+          </MetaRow>
+        ) : null}
+        {updatedAt ? (
+          <MetaRow label="Updated">
+            <DateChip value={updatedAt} />
+          </MetaRow>
+        ) : null}
+        {/* OPR.0.4.1.19 Tier-3 (fullDetail): every field labeled; nulls show as "—". */}
+        <FieldRow label="Priority" value={priority} show={fullDetail} testId="qitem-priority" />
+        <FieldRow label="Tier" value={tier} show={fullDetail} />
+        {closureReason || fullDetail ? (
+          <MetaRow label="Closure">
+            <span data-testid="qitem-closure" className={closureReason ? "break-all text-stone-900" : "text-on-surface-variant"}>
+              {closureReason ? `${closureReason}${closureTarget ? ` → ${closureTarget}` : ""}` : "—"}
+            </span>
+          </MetaRow>
+        ) : null}
+        <FieldRow label="From qitem" value={handedOffFrom} show={fullDetail} mono />
+        <FieldRow label="To" value={handedOffTo} show={fullDetail} mono />
+        <FieldRow label="Blocked on" value={blockedOn} show={fullDetail} mono />
+        <FieldRow label="Claimed" value={claimedAt} show={fullDetail} testId="qitem-claimed" />
+        <FieldRow label="Expires" value={expiresAt} show={fullDetail} />
+        <FieldRow label="Closure due" value={closureRequiredAt} show={fullDetail} />
+        <FieldRow label="Last nudge" value={lastNudgeAttempt} show={fullDetail} />
+        <FieldRow label="Nudge result" value={lastNudgeResult} show={fullDetail} />
+        <FieldRow label="Heartbeat" value={lastHeartbeat} show={fullDetail} />
+        <FieldRow label="Resolution" value={resolution} show={fullDetail} />
+        <FieldRow label="Target repo" value={targetRepo} show={fullDetail} testId="qitem-targetrepo" mono />
+        {(chain && chain.length > 0) || fullDetail ? (
+          <MetaRow label="Chain">
+            {chain && chain.length > 0 ? (
+              <span data-testid="qitem-chain" className="flex min-w-0 flex-col items-end gap-0.5 text-right">
+                {chain.map((id, i) => (
+                  <span key={`${id}-${i}`} className="break-all text-stone-900">
+                    {i === 0 ? id : `↳ ${id}`}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span data-testid="qitem-chain" className="text-on-surface-variant">—</span>
+            )}
           </MetaRow>
         ) : null}
       </div>
@@ -147,5 +228,34 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
       <span className="shrink-0 text-on-surface-variant">{label}</span>
       <span className="min-w-0 text-stone-900">{children}</span>
     </div>
+  );
+}
+
+// OPR.0.4.1.19 — a single scalar field. Renders when the value is present OR when
+// `show` (Tier-3 fullDetail) forces the full-item view; a null value shows as "—"
+// so the drawer is a faithful complete view rather than silently hiding fields.
+function FieldRow({
+  label,
+  value,
+  show,
+  testId,
+  mono,
+}: {
+  label: string;
+  value?: string | null;
+  show: boolean;
+  testId?: string;
+  mono?: boolean;
+}) {
+  if (!value && !show) return null;
+  return (
+    <MetaRow label={label}>
+      <span
+        data-testid={testId}
+        className={value ? (mono ? "break-all text-stone-900" : "text-stone-900") : "text-on-surface-variant"}
+      >
+        {value ?? "—"}
+      </span>
+    </MetaRow>
   );
 }

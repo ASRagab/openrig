@@ -19,7 +19,7 @@
 //     existing config covers it.
 
 import { useMemo, useState } from "react";
-import { useRigSummary } from "../../hooks/useRigSummary.js";
+import { useRigSummary, type RigSummary } from "../../hooks/useRigSummary.js";
 import { useNodeInventory, type NodeInventoryEntry } from "../../hooks/useNodeInventory.js";
 import { displayAgentName } from "../../lib/display-name.js";
 import { ProgressiveTerminal } from "../terminal/ProgressiveTerminal.js";
@@ -220,9 +220,51 @@ function RigTerminalSection({ rigId, rigName }: { rigId: string; rigName: string
   );
 }
 
+function HostRigPicker({
+  rigs,
+  onSelectRig,
+}: {
+  rigs: RigSummary[];
+  onSelectRig: (rigId: string) => void;
+}) {
+  return (
+    <div data-testid="topology-terminal-host-picker" className="space-y-3">
+      <SectionHeader tone="muted">RIG TERMINALS</SectionHeader>
+      <div className="grid gap-2 grid-cols-1 md:grid-cols-2">
+        {rigs.map((rig) => (
+          <button
+            key={rig.id}
+            type="button"
+            data-testid={`topology-terminal-host-rig-${rig.id}`}
+            onClick={() => onSelectRig(rig.id)}
+            className="flex items-center justify-between gap-2 border border-outline-variant bg-surface/70 px-3 py-2 text-left hover:bg-stone-100/70"
+          >
+            <span className="min-w-0">
+              <span className="block truncate font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-stone-700">
+                {rig.name}
+              </span>
+              <span className="block font-mono text-[9px] uppercase tracking-[0.10em] text-stone-400">
+                {rig.nodeCount} node{rig.nodeCount === 1 ? "" : "s"}
+              </span>
+            </span>
+            <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] text-stone-500">
+              Open
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function TopologyTerminalView({ scope, rigId, podName }: TopologyTerminalViewProps) {
+  const [selectedHostRigId, setSelectedHostRigId] = useState<string | null>(null);
   const { data: rigs } = useRigSummary();
   const { data: rigNodes } = useNodeInventory(scope !== "host" ? (rigId ?? null) : null);
+  const selectedHostRig = useMemo(
+    () => rigs?.find((rig) => rig.id === selectedHostRigId) ?? null,
+    [rigs, selectedHostRigId],
+  );
 
   if (scope === "host") {
     if (!rigs || rigs.length === 0) {
@@ -237,11 +279,24 @@ export function TopologyTerminalView({ scope, rigId, podName }: TopologyTerminal
         </div>
       );
     }
+    if (selectedHostRig) {
+      return (
+        <div data-testid="topology-terminal-host" className="p-6 space-y-4">
+          <button
+            type="button"
+            data-testid="topology-terminal-host-back"
+            onClick={() => setSelectedHostRigId(null)}
+            className="font-mono text-[9px] uppercase tracking-[0.14em] text-stone-500 hover:text-stone-800"
+          >
+            Back to rigs
+          </button>
+          <RigTerminalSection rigId={selectedHostRig.id} rigName={selectedHostRig.name} />
+        </div>
+      );
+    }
     return (
       <div data-testid="topology-terminal-host" className="p-6 space-y-6">
-        {rigs.map((r) => (
-          <RigTerminalSection key={r.id} rigId={r.id} rigName={r.name} />
-        ))}
+        <HostRigPicker rigs={rigs} onSelectRig={setSelectedHostRigId} />
       </div>
     );
   }

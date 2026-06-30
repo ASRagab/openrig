@@ -156,4 +156,140 @@ describe("scope-audit classifier", () => {
     expect(result.findings.some((f) => f.kind === "missing_id")).toBe(true);
     expect(result.findings.some((f) => f.kind === "missing_progress")).toBe(true);
   });
+
+  it("mission without MISSION_BRIEF.md emits medium missing_mission_brief at the artifact path", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "mission",
+      readmeFrontmatterRaw: "id: OPR.0.4.1",
+      progressFileExists: true,
+      missionBriefExists: false,
+      missionBriefPath: "/workspace/missions/release-0.4.1/MISSION_BRIEF.md",
+    }));
+    const finding = result.findings.find((f) => f.kind === "missing_mission_brief");
+    expect(finding).toMatchObject({
+      severity: "medium",
+      path: "/workspace/missions/release-0.4.1/MISSION_BRIEF.md",
+    });
+    expect(finding?.message).toMatch(/MISSION_BRIEF\.md/);
+    expect(finding?.remediation).toMatch(/# <Mission name> — Brief/);
+  });
+
+  it("mission with malformed MISSION_BRIEF.md emits medium malformed_mission_brief", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "mission",
+      readmeFrontmatterRaw: "id: OPR.0.4.1",
+      progressFileExists: true,
+      missionBriefExists: true,
+      missionBriefPath: "/workspace/missions/release-0.4.1/MISSION_BRIEF.md",
+      missionBriefContent: "# release — Brief\n\n## Progress\n## What & why\n",
+    }));
+    const finding = result.findings.find((f) => f.kind === "malformed_mission_brief");
+    expect(finding?.severity).toBe("medium");
+    expect(finding?.path).toBe("/workspace/missions/release-0.4.1/MISSION_BRIEF.md");
+    expect(finding?.message).toMatch(/canonical MISSION_BRIEF\.md section order/);
+  });
+
+  it("mission with locked slice-16 MISSION_BRIEF.md schema does not emit brief findings", () => {
+    const content = [
+      "# release-0.4.1 — Brief",
+      "",
+      "## What & why",
+      "## Building",
+      "## Progress",
+      "## Proven",
+      "## Needs you",
+      "## Pointers",
+    ].join("\n");
+    const result = classifyScopeItem(makeInput({
+      level: "mission",
+      readmeFrontmatterRaw: "id: OPR.0.4.1",
+      progressFileExists: true,
+      missionBriefExists: true,
+      missionBriefPath: "/workspace/missions/release-0.4.1/MISSION_BRIEF.md",
+      missionBriefContent: content,
+    }));
+    expect(result.findings.filter((f) =>
+      f.kind === "missing_mission_brief" || f.kind === "malformed_mission_brief"
+    )).toHaveLength(0);
+  });
+
+  it("mission without MISSION_NOTES.md emits low missing_mission_notes", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "mission",
+      readmeFrontmatterRaw: "id: OPR.0.4.1",
+      progressFileExists: true,
+      missionNotesExists: false,
+      missionNotesPath: "/workspace/missions/release-0.4.1/MISSION_NOTES.md",
+    }));
+    const finding = result.findings.find((f) => f.kind === "missing_mission_notes");
+    expect(finding).toMatchObject({
+      severity: "low",
+      path: "/workspace/missions/release-0.4.1/MISSION_NOTES.md",
+    });
+    expect(finding?.remediation).toMatch(/MISSION_NOTES\.md/);
+  });
+
+  it("done slice with no PROOF.md and no proof packet emits medium missing_proof", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "slice",
+      readmeFrontmatterRaw: "id: OPR.0.4.1.28\nstatus: done",
+      progressFileExists: true,
+      proofFileExists: false,
+      proofFilePath: "/workspace/missions/release-0.4.1/slices/28-slice/PROOF.md",
+      proofDirExists: true,
+      proofDirHasEntries: false,
+      proofDirPath: "/workspace/missions/release-0.4.1/slices/28-slice/proof",
+      hasProofPacket: false,
+    }));
+    const finding = result.findings.find((f) => f.kind === "missing_proof");
+    expect(finding).toMatchObject({
+      severity: "medium",
+      path: "/workspace/missions/release-0.4.1/slices/28-slice/PROOF.md",
+    });
+    expect(finding?.message).toMatch(/done\/proven/);
+    expect(finding?.remediation).toMatch(/proof\//);
+  });
+
+  it("wip slice with no proof does not emit missing_proof", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "slice",
+      readmeFrontmatterRaw: "id: OPR.0.4.1.28\nstatus: wip",
+      progressFileExists: true,
+      proofFileExists: false,
+      proofDirExists: false,
+      hasProofPacket: false,
+    }));
+    expect(result.findings.some((f) => f.kind === "missing_proof")).toBe(false);
+  });
+
+  it("proof packet marks a slice proven and still emits missing_proof when root proof is absent", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "slice",
+      readmeFrontmatterRaw: "id: OPR.0.4.1.28\nstatus: active",
+      progressFileExists: true,
+      proofFileExists: false,
+      proofFilePath: "/workspace/missions/release-0.4.1/slices/28-slice/PROOF.md",
+      proofDirExists: false,
+      hasProofPacket: true,
+    }));
+    const finding = result.findings.find((f) => f.kind === "missing_proof");
+    expect(finding).toMatchObject({
+      severity: "medium",
+      path: "/workspace/missions/release-0.4.1/slices/28-slice/PROOF.md",
+    });
+    expect(finding?.message).not.toMatch(/no proof packet/);
+  });
+
+  it("root PROOF.md plus populated proof directory suppresses missing_proof", () => {
+    const result = classifyScopeItem(makeInput({
+      level: "slice",
+      readmeFrontmatterRaw: "id: OPR.0.4.1.28\nstatus: shipped",
+      progressFileExists: true,
+      proofFileExists: true,
+      proofDirExists: true,
+      proofDirHasEntries: true,
+      hasProofPacket: false,
+    }));
+    expect(result.findings.some((f) => f.kind === "missing_proof")).toBe(false);
+  });
 });

@@ -367,10 +367,30 @@ export interface QueueItemDetail {
   tier: string | null;
   tags: string[] | null;
   body: string;
+  // OPR.0.4.1.18 — optional human-readable summary served by /api/queue/:id
+  // (daemon QueueItem.summary); null for pre-18 qitems. The Story consumer
+  // degrades on null; body stays the source of truth.
+  summary: string | null;
   closureReason?: string | null;
   closureTarget?: string | null;
   handedOffTo?: string | null;
+  handedOffFrom?: string | null;
+  // OPR.0.4.1.19 — lineage already serialized by /api/queue/:id (queue-repository
+  // row->QueueItem); surfaced here for the Story-tab DAG reconstruction. The tail
+  // of chainOfRecord is the direct parent qitem-id; handedOffFrom == that tail on
+  // handoff-created items.
+  chainOfRecord?: string[] | null;
   blockedOn?: string | null;
+  // OPR.0.4.1.19 — the remaining /api/queue/:id QueueItem fields, surfaced for the
+  // Tier-3 drawer source-of-truth view (all already in the payload; type-only).
+  claimedAt?: string | null;
+  expiresAt?: string | null;
+  closureRequiredAt?: string | null;
+  lastNudgeAttempt?: string | null;
+  lastNudgeResult?: string | null;
+  lastHeartbeat?: string | null;
+  resolution?: string | null;
+  targetRepo?: string | null;
 }
 
 export interface QueueItemMapResult {

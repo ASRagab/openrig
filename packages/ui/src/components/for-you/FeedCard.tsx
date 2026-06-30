@@ -8,6 +8,7 @@ import { QueueItemTrigger } from "../drawer-triggers/QueueItemTrigger.js";
 import type { QueueItemViewerData } from "../drawer-viewers/QueueItemViewer.js";
 import type { QueueItemDetail } from "../../hooks/useSlices.js";
 import type { FeedCard as FeedCardModel, FeedCardKind } from "../../lib/feed-classifier.js";
+import { isSyntheticFeedCard } from "../../lib/attention-feed.js";
 import { VerbActions } from "../mission-control/components/VerbActions.js";
 import {
   ProofPacketHeader,
@@ -62,6 +63,32 @@ const KIND_TOKEN: Record<FeedCardKind, ProjectToken> = {
   progress: { label: "Progress", tone: "info", icon: History },
   observation: { label: "Observation", tone: "neutral", icon: Clock },
 };
+
+// OPR.0.4.1.27 Unit 5 — tone → text color (for the kind glyph; mirrors TONE_DOT).
+const TONE_TEXT: Record<ProjectMetaTone, string> = {
+  neutral: "text-stone-500",
+  info: "text-secondary",
+  success: "text-success",
+  warning: "text-warning",
+  danger: "text-tertiary",
+};
+
+/**
+ * OPR.0.4.1.27 Unit 6 — sender-or-owner terminal resolver (fidelity map).
+ * Human-action cards (action-required / approval) open the SENDER
+ * (sourceSession); agent-owned cards (progress / shipped / observation) open
+ * the current HOLDER (destinationSession), falling back to source when no
+ * destination resolves. sourceSession / destinationSession are the only
+ * terminal-addressable sessions (never handed_off_from, which is qitem lineage).
+ */
+export function resolveCardTerminalSession(
+  kind: FeedCardKind,
+  source: string | undefined,
+  destination: string | undefined,
+): string | undefined {
+  if (kind === "action-required" || kind === "approval") return source;
+  return destination ?? source;
+}
 
 /**
  * Card surface — vellum-coherent. Matches CardShell in
@@ -391,6 +418,11 @@ export function FeedCard({
   const primaryDotClass = renderedOutcome
     ? TONE_DOT[primaryToken.tone]
     : KIND_DOT[card.kind];
+  // OPR.0.4.1.27 Unit 5 — the kind glyph (mockup fidelity): render the kind's
+  // icon tone-colored instead of a bare dot when one is defined.
+  const PrimaryIcon = primaryToken.icon;
+  // OPR.0.4.1.27 Unit 6 — sender-or-owner terminal address.
+  const terminalSession = resolveCardTerminalSession(card.kind, source, destination);
   return (
     <article
       data-testid={KIND_TESTID[card.kind]}
@@ -419,10 +451,22 @@ export function FeedCard({
               {/* Kind tag — mono uppercase + leading colored dot. Replaces
                   the old colored-pill chrome. */}
               <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-stone-700">
-                <span aria-hidden="true" className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0", primaryDotClass)} />
+                {PrimaryIcon ? (
+                  <PrimaryIcon aria-hidden="true" strokeWidth={1.7} className={cn("h-3.5 w-3.5 shrink-0", TONE_TEXT[primaryToken.tone])} />
+                ) : (
+                  <span aria-hidden="true" className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0", primaryDotClass)} />
+                )}
                 {primaryToken.label}
               </span>
-              <InlineMetaMark token={eventToken(card.source.type)} />
+              {/* OPR.0.4.1.27 real-data fidelity — only real event-derived cards
+                  show the source-event token. Synthetic attention/needs-input
+                  projection cards wrap a real qitem in an internal wrapper type
+                  (queue.attention.synthetic / activity.needs_input.synthetic);
+                  feeding that to eventToken humanized the code into a visible
+                  "...Synthetic" mark (an internal-string leak). Suppress it for
+                  synthetic cards — their kind tag + queue-state token + human
+                  title already carry the meaning. */}
+              {!isSyntheticFeedCard(card) ? <InlineMetaMark token={eventToken(card.source.type)} /> : null}
               {qitemViewerData?.state ? <InlineMetaMark token={queueStateToken(qitemViewerData.state)} /> : null}
             </div>
             {/* Title — legibility north star: 16px headline bold. */}
@@ -513,11 +557,14 @@ export function FeedCard({
         ) : null}
         <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[10px] text-stone-500">
           <div className="flex items-center gap-2 min-w-0">
+            {/* OPR.0.4.1.27 real-data fidelity — when there is no human author
+                session, render nothing here. Previously this fell back to the raw
+                card.source.type, which leaked the internal wrapper string
+                (e.g. activity.needs_input.synthetic) user-visible. The kind tag +
+                human title already identify the card. */}
             {card.authorSession ? (
               <AuthorAgentTag authorSession={card.authorSession} rigId={card.rigId} />
-            ) : (
-              <span className="truncate">{card.source.type}</span>
-            )}
+            ) : null}
             {qitemViewerData ? (
               <QueueItemTrigger
                 data={qitemViewerData}
@@ -527,10 +574,11 @@ export function FeedCard({
                 show context
               </QueueItemTrigger>
             ) : null}
-            {/* OPR.0.3.3.20 — drill into the source/author seat's terminal
-                preview (session-name keyed; honest disabled state when no
-                session resolves). */}
-            <FeedCardTerminalDrill cardId={card.id} sessionName={source} />
+            {/* OPR.0.4.1.27 Unit 6 — drill into the live terminal of the right
+                seat: the SENDER for human-action cards, the current HOLDER for
+                agent-owned cards (sender-or-owner resolver). Session-name keyed;
+                honest disabled state when no session resolves. */}
+            <FeedCardTerminalDrill cardId={card.id} sessionName={terminalSession} />
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
-import type { CmuxAdapter } from "../adapters/cmux.js";
+import type { CmuxAdapter, CmuxResult } from "../adapters/cmux.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 
 export type OpenCmuxAction = "focused_existing" | "created_new" | "created_helper";
@@ -63,8 +63,13 @@ export class NodeCmuxService {
     } | null | undefined,
   ): Promise<OpenCmuxResult> {
 
-    // Get current workspace as creation anchor
-    const wsResult = await this.cmuxAdapter.currentWorkspace();
+    // Resolve a workspace anchor for the new surface. OPR.0.4.1.31 part A —
+    // node open-in-cmux previously anchored ONLY on currentWorkspace(), so when
+    // no cmux workspace was current EVERY unbound row failed before the
+    // node-specific attach (only rig-level Launch-in-CMUX created one). Now we
+    // resolve an anchor: current if present, else select an existing workspace,
+    // else create + select one, so the surface lands in a VISIBLE workspace.
+    const wsResult = await this.resolveWorkspaceAnchor();
     if (!wsResult.ok) return { ok: false, error: wsResult.message, code: wsResult.code };
 
     // Create a new terminal surface
@@ -112,5 +117,26 @@ export class NodeCmuxService {
       cmuxSurface: newSurfaceId,
     });
     return { ok: true, action: "created_helper" };
+  }
+
+  // OPR.0.4.1.31 part A — resolve a workspace to anchor a new surface in.
+  // (1) Use the current workspace if cmux has one. (2) If cmux is unreachable,
+  // propagate the honest error — there's no anchor to resolve. (3) Otherwise
+  // (cmux open but no current workspace) create one: cmux opens a NEW workspace
+  // as the active/visible one (the `cmux <path>` / new-workspace model), so the
+  // surface we then create lands where the operator is looking.
+  //
+  // Deliberately uses ONLY transport-allowlisted, binary-verified methods
+  // (workspace.current + workspace.create). We do NOT call workspace.select: the
+  // cmux CLI exposes no select-workspace command and our cmux transport does not
+  // allow that RPC, so calling it would throw on the real path (dev1-guard B1).
+  // The official socket API lists workspace.select, but the external docs are not
+  // sufficient — the integration surface must actually expose it. If create
+  // fails, the honest error surfaces (the operator can use rig-level Launch-in-CMUX).
+  private async resolveWorkspaceAnchor(): Promise<CmuxResult<string>> {
+    const current = await this.cmuxAdapter.currentWorkspace();
+    if (current.ok) return current;
+    if (current.code === "unavailable") return current;
+    return this.cmuxAdapter.createWorkspace("OpenRig");
   }
 }

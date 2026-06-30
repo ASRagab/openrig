@@ -125,16 +125,35 @@ describe("openrig-core plugin — hooks (HG-2.6 + HG-2.7)", () => {
     const config = JSON.parse(content) as { hooks: Record<string, unknown> };
     expect(config.hooks).toBeDefined();
     expect(Object.keys(config.hooks).sort()).toEqual([
-      "Notification", "PostCompact", "SessionStart", "Stop", "UserPromptSubmit",
+      // OPR.0.4.1.09: PreCompact added so the PRODUCT plugin owns the marker WRITER
+      // (precompact-hook.mjs generates the restore packet + writes restore-pending/<seat>.json
+      // on PreCompact), instead of depending on the drift-prone host skill copy.
+      "Notification", "PostCompact", "PreCompact", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 
-  it("hooks/codex.json declares 3 events (no Notification — Codex doesn't expose it)", () => {
+  it("PreCompact wires the product-plugin precompact-hook.mjs writer (OPR.0.4.1.09 — product owns the writer)", () => {
+    const content = fs.readFileSync(nodePath.join(PLUGIN_ROOT, "hooks", "claude.json"), "utf-8");
+    const config = JSON.parse(content) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const preCompact = config.hooks["PreCompact"];
+    expect(preCompact).toBeDefined();
+    const commands = preCompact!.flatMap((entry) => entry.hooks.map((h) => h.command));
+    // The PreCompact command must run the product-plugin writer that GENERATES the packet
+    // (restore-from-jsonl) — never a hard-coded outputDir. Path is under skills/, via the
+    // ${CLAUDE_PLUGIN_ROOT} substitution so the PRODUCT copy runs (drift-immune).
+    expect(commands.some((c) => /CLAUDE_PLUGIN_ROOT.*claude-compaction-restore\/scripts\/precompact-hook\.mjs/.test(c))).toBe(true);
+    // The writer ships in the product tree.
+    expect(fs.existsSync(nodePath.join(PLUGIN_ROOT, "skills", "claude-compaction-restore", "scripts", "precompact-hook.mjs"))).toBe(true);
+  });
+
+  it("hooks/codex.json declares 4 events incl. PermissionRequest (Codex hook-primary approval guard, OPR.0.4.1.10)", () => {
     const content = fs.readFileSync(nodePath.join(PLUGIN_ROOT, "hooks", "codex.json"), "utf-8");
     const config = JSON.parse(content) as { hooks: Record<string, unknown> };
     expect(config.hooks).toBeDefined();
+    // PermissionRequest (openai/codex PR #17563) is wired so a Codex approval prompt produces a
+    // needs_input runtime hook = the hook-primary rig-send guard for Codex (no Claude-style Notification).
     expect(Object.keys(config.hooks).sort()).toEqual([
-      "SessionStart", "Stop", "UserPromptSubmit",
+      "PermissionRequest", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 
@@ -164,10 +183,16 @@ describe("openrig-core plugin — hooks (HG-2.6 + HG-2.7)", () => {
     expect(content).toMatch(/CLAUDE_PLUGIN_ROOT.*compaction-restore-bridge\.cjs/);
   });
 
-  it("Codex hook commands reference ${CODEX_PLUGIN_ROOT} (Codex path substitution convention)", () => {
+  it("Codex hook commands reference ${PLUGIN_ROOT} (the var Codex actually substitutes — OPR.0.4.1.10)", () => {
+    // rev1-r2 catch (B1): Codex 0.139 substitutes ${PLUGIN_ROOT}/${CLAUDE_PLUGIN_ROOT} for
+    // plugin-discovered hooks (verified: the var is present in the codex binary; ${CODEX_PLUGIN_ROOT}
+    // is NOT, and nothing in OpenRig sets it). openrig-core projects to <cwd>/.codex/plugins/<id>/, so
+    // ${PLUGIN_ROOT} resolves to the plugin dir and the activity-relay hook actually fires.
     const content = fs.readFileSync(nodePath.join(PLUGIN_ROOT, "hooks", "codex.json"), "utf-8");
-    expect(content).toMatch(/\$\{CODEX_PLUGIN_ROOT\}/);
-    expect(content).toMatch(/CODEX_PLUGIN_ROOT.*activity-relay\.cjs/);
+    expect(content).toMatch(/\$\{PLUGIN_ROOT\}/);
+    expect(content).toMatch(/PLUGIN_ROOT.*activity-relay\.cjs/);
+    // Guard against regressing to the unsupported variable.
+    expect(content).not.toMatch(/CODEX_PLUGIN_ROOT/);
   });
 });
 

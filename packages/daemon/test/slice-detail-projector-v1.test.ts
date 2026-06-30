@@ -202,6 +202,34 @@ describe("PL-slice-story-view-v1 SliceDetailProjector — bound workflow_instanc
     expect(docEvent!.phase).toBeNull();
   });
 
+  it("OPR.0.4.1.18 — Story node uses the authored summary, degrades on null", () => {
+    // Simulate a post-044 schema (the shared beforeEach migrate list predates
+    // 044): add the column, then seed one summarized + one un-summarized qitem.
+    db.exec("ALTER TABLE queue_items ADD COLUMN summary TEXT");
+    writeSliceFolder(slicesRoot, "summary-slice", { slice: "summary-slice", "rail-item": "PL-sum" });
+    // Bodies must contain the slice name so the indexer's matchQitems associates
+    // them with the slice (matched by rail-item or slice-name in the body).
+    insertQitem(db, "q-sum", "summary-slice work: build the summary column");
+    db.prepare("UPDATE queue_items SET summary = ? WHERE qitem_id = ?").run(
+      "Human-readable: wire the version row.",
+      "q-sum"
+    );
+    insertQitem(db, "q-nosum", "summary-slice work: no summary provided here");
+    bindInstance("inst-sum", ["q-sum", "q-nosum"], "step-b");
+
+    const slice = indexer.get("summary-slice")!;
+    const payload = projector.project(slice);
+    const created = payload.story.events.filter((e) => e.kind === "queue.created");
+    const sum = created.find((e) => e.qitemId === "q-sum");
+    const nosum = created.find((e) => e.qitemId === "q-nosum");
+
+    // D-2: the authored human summary wins on the Story node.
+    expect(sum!.summary).toBe("Human-readable: wire the version row.");
+    // D-1: null → degrade (source→dest + body truncation); StoryEvent.summary
+    // stays a non-null string so the slice-19 consumer never breaks.
+    expect(nosum!.summary).toBe("src@r → dst@r: summary-slice work: no summary provided here");
+  });
+
   it("all v1 fields are null when NO workflow_instance touches the slice qitems (v0 fallback)", () => {
     writeSliceFolder(slicesRoot, "unbound-slice", { slice: "unbound-slice", "rail-item": "PL-test" });
     insertQitem(db, "q-orphan", "unbound-slice has qitems but no workflow_instance");

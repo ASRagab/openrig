@@ -129,6 +129,7 @@ export function queueRoutes(): Hono {
       expiresAt?: string;
       chainOfRecord?: string[];
       targetRepo?: string;
+      summary?: string | null;
     }>().catch(() => ({} as never));
 
     if (!body.sourceSession) return c.json({ error: "sourceSession is required" }, 400);
@@ -153,6 +154,7 @@ export function queueRoutes(): Hono {
         expiresAt: body.expiresAt,
         chainOfRecord: body.chainOfRecord,
         targetRepo: body.targetRepo,
+        summary: body.summary,
         nudge: (body as { nudge?: boolean }).nudge,
       });
       return c.json(item, 201);
@@ -249,6 +251,7 @@ export function queueRoutes(): Hono {
       tier?: string;
       tags?: string[];
       targetRepo?: string;
+      summary?: string | null;
     }>().catch(() => ({} as never));
     if (!body.fromSession) return c.json({ error: "fromSession is required" }, 400);
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
@@ -269,6 +272,7 @@ export function queueRoutes(): Hono {
         tier: body.tier,
         tags: body.tags,
         targetRepo: body.targetRepo,
+        summary: body.summary,
         nudge: (body as { nudge?: boolean }).nudge,
       });
       return c.json(result, 201);
@@ -292,6 +296,7 @@ export function queueRoutes(): Hono {
       tags?: string[];
       nudge?: boolean;
       targetRepo?: string;
+      summary?: string | null;
     }>().catch(() => ({} as never));
     if (!body.fromSession) return c.json({ error: "fromSession is required" }, 400);
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
@@ -312,6 +317,7 @@ export function queueRoutes(): Hono {
         tier: body.tier,
         tags: body.tags,
         targetRepo: body.targetRepo,
+        summary: body.summary,
         nudge: body.nudge,
       });
       return c.json(result, 201);

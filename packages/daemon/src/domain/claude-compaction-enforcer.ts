@@ -1,5 +1,6 @@
 import type { SessionTransport } from "./session-transport.js";
 import type { SettingsStore } from "./user-settings/settings-store.js";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -105,6 +106,74 @@ function defaultOpenRigHome(): string {
   return process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig");
 }
 
+/**
+ * OPR.0.4.1.09: parse a WELL-FORMED leading frontmatter block for a declared target
+ * seat (target_seat / seat / session). Returns null when no well-formed frontmatter
+ * exists OR it declares no seat — a generic operator instruction, valid for any seat.
+ *
+ * rev1-r2 fix (42654c58 blocker): authoritative only inside a leading `---` fence that
+ * is BOTH opened AND closed. The body is NEVER scanned. A generic extra with a broken/
+ * unclosed `---` fence, or a prose "seat:" line in body text, must default to GENERIC =
+ * inject — not be misread as a foreign-seat declaration and silently suppressed in the
+ * recovery path. A well-formed frontmatter declaring a DIFFERENT seat still refuses.
+ */
+function declaredSeatOf(content: string): string | null {
+  const fm = /^\s*---\s*\n([\s\S]*?)\n---/.exec(content);
+  if (!fm) return null;
+  const m = /^[ \t]*(?:target[_-]?seat|seat|session(?:[_-]?name)?)[ \t]*:[ \t]*["']?([^"'\n#]+?)["']?[ \t]*$/im.exec(fm[1]!);
+  return m ? m[1]!.trim() : null;
+}
+
+function readExtraDeclaredSeat(filePath: string): { exists: boolean; declaredSeat: string | null } {
+  try {
+    return { exists: true, declaredSeat: declaredSeatOf(fs.readFileSync(filePath, "utf8")) };
+  } catch {
+    return { exists: false, declaredSeat: null };
+  }
+}
+
+interface ResolvedExtra {
+  /** Path to inject into the restore prompt, or null when nothing valid for this seat. */
+  filePath: string | null;
+  /** True when an extra declaring a DIFFERENT seat was present and was refused. */
+  ignoredWrongSeat: boolean;
+}
+
+/**
+ * OPR.0.4.1.09 (never inject wrong-seat state): resolve the post-compaction "extra"
+ * instruction file FOR THIS SEAT. (1) Prefer a per-seat extra
+ * `compaction/post-compact-extra/<seat>.md` (no cross-seat contamination possible).
+ * (2) Fall back to the legacy SINGLETON global only if it does NOT declare a DIFFERENT
+ * seat - a wrong-seat extra is REFUSED (the 2026-06-20 defect: a global file holding
+ * advisor-lead@kernel state was handed to delivery + pm seats). A generic/undeclared
+ * extra is still allowed (valid for any seat); only an explicit seat MISMATCH refuses.
+ */
+function resolvePostCompactExtra(
+  sessionName: string,
+  openrigHome: string,
+  globalPath: string | null | undefined,
+): ResolvedExtra {
+  const seatKey = sanitizeSessionKey(sessionName);
+  const perSeatPath = path.join(openrigHome, "compaction", "post-compact-extra", `${seatKey}.md`);
+  const perSeat = readExtraDeclaredSeat(perSeatPath);
+  if (perSeat.exists) {
+    if (perSeat.declaredSeat && sanitizeSessionKey(perSeat.declaredSeat) !== seatKey) {
+      return { filePath: null, ignoredWrongSeat: true };
+    }
+    return { filePath: perSeatPath, ignoredWrongSeat: false };
+  }
+  const trimmed = globalPath?.trim();
+  if (!trimmed) return { filePath: null, ignoredWrongSeat: false };
+  const global = readExtraDeclaredSeat(trimmed);
+  // Configured-but-absent: keep the path (the operator may populate it before restore;
+  // an absent file cannot be a wrong-seat injection). The skill handles "missing".
+  if (!global.exists) return { filePath: trimmed, ignoredWrongSeat: false };
+  if (global.declaredSeat && sanitizeSessionKey(global.declaredSeat) !== seatKey) {
+    return { filePath: null, ignoredWrongSeat: true };
+  }
+  return { filePath: trimmed, ignoredWrongSeat: false };
+}
+
 function buildPostCompactRestorePrompt(input: {
   sessionName: string;
   openrigHome: string;
@@ -112,6 +181,7 @@ function buildPostCompactRestorePrompt(input: {
   sessionId?: string | null;
   postCompactInstruction?: string | null;
   postCompactInstructionFilePath?: string | null;
+  ignoredWrongSeatExtra?: boolean;
 }): string {
   const markerPath = path.join(
     input.openrigHome,
@@ -139,6 +209,10 @@ function buildPostCompactRestorePrompt(input: {
   }
   if (instructionFilePath) {
     pieces.push(`Additional post-compaction instruction file: ${instructionFilePath}. Read it before restoring; it may contain mission-specific reading lists or file paths.`);
+  } else if (input.ignoredWrongSeatExtra) {
+    // OPR.0.4.1.09: a post-compact extra declaring a DIFFERENT seat was present and
+    // refused at the source. Tell the seat NOT to seek it out (it is not its state).
+    pieces.push("A post-compaction instruction file declaring a DIFFERENT seat was present and has been IGNORED — it is not yours; do NOT read or follow it. Rely on the per-seat marker and the JSONL transcript for restore.");
   }
   pieces.push("Load/read the claude-compaction-restore skill, follow the marker's restoreInstruction and postCompactInstruction when present, read the restore packet files and mental-model restore map, then reply with: restored from packet at <path>; resumed at step <X>.");
   return pieces.join(" ");
@@ -244,6 +318,9 @@ export class ClaudeCompactionEnforcer {
         return { triggered: true };
       }
       if (pendingStage === "restore_prompt") {
+        // OPR.0.4.1.09: resolve the extra FOR THIS SEAT (per-seat preferred; the legacy
+        // global is refused if it declares a different seat) - never inject wrong-seat state.
+        const extra = resolvePostCompactExtra(input.sessionName, this.openrigHome, policy.messageFilePath);
         const restore = await this.sessionTransport.send(
           input.sessionName,
           buildPostCompactRestorePrompt({
@@ -252,7 +329,8 @@ export class ClaudeCompactionEnforcer {
             transcriptPath: input.transcriptPath,
             sessionId: input.sessionId,
             postCompactInstruction: policy.messageInline,
-            postCompactInstructionFilePath: policy.messageFilePath,
+            postCompactInstructionFilePath: extra.filePath,
+            ignoredWrongSeatExtra: extra.ignoredWrongSeat,
           }),
         );
         if (!restore.ok) {
