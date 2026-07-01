@@ -230,6 +230,66 @@ describe("Daemon Lifecycle", () => {
     expect(status.state).toBe("stopped");
   });
 
+  // OPR.0.4.2.1 — the daemon-status probe must settle a transient /healthz failure across the
+  // post-restart listener bind window (bounded retry) and report the ACTUAL /healthz answer,
+  // not a false 'down'/'unhealthy'. Repro (RED) + regression guards (must not mask a genuine down).
+  it("OPR.0.4.2.1 status: pid alive, probe fails once then /healthz answers -> running + healthy (bind window settles)", async () => {
+    const state: DaemonState = { pid: 777, port: 9000, db: "x.db", startedAt: "2026-01-01T00:00:00Z" };
+    let calls = 0;
+    const deps = mockDeps({
+      exists: vi.fn((p: string) => p === STATE_FILE),
+      readFile: vi.fn((p: string) => (p === STATE_FILE ? JSON.stringify(state) : null)),
+      isProcessAlive: vi.fn(() => true),
+      sleep: async () => {},
+      fetch: vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw new Error("connect ECONNREFUSED"); // listener not yet accepting
+        return { ok: true };
+      }),
+    });
+    const status = await getDaemonStatus(deps);
+    expect(status.state).toBe("running");
+    expect(status.healthy).toBe(true); // settled to the real answer, not a transient false-negative
+    expect((deps.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2); // retried
+  });
+
+  it("OPR.0.4.2.1 status: no daemon.json, probe fails once then /healthz answers -> running, not stopped", async () => {
+    let calls = 0;
+    const deps = mockDeps({
+      exists: vi.fn(() => false),
+      sleep: async () => {},
+      fetch: vi.fn(async () => { calls++; if (calls === 1) throw new Error("ECONNREFUSED"); return { ok: true }; }),
+    });
+    const status = await getDaemonStatus(deps);
+    expect(status.state).toBe("running"); // NOT a false "stopped"
+  });
+
+  it("OPR.0.4.2.1 regression: genuine down (probe always fails, no state) -> stopped after HARD-BOUNDED retries", async () => {
+    let calls = 0;
+    const deps = mockDeps({
+      exists: vi.fn(() => false),
+      sleep: async () => {},
+      fetch: vi.fn(async () => { calls++; throw new Error("ECONNREFUSED"); }),
+    });
+    const status = await getDaemonStatus(deps);
+    expect(status.state).toBe("stopped"); // bounded budget expires -> honestly stopped, never masked
+    expect(calls).toBeLessThanOrEqual(8); // hard cap — no unbounded hammering / hang
+  });
+
+  it("OPR.0.4.2.1 regression: pid alive but healthz never answers -> running + healthy:false (no false healthy)", async () => {
+    const state: DaemonState = { pid: 777, port: 9000, db: "x.db", startedAt: "2026-01-01T00:00:00Z" };
+    const deps = mockDeps({
+      exists: vi.fn((p: string) => p === STATE_FILE),
+      readFile: vi.fn((p: string) => (p === STATE_FILE ? JSON.stringify(state) : null)),
+      isProcessAlive: vi.fn(() => true),
+      sleep: async () => {},
+      fetch: vi.fn(async () => { throw new Error("refused"); }),
+    });
+    const status = await getDaemonStatus(deps);
+    expect(status.state).toBe("running"); // pid alive
+    expect(status.healthy).toBe(false); // never answered -> honestly unhealthy, not falsely healthy
+  });
+
   it("status: no daemon.json but configured healthz responds -> running without pid", async () => {
     const savedPort = process.env["OPENRIG_PORT"];
     const savedHost = process.env["OPENRIG_HOST"];

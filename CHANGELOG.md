@@ -8,6 +8,30 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.4.2] - 2026-07-01
+
+**Status**: shipped; targeted CLI hotfix.
+
+### Summary For Installing Agents
+
+- **Package version**: bumps from `0.4.1`.
+- **Migrations**: none — no schema changes ship in `0.4.2`.
+- **Node engines**: unchanged.
+- **Backward compatibility**: no CLI surface, daemon, or dependency changes. `rig daemon status` no longer false-negatives during the daemon's post-start listener-bind window; genuine-down reporting is unchanged.
+
+### Fixed
+
+- **`rig daemon status` false-negative after restart** — the probe's single `/healthz` fetch lost to the post-restart HTTP-listener bind window (process up, not yet accepting), causing a false "Daemon not running" / "healthz failed" report even though `/healthz` was returning `200`. Fixed by wrapping the three `getDaemonStatus` `/healthz` branches in a status-probe-local bounded settle (max 5 attempts, 200ms backoff, hard-bounded). Genuine-down still fails all attempts and is reported stopped / unhealthy after the budget — never masked, never an unbounded wait.
+
+### Scope
+
+- `packages/cli/src/daemon-lifecycle.ts` — three probe branches now go through `probeHealthzWithSettle`.
+- `packages/cli/test/daemon-lifecycle.test.ts` — focused probe-layer tests: transient-then-healthy settles to running / healthy; pid-alive-but-never-answers stays `healthy: false`; genuine-down still reported stopped after the hard-bounded budget.
+
+No dependency, script, config, or behavioral package-field changes beyond the CLI hotfix and version bumps.
+
+---
+
 ## [0.4.1] - 2026-06-30
 
 **Status**: shipped; observability + operator-UI overhaul.

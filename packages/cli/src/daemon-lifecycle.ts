@@ -101,6 +101,10 @@ export interface LifecycleDeps {
   mkdirp: (path: string) => void;
   openForAppend: (path: string) => number;
   isProcessAlive: (pid: number) => boolean;
+  // OPR.0.4.2.1 — optional injectable delay for the status-probe bounded settle/retry.
+  // Defaults to a real setTimeout in production; tests pass a no-op to stay fast. Optional so
+  // existing deps / mocks / callers are untouched.
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export const OPENRIG_DIR = OPENRIG_HOME;
@@ -116,6 +120,13 @@ const DEFAULT_DB = "openrig.sqlite";
 const HEALTHZ_RETRIES = 20;
 const HEALTHZ_DELAY_MS = 250;
 const HEALTHZ_PROBE_TIMEOUT_MS = 250;
+// OPR.0.4.2.1 — status-probe bounded settle: a single /healthz fetch loses to the post-restart
+// listener bind window (process up, not yet accepting). getDaemonStatus retries a HARD-BOUNDED
+// number of attempts with a short backoff so the status reflects the ACTUAL /healthz answer. This
+// is status-probe-LOCAL (does NOT change start/stop/checkPid timing). Worst-case added latency for
+// a genuine-down status check is bounded ((ATTEMPTS-1)*DELAY + per-attempt timeout) — never a hang.
+const STATUS_PROBE_MAX_ATTEMPTS = 5;
+const STATUS_PROBE_RETRY_DELAY_MS = 200;
 
 export interface WorkspaceScaffoldResult {
   root: string;
@@ -535,7 +546,7 @@ export async function getDaemonStatus(deps: LifecycleDeps): Promise<DaemonStatus
   const openrigUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
   if (openrigUrl) {
     try {
-      const res = await fetchDaemonProbe(deps, `${openrigUrl}/healthz`);
+      const res = await probeHealthzWithSettle(deps, `${openrigUrl}/healthz`);
       const url = new URL(openrigUrl);
       return { state: "running", port: Number(url.port) || DEFAULT_PORT, host: url.hostname || DEFAULT_HOST, healthy: res.ok };
     } catch {
@@ -547,7 +558,7 @@ export async function getDaemonStatus(deps: LifecycleDeps): Promise<DaemonStatus
   if (!state) {
     const configured = resolveConfiguredDaemonTarget();
     try {
-      const res = await fetchDaemonProbe(deps, `http://${configured.host}:${configured.port}/healthz`);
+      const res = await probeHealthzWithSettle(deps, `http://${configured.host}:${configured.port}/healthz`);
       return {
         state: "running",
         port: configured.port,
@@ -569,7 +580,7 @@ export async function getDaemonStatus(deps: LifecycleDeps): Promise<DaemonStatus
   const host = state.host ?? DEFAULT_HOST;
   let healthy = false;
   try {
-    const res = await fetchDaemonProbe(deps, `http://${host}:${state.port}/healthz`);
+    const res = await probeHealthzWithSettle(deps, `http://${host}:${state.port}/healthz`);
     healthy = res.ok;
   } catch {
     // healthz unreachable
@@ -605,6 +616,31 @@ async function fetchDaemonProbe(deps: LifecycleDeps, url: string): Promise<{ ok:
       setTimeout(() => reject(new HealthProbeTimeoutError(url)), HEALTHZ_PROBE_TIMEOUT_MS);
     }),
   ]);
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * OPR.0.4.2.1 — status-probe-LOCAL bounded settle/retry around fetchDaemonProbe. A single /healthz
+ * fetch loses to the post-restart listener bind window (process up but not yet accepting), yielding
+ * a false 'down'/'unhealthy'. Retry a HARD-BOUNDED number of attempts with a short backoff so the
+ * status probe reflects the ACTUAL /healthz answer. Bounded by construction: a genuine-down answers
+ * nothing, every attempt fails, the final error is rethrown (reported as stopped/unhealthy) — never
+ * masked, never an unbounded wait. Used ONLY by getDaemonStatus; start/stop/checkPid keep their own
+ * timing (start already has its own poll loop).
+ */
+async function probeHealthzWithSettle(deps: LifecycleDeps, url: string): Promise<{ ok: boolean }> {
+  const sleep = deps.sleep ?? defaultSleep;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= STATUS_PROBE_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fetchDaemonProbe(deps, url);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < STATUS_PROBE_MAX_ATTEMPTS) await sleep(STATUS_PROBE_RETRY_DELAY_MS);
+    }
+  }
+  throw lastErr;
 }
 
 // V0.3.1 slice 05 kernel-rig-as-default — forward-fix #3 architectural.
