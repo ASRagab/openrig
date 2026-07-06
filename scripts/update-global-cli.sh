@@ -37,6 +37,8 @@ require_cmd git
 require_cmd node
 require_cmd npm
 
+export npm_config_allow_scripts=
+
 push_fork=false
 for arg in "$@"; do
   case "$arg" in
