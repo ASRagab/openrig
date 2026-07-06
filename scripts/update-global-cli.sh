@@ -146,10 +146,10 @@ case "$npm_prefix" in
 esac
 
 expected_version="$(node -p "require('./packages/cli/package.json').version")"
-rig_bin="$(command -v rig || true)"
-[ -n "$rig_bin" ] || fail "rig not found on PATH; add $npm_prefix/bin"
+rig_bin="$npm_prefix/bin/rig"
+[ -x "$rig_bin" ] || fail "global rig not found at $rig_bin"
 
-actual_version="$(rig --version)"
+actual_version="$("$rig_bin" --version)"
 actual_semver="${actual_version%% *}"
 [ "$actual_semver" = "$expected_version" ] || fail "rig --version returned $actual_version, expected $expected_version"
 
