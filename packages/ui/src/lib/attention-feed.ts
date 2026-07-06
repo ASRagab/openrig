@@ -69,10 +69,17 @@ export function attentionItemToFeedCard(item: AttentionQueueItem): FeedCard {
     createdAt,
     receivedAt,
   };
+  // BR-10 plain language: the queue summary titles the card when present;
+  // raw qitem ids stay one drill-in down.
   const title =
-    kind === "approval"
+    item.summary ??
+    (kind === "approval"
       ? `Approval needed: ${item.qitemId.slice(0, 24)}`
-      : `Action required: ${item.qitemId.slice(0, 24)}`;
+      : `Action required: ${item.qitemId.slice(0, 24)}`);
+  // FR-9 win #1: a slice-tagged attention item is a living-notes item — its
+  // card deep-links to the slice Review tab anchored at this NEEDS-YOU item
+  // (the accordion's identity for agent items IS the qitem id).
+  const sliceTag = (item.tags ?? []).find((t) => t.startsWith("slice:"));
   return {
     id,
     kind,
@@ -82,6 +89,12 @@ export function attentionItemToFeedCard(item: AttentionQueueItem): FeedCard {
     receivedAt,
     createdAt,
     source: syntheticEvent,
+    evidenceRef: item.evidenceRef ?? null,
+    reviewSlice: sliceTag ? sliceTag.slice("slice:".length) : null,
+    reviewAnchor: sliceTag ? item.qitemId : null,
+    // OPR.0.4.4.15: origin host carried through the SAME classifier path —
+    // a display/filter dimension only, no parallel remote card model.
+    ...(item.hostId !== undefined ? { hostId: item.hostId } : {}),
   };
 }
 

@@ -110,7 +110,7 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
         console.log("");
         console.log("  Failed nodes cannot be relaunched directly because pod-aware launch");
         console.log("  bypasses startup orchestration. Recover by:");
-        console.log(`    1. Verify other seats are healthy: rig ps --filter rigName=${rigId} --nodes`);
+        console.log(`    1. Verify other seats are healthy: rig ps --nodes --rig ${rigId}`);
         if (data.podNamespace) {
           console.log(`    2. Shrink the failed new pod: rig shrink ${rigId} ${data.podNamespace}`);
         } else {

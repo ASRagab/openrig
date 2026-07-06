@@ -7,6 +7,7 @@ execute without guessing.
 ## Skills Loaded
 
 - `openrig-user`
+- `mission-slice-sop`
 - `requirements-writer`
 - `context-builder`
 - `writing-plans`

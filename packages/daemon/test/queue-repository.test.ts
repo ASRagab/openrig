@@ -7,6 +7,7 @@ import { eventsSchema } from "../src/db/migrations/003_events.js";
 import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
 import { queueItemSummarySchema } from "../src/db/migrations/044_queue_item_summary.js";
+import { queueItemEvidenceRefSchema } from "../src/db/migrations/048_queue_item_evidence_ref.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import {
   QueueRepository,
@@ -579,5 +580,208 @@ describe("QueueRepository summary column (OPR.0.4.1.18)", () => {
       nudge: false,
     });
     expect(result2.created.summary).toBeNull();
+  });
+});
+
+describe("queue.* event payloads carry summary (OPR.0.4.4.19 FR-1)", () => {
+  let db: Database.Database;
+  let bus: EventBus;
+  let repo: QueueRepository;
+  let captured: PersistedEvent[];
+
+  beforeEach(() => {
+    db = createDb();
+    migrate(db, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema, queueItemSummarySchema]);
+    bus = new EventBus(db);
+    repo = new QueueRepository(db, bus);
+    captured = [];
+    bus.subscribe((e) => captured.push(e));
+  });
+
+  afterEach(() => db.close());
+
+  const eventOf = (type: string) =>
+    captured.find((e) => e.type === type) as Record<string, unknown> | undefined;
+
+  it("queue.created carries the provided summary", async () => {
+    await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "body",
+      summary: "Approve the 0.4.4 cut",
+      nudge: false,
+    });
+    const ev = eventOf("queue.created");
+    expect(ev).toBeDefined();
+    expect(ev!.summary).toBe("Approve the 0.4.4 cut");
+  });
+
+  it("every queue.* event carries summary: null when omitted — present, never absent", async () => {
+    const item = await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "no summary",
+      nudge: false,
+    });
+    repo.claim({ qitemId: item.qitemId, destinationSession: "bob@rig" });
+    repo.unclaim(item.qitemId, "bob@rig", "requeue");
+    repo.update({
+      qitemId: item.qitemId,
+      actorSession: "bob@rig",
+      state: "in-progress",
+    });
+    await repo.handoff({
+      qitemId: item.qitemId,
+      fromSession: "bob@rig",
+      toSession: "carol@rig",
+      nudge: false,
+    });
+    for (const type of [
+      "queue.created",
+      "queue.claimed",
+      "queue.unclaimed",
+      "queue.updated",
+      "queue.handed_off",
+    ]) {
+      const ev = eventOf(type);
+      expect(ev, `${type} emitted`).toBeDefined();
+      expect("summary" in ev!, `${type} payload has summary key`).toBe(true);
+      expect(ev!.summary, `${type} summary is null`).toBeNull();
+    }
+  });
+
+  it("claim/unclaim/updated events carry the row's persisted summary; handed_off carries the SOURCE summary and the handoff's queue.created carries the NEW summary", async () => {
+    const item = await repo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "body",
+      summary: "Source summary.",
+      nudge: false,
+    });
+    repo.claim({ qitemId: item.qitemId, destinationSession: "bob@rig" });
+    expect(eventOf("queue.claimed")!.summary).toBe("Source summary.");
+    repo.unclaim(item.qitemId, "bob@rig", "requeue");
+    expect(eventOf("queue.unclaimed")!.summary).toBe("Source summary.");
+    repo.update({ qitemId: item.qitemId, actorSession: "bob@rig", state: "in-progress" });
+    expect(eventOf("queue.updated")!.summary).toBe("Source summary.");
+    captured.length = 0;
+    await repo.handoff({
+      qitemId: item.qitemId,
+      fromSession: "bob@rig",
+      toSession: "carol@rig",
+      summary: "New owner summary.",
+      nudge: false,
+    });
+    expect(eventOf("queue.handed_off")!.summary).toBe("Source summary.");
+    expect(eventOf("queue.created")!.summary).toBe("New owner summary.");
+  });
+
+  it("legacy pre-044 schema (no summary column): events still carry summary key with null", async () => {
+    const legacyDb = createDb();
+    migrate(legacyDb, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema]);
+    const legacyBus = new EventBus(legacyDb);
+    const legacyRepo = new QueueRepository(legacyDb, legacyBus);
+    const legacyCaptured: PersistedEvent[] = [];
+    legacyBus.subscribe((e) => legacyCaptured.push(e));
+    await legacyRepo.create({
+      sourceSession: "alice@rig",
+      destinationSession: "bob@rig",
+      body: "legacy",
+      nudge: false,
+    });
+    const ev = legacyCaptured.find((e) => e.type === "queue.created") as Record<string, unknown>;
+    expect("summary" in ev).toBe(true);
+    expect(ev.summary).toBeNull();
+    legacyDb.close();
+  });
+});
+
+describe("queue_items.evidence_ref column (OPR.0.4.4.19 FR-5 storage)", () => {
+  let db: Database.Database;
+  let repo: QueueRepository;
+
+  beforeEach(() => {
+    db = createDb();
+    migrate(db, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema, queueItemSummarySchema, queueItemEvidenceRefSchema]);
+    repo = new QueueRepository(db, new EventBus(db));
+  });
+
+  afterEach(() => db.close());
+
+  it("persists --evidence-ref on create and round-trips it through getById", async () => {
+    const item = await repo.create({
+      sourceSession: "pm@rig",
+      destinationSession: "human-review@kernel",
+      body: "please judge",
+      summary: "Approve the 0.4.4 cut",
+      evidenceRef: "missions/release-0.4.4/slices/19/PROOF.md",
+      nudge: false,
+    });
+    expect(item.evidenceRef).toBe("missions/release-0.4.4/slices/19/PROOF.md");
+    expect(repo.getById(item.qitemId)?.evidenceRef).toBe("missions/release-0.4.4/slices/19/PROOF.md");
+  });
+
+  it("evidence_ref is null when omitted (BR-1: ordinary items never require it)", async () => {
+    const item = await repo.create({
+      sourceSession: "a@rig",
+      destinationSession: "b@rig",
+      body: "ordinary agent-to-agent work",
+      nudge: false,
+    });
+    expect(item.evidenceRef).toBeNull();
+  });
+
+  it("handoff authors its OWN evidence_ref; not inherited from source (summary semantics)", async () => {
+    const src = await repo.create({
+      sourceSession: "a@rig",
+      destinationSession: "b@rig",
+      body: "src",
+      evidenceRef: "proof/source.md",
+      nudge: false,
+    });
+    const result = await repo.handoff({
+      qitemId: src.qitemId,
+      fromSession: "b@rig",
+      toSession: "c@rig",
+      nudge: false,
+    });
+    expect(result.created.evidenceRef).toBeNull();
+    const result2 = await repo.handoff({
+      qitemId: result.created.qitemId,
+      fromSession: "c@rig",
+      toSession: "d@rig",
+      evidenceRef: "proof/new.md",
+      nudge: false,
+    });
+    expect(result2.created.evidenceRef).toBe("proof/new.md");
+  });
+
+  it("listAttention JSON carries evidence_ref for human-routed items (FR-5 read-path AC)", async () => {
+    await repo.create({
+      sourceSession: "pm@rig",
+      destinationSession: "human-review@kernel",
+      body: "judge me",
+      summary: "s",
+      evidenceRef: "proof/PROOF.md",
+      nudge: false,
+    });
+    const attention = repo.listAttention();
+    expect(attention).toHaveLength(1);
+    expect(attention[0]!.evidenceRef).toBe("proof/PROOF.md");
+  });
+
+  it("legacy pre-048 schema: evidenceRef input degrades silently; reads are null", async () => {
+    const legacyDb = createDb();
+    migrate(legacyDb, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema]);
+    const legacyRepo = new QueueRepository(legacyDb, new EventBus(legacyDb));
+    const item = await legacyRepo.create({
+      sourceSession: "a@rig",
+      destinationSession: "b@rig",
+      body: "legacy",
+      evidenceRef: "proof/x.md",
+      nudge: false,
+    });
+    expect(item.evidenceRef).toBeNull();
+    legacyDb.close();
   });
 });

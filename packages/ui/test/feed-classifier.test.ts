@@ -19,9 +19,18 @@ function evt(type: string, payload: Record<string, unknown> = {}, seq = 1): Acti
 }
 
 describe("classifyFeed — SC-15 5 card types", () => {
-  it("queue.item.created with state=human-gate → action-required", () => {
+  // OPR.0.4.4.19 FR-3: human-gate is a TIER, never a state. The prior test
+  // pinned the dead `state === "human-gate"` branch (the daemon state enum
+  // never contains it); the fixed branch fires on tier and classifies as
+  // an approval card.
+  it("queue.item.created with tier=human-gate → approval (FR-3 fixed branch)", () => {
+    const cards = classifyFeed([evt("queue.item.created", { tier: "human-gate" })]);
+    expect(cards[0]?.kind).toBe("approval");
+  });
+
+  it("state=human-gate alone (a tier value smuggled as state) no longer classifies — falls to progress", () => {
     const cards = classifyFeed([evt("queue.item.created", { state: "human-gate" })]);
-    expect(cards[0]?.kind).toBe("action-required");
+    expect(cards[0]?.kind).toBe("progress");
   });
 
   it("queue.item.created with state=closeout-pending-ratify → approval", () => {
@@ -166,5 +175,32 @@ describe("classifyFeed — SC-15 5 card types", () => {
       evt("queue.updated", { actorSession: "driver@vel" }),
     ]);
     expect(cards[0]?.authorSession).toBe("driver@vel");
+  });
+});
+
+// OPR.0.4.4.19 FR-1 (AC 3): feed-card titles read the event's summary.
+describe("classifyFeed — FR-1 summary titles", () => {
+  it("queue.created event with summary → card title is the summary, not a generic label", () => {
+    const cards = classifyFeed([
+      evt("queue.created", {
+        qitemId: "qitem-20260704-cut",
+        sourceSession: "pm@rig",
+        destinationSession: "human-review@kernel",
+        summary: "Approve the 0.4.4 cut",
+      }),
+    ]);
+    expect(cards[0]?.title).toBe("Approve the 0.4.4 cut");
+  });
+
+  it("queue.created event with summary:null → generic label fallback preserved", () => {
+    const cards = classifyFeed([
+      evt("queue.created", {
+        qitemId: "qitem-20260704-nosum",
+        sourceSession: "a@rig",
+        destinationSession: "b@rig",
+        summary: null,
+      }),
+    ]);
+    expect(cards[0]?.title).toBe("Queue item created: qitem-20260704-nosum");
   });
 });

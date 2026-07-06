@@ -18,6 +18,7 @@ import { join } from "node:path";
 import {
   SETTINGS_VALID_KEYS,
   isSettingsValidKey,
+  parseFeedHostSubscriptionKey,
   type SettingsStore,
 } from "../domain/user-settings/settings-store.js";
 import {
@@ -37,7 +38,9 @@ export function configRoutes(): Hono {
   router.get("/", (c) => {
     const store = c.get("settingsStore" as never) as SettingsStore | undefined;
     if (!store) return c.json({ error: "settings_unavailable" }, 503);
-    return c.json({ settings: store.resolveAllWithSource() });
+    // OPR.0.4.4.15: dynamic-class enumeration rides ADDITIVELY beside the
+    // static settings map (existing consumers of `settings` unaffected).
+    return c.json({ settings: store.resolveAllWithSource(), feedHostSubscriptions: store.listFeedHostSubscriptions() });
   });
 
   router.post("/init-workspace", async (c) => {
@@ -96,6 +99,10 @@ export function configRoutes(): Hono {
     const store = c.get("settingsStore" as never) as SettingsStore | undefined;
     if (!store) return c.json({ error: "settings_unavailable" }, 503);
     const key = c.req.param("key");
+    // OPR.0.4.4.15: the ONE registered dynamic class resolves here; every
+    // other unknown key keeps the 400 below byte-for-byte.
+    const dynamic = store.resolveFeedHostSubscription(key);
+    if (dynamic) return c.json(dynamic);
     if (!isSettingsValidKey(key)) {
       return c.json({ error: `Unknown config key '${key}'`, validKeys: SETTINGS_VALID_KEYS }, 400);
     }
@@ -106,7 +113,8 @@ export function configRoutes(): Hono {
     const store = c.get("settingsStore" as never) as SettingsStore | undefined;
     if (!store) return c.json({ error: "settings_unavailable" }, 503);
     const key = c.req.param("key");
-    if (!isSettingsValidKey(key)) {
+    const isDynamic = parseFeedHostSubscriptionKey(key) !== null;
+    if (!isDynamic && !isSettingsValidKey(key)) {
       return c.json({ error: `Unknown config key '${key}'`, validKeys: SETTINGS_VALID_KEYS }, 400);
     }
     const body = (await c.req.json<{ value?: string }>().catch(() => ({}))) as { value?: string };
@@ -115,7 +123,7 @@ export function configRoutes(): Hono {
     }
     try {
       store.set(key, body.value);
-      return c.json({ ok: true, key, resolved: store.resolveOne(key) });
+      return c.json({ ok: true, key, resolved: isDynamic ? store.resolveFeedHostSubscription(key) : store.resolveOne(key as never) });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
@@ -125,12 +133,13 @@ export function configRoutes(): Hono {
     const store = c.get("settingsStore" as never) as SettingsStore | undefined;
     if (!store) return c.json({ error: "settings_unavailable" }, 503);
     const key = c.req.param("key");
-    if (!isSettingsValidKey(key)) {
+    const isDynamic = parseFeedHostSubscriptionKey(key) !== null;
+    if (!isDynamic && !isSettingsValidKey(key)) {
       return c.json({ error: `Unknown config key '${key}'`, validKeys: SETTINGS_VALID_KEYS }, 400);
     }
     try {
       store.reset(key);
-      return c.json({ ok: true, key, resolved: store.resolveOne(key) });
+      return c.json({ ok: true, key, resolved: isDynamic ? store.resolveFeedHostSubscription(key) : store.resolveOne(key as never) });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }

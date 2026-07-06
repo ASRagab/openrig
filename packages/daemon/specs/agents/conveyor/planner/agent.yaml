@@ -11,7 +11,7 @@ imports:
 profiles:
   default:
     uses:
-      skills: [openrig-user, requirements-writer, context-builder, writing-plans, verification-before-completion]
+      skills: [openrig-user, mission-slice-sop, requirements-writer, context-builder, writing-plans, verification-before-completion]
       guidance: []
       subagents: []
       runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config]

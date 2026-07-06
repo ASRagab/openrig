@@ -7,6 +7,7 @@ import { loadHostRegistry, resolveHost, hostDisplayTarget, resolveRemoteBearer, 
 import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host-executor.js";
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
+import type { AggregatedPayload, PerHostStatus } from "../lib/hosts/fanout-contract.js";
 
 interface PsEntry {
   rigId: string;
@@ -24,6 +25,9 @@ interface PsEntry {
    *  derived from tmux output. */
   hasWorkCount?: number;
   status: "running" | "partial" | "stopped";
+  /** OPR.0.4.4.21 — additive: seats needing attention (lifecycle/startup
+   *  attention, needs_input, held, startup error) folded daemon-side. */
+  attentionCount?: number;
   lifecycleState?: "running" | "recoverable" | "stopped" | "degraded" | "attention_required";
   uptime: string | null;
   latestSnapshot: string | null;
@@ -145,6 +149,7 @@ const NUMERIC_OPERATORS: NumericComparator[] = [">=", "<=", ">", "<", "="];
 // rig-level only; `rigName` is the alias and exists at both levels (per the
 // closed `rig ps trust and scale-safety` slice at openrig 0a9fb43).
 const ALLOWED_RIG_FIELDS = new Set([
+  "attentionCount",
   "rigId",
   "name",
   "rigName",
@@ -338,6 +343,56 @@ function parseFields(input: string, allowed: Set<string>, level: "rig" | "nodes"
   return fields;
 }
 
+interface ParsedPsControls {
+  parsedFilter: ParsedFilter | null;
+  limit: number | null;
+  fields: string[] | null;
+  useEnvelope: boolean;
+}
+
+function parsePsControls(opts: PsCliOptions): ParsedPsControls | { error: string } {
+  let effectiveFilter = opts.filter;
+  if (opts.active) {
+    if (effectiveFilter) {
+      return {
+        error:
+          `--active and --filter cannot be combined. ` +
+          `--active is sugar for --filter agentActivity.state=running. ` +
+          `Pick one form, or compose by upgrading to --filter directly.`,
+      };
+    }
+    effectiveFilter = "agentActivity.state=running";
+  }
+
+  let parsedFilter: ParsedFilter | null = null;
+  if (effectiveFilter) {
+    const result = parseFilter(effectiveFilter);
+    if ("error" in result) return result;
+    parsedFilter = result;
+  }
+
+  const limit = opts.limit !== undefined ? Number(opts.limit) : null;
+  if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
+    return { error: `--limit must be a non-negative integer; got '${opts.limit}'` };
+  }
+
+  let fields: string[] | null = null;
+  if (opts.fields !== undefined) {
+    const fieldsLevel: "rig" | "nodes" = opts.nodes ? "nodes" : "rig";
+    const fieldsAllowed = fieldsLevel === "nodes" ? ALLOWED_NODE_FIELDS : ALLOWED_RIG_FIELDS;
+    const fieldsResult = parseFields(opts.fields, fieldsAllowed, fieldsLevel);
+    if ("error" in fieldsResult) return fieldsResult;
+    fields = fieldsResult;
+  }
+
+  return {
+    parsedFilter,
+    limit,
+    fields,
+    useEnvelope: parsedFilter !== null || limit !== null || fields !== null || opts.summary === true,
+  };
+}
+
 function applyRigFilter(entries: PsEntry[], filter: ParsedFilter): PsEntry[] {
   return entries.filter((e) => {
     if (filter.key === "status") return e.status === filter.value;
@@ -390,6 +445,71 @@ function applyNodeFilter(entries: NodeEntry[], filter: ParsedFilter): NodeEntry[
 // OPR.0.3.3.19 - build the /api/ps path, opting archived rigs back in when
 // --include-archived is set. Default (no flag) leaves the daemon's
 // archived-excluding default in force.
+function fanOutNodesError(): string {
+  return [
+    "rig ps --all-hosts/--hosts --nodes: per-node fan-out requires the FULL explicit ladder.",
+    "  rig ps --all-hosts --nodes -A             (fleet nodes per host, projected rows)",
+    "  rig ps --all-hosts --nodes -A --full      (complete per-node records — the last rung)",
+    "One rig's seats on one host: rig ps --host <id> --nodes --rig <name>.",
+  ].join("\n");
+}
+
+/**
+ * OPR.0.4.4.21 FR-2/FR-3 — THE centralized disclosure-ladder validator.
+ * Runs BEFORE the local/HTTP-host/SSH/fan-out dispatch split so every path
+ * obeys one grammar (qa1 plan-review: remote mode bypassed the session-rig
+ * injection and fanned wide). Principle (arch-ratified): IMPLICIT SCOPE
+ * DEFAULTS DON'T CROSS HOST BOUNDARIES — the session-rig default has no
+ * stable referent on a remote host (a same-named rig there would silently
+ * misresolve), so remote per-node views are explicit-or-error.
+ * Returns the teaching error text, or null when the invocation is valid.
+ */
+export function validatePsLadder(opts: PsCliOptions, callerRig: string | undefined): string | null {
+  const isFanOut = !!(opts.allHosts || opts.hosts);
+  const isSingleRemote = !!opts.host;
+
+  // FR-3: -A/--all-rigs has exactly ONE meaning — the --nodes fleet widener.
+  if (opts.allRigs && !opts.nodes) {
+    return [
+      "rig ps -A: '-A/--all-rigs' now has exactly one meaning — the --nodes fleet widener.",
+      "The consolidated all-rigs view IS the default: just run 'rig ps'.",
+      "Fleet nodes: rig ps --nodes -A (add --full for complete per-node records).",
+      "Archived history: rig ps --include-archived.",
+    ].join("\n");
+  }
+
+  // FR-5: multi-host fan-out is rollup-only UNLESS the full explicit
+  // ladder is requested — `--nodes -A` per host (`--full` for complete
+  // records), exactly as the PRD writes it. Anything less explicit under
+  // --nodes errors; never silent rig-tier data under a --nodes flag.
+  if (opts.nodes && isFanOut && !opts.allRigs) {
+    return fanOutNodesError();
+  }
+
+  // FR-2: --nodes always names its scope — session default locally,
+  // explicit --rig / -A everywhere else. Never an implicit fan-out.
+  if (opts.nodes && !opts.rig && !opts.allRigs) {
+    if (isFanOut) {
+      return fanOutNodesError();
+    }
+    if (isSingleRemote) {
+      return [
+        `rig ps --host ${opts.host} --nodes: no target — the local session's rig is not a remote scope`,
+        "(implicit scope defaults don't cross host boundaries; a same-named remote rig would silently misresolve).",
+        `Name one: rig ps --host ${opts.host} --nodes --rig <name>, or that host's fleet explicitly: rig ps --host ${opts.host} --nodes -A.`,
+      ].join("\n");
+    }
+    if (!callerRig) {
+      return [
+        "rig ps --nodes: no target — outside a managed session there is no current rig to default to.",
+        "Name one: rig ps --nodes --rig <name>, or go fleet-wide explicitly: rig ps --nodes -A.",
+      ].join("\n");
+    }
+  }
+
+  return null;
+}
+
 function psApiPath(opts: PsCliOptions): string {
   return opts.includeArchived ? "/api/ps?includeArchived=true" : "/api/ps";
 }
@@ -399,6 +519,13 @@ function selectFields<T extends Record<string, unknown>>(entries: T[], fields: s
     const out: Record<string, unknown> = {};
     for (const f of fields) out[f] = e[f];
     return out;
+  });
+}
+
+function selectFanOutFields(entries: Array<Record<string, unknown>>, fields: string[]): Array<Record<string, unknown>> {
+  return entries.map((e) => {
+    const [selected] = selectFields([e], fields);
+    return { ...selected, hostId: e.hostId };
   });
 }
 
@@ -508,22 +635,39 @@ function abbrevNodeLifecycle(state: NodeEntry["lifecycleState"] | undefined): st
 }
 
 /**
- * `rig ps` — list running rigs and optionally their nodes.
+ * `rig ps` — the consolidated fleet map + explicit disclosure ladder.
  *
- * L3-followup adds CLI-side shaping flags (`--limit`, `--fields`, `--summary`,
- * `--filter`, `--full`) for context-window-safe output on large hosts. Default
- * `rig ps` (human) truncates to ~50 rigs with an explicit footer naming totals
- * and the `--full` opt-out. Default `rig ps --json` keeps the bare-array shape
- * for back-compat; the truncation/envelope shape only applies when at least
- * one of `--limit`/`--summary`/`--fields`/`--filter` is specified.
+ * OPR.0.4.4.21: the default is ALL active rigs, one compact O(rigs) row each
+ * (the current-rig-only default is retired). The token-safety invariant: no
+ * invocation returns per-node detail across all rigs unless explicitly
+ * flagged (--nodes -A), and even then rows are projected unless --full.
+ * Default `rig ps --json` keeps the bare-array shape for back-compat; the
+ * truncation/envelope shape only applies when at least one of
+ * `--limit`/`--summary`/`--fields`/`--filter` is specified.
  */
 export function psCommand(depsOverride?: PsDeps): Command {
   const cmd = new Command("ps")
     .description("List rigs and their status")
     .addHelpText("after", `
-Default: current-rig scope (derived from OPENRIG_SESSION_NAME's @<rig> suffix).
-Shows ALL states (stopped, recoverable, attention, idle — non-running IS the
-actionable signal for topology/readiness). Use -A/--all-rigs for fleet breadth.
+Default (OPR.0.4.4.21): ALL active rigs, ONE compact row each — O(rigs), never
+a fleet node fan-out — plus the host rollup line ("N rigs · M seats · K need
+attention"), the archived/stopped count line, and the drill-ladder footer.
+STATED contract: default --json is a bare array of ALL non-archived rigs
+INCLUDING stopped ones (existing keys preserved; additive attentionCount);
+only the HUMAN table folds stopped rigs into the count line.
+
+The disclosure ladder (each heavier view is an explicit step):
+  rig ps                      the consolidated map (this default)
+  rig ps --rig <name>         one rig's detail
+  rig ps --nodes              per-node, CURRENT rig (session default, local only)
+  rig ps --nodes --rig <name> per-node, named rig
+  rig ps --nodes -A           fleet nodes, projected rows
+  rig ps --nodes -A --full    complete per-node records (the only full fan-out)
+
+-A/--all-rigs has exactly ONE meaning: the --nodes fleet widener. Bare -A
+errors (all-rigs IS the default; archived history stays behind
+--include-archived). The session-rig default never crosses host boundaries:
+remote --nodes requires an explicit --rig or -A.
 
 Compact defaults: 'rig ps --nodes' shows a compact summary per node
 (rig, session, lifecycle, activity state, reason when attention, queue counts,
@@ -537,11 +681,10 @@ null even with --full; fetch the full recovery guidance + currentUsage from the
 single-node detail (/api/rigs/:rigId/nodes/:logicalId) or 'rig whoami'.
 
 Examples:
-  rig ps                                          Current rig summary (compact)
-  rig ps -A                                       All rigs (fleet breadth)
-  rig ps --full                                   Current rig, full detail
-  rig ps --json                                   Current rig, compact JSON
-  rig ps -A --json                                All rigs, compact JSON
+  rig ps                                          All active rigs, one row each + rollup
+  rig ps --rig <name>                             One rig's detail
+  rig ps --full                                   All rigs, no table truncation
+  rig ps --json                                   All non-archived rigs, bare JSON array
   rig ps --json --limit 20                        Bounded JSON envelope
   rig ps --json --summary                         Aggregate-only JSON
   rig ps --json --fields rigName,status,lifecycleState
@@ -561,12 +704,16 @@ Examples:
   rig ps --nodes --running                        Same as --active
   rig ps --nodes --filter agentActivity.state=running
                                                   Same as --active (the explicit form)
-  rig ps --host vm-claude-test --nodes --json     Remote host (no current-rig default)
+  rig ps --host vm-1 --nodes --rig <name> --json  Remote host per-node (explicit target required)
+  rig ps --all-hosts                              Per-host O(rigs) rollups (AggregatedPayload JSON)
   rig ps --include-archived                       Include archived rigs (marked with *); hidden by default
 
---rig <name> overrides the current-rig default. -A/--all-rigs disables it.
---session <name> filters within the effective rig scope; use -A if the target
-session is in a different rig.
+--rig <name> scopes to one rig. -A/--all-rigs is ONLY the --nodes fleet widener.
+--session <name> filters within the effective rig scope; use --nodes -A if the
+target session is in a different rig.
+Multi-host fan-out (--all-hosts/--hosts) is rollup-only by default; the full
+explicit ladder (--all-hosts --nodes -A, --full for complete records) fans out
+per-node with hostId-stamped projected rows.
 
 --active/--running narrow to agentActivity.state=running. Cannot combine with --filter.
 
@@ -574,7 +721,8 @@ session is in a different rig.
 contextUsage.percent, contextUsage.state. Other keys are rejected.
 
 --fields accepts (rig-level): rigId, name, rigName, nodeCount, runningCount,
-activeCount, hasWorkCount, status, lifecycleState, uptime, latestSnapshot.
+activeCount, hasWorkCount, attentionCount, status, lifecycleState, uptime,
+latestSnapshot.
 --fields accepts (node-level, with --nodes): rigId, rigName, logicalId, podId,
 podNamespace, canonicalSessionName, nodeKind, runtime, sessionStatus,
 startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
@@ -612,15 +760,53 @@ Exit codes:
       if (opts.verbose) opts.full = true;
       if (opts.running) opts.active = true;
       const isRemote = !!(opts.host || opts.allHosts || opts.hosts);
-      if (!opts.allRigs && !opts.rig && !isRemote) {
-        const sessionName = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
-        const callerRig = sessionName ? extractRigName(sessionName) : undefined;
-        if (callerRig) opts.rig = callerRig;
+      // OPR.0.4.4.21 FR-1: the rig tier is consolidated ALL-ACTIVE-RIGS by
+      // default (the current-rig-only default is RETIRED — it hid running
+      // rigs from the operator's field of view). The session-rig default
+      // now applies ONLY to the node tier (FR-2's scoped --nodes), and
+      // ONLY locally (the ladder validator enforces explicit-or-error on
+      // every remote path).
+      const sessionName = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
+      const callerRig = sessionName ? extractRigName(sessionName) : undefined;
+      const ladderError = validatePsLadder(opts, callerRig);
+      if (ladderError) {
+        console.error(ladderError);
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.nodes && !opts.allRigs && !opts.rig && !isRemote && callerRig) {
+        opts.rig = callerRig;
       }
       const deps = getDepsF();
 
+      // OPR.0.4.4.21 rev1-r2 fixback: the shared shaping controls
+      // (--active/--filter/--limit/--fields/--summary) parse + validate
+      // BEFORE any dispatch — local, single-host, or fan-out — so every
+      // path honors the same composition contract and rejections stay
+      // pre-HTTP on remote paths too.
+      // Parse shared composition controls once up front so local, single-host,
+      // and fan-out paths reject malformed --filter/--limit/--fields before
+      // any HTTP call and apply the same shaping semantics.
+      const controls = parsePsControls(opts);
+      if ("error" in controls) {
+        console.error(controls.error);
+        process.exitCode = 1;
+        return;
+      }
+      const { parsedFilter, limit, fields, useEnvelope } = controls;
+
       if (opts.allHosts || opts.hosts) {
-        await runFanOutPs(opts, deps);
+        // AggregatedPayload is the closed fan-out contract (items + hosts).
+        // Do not add an ad-hoc summary member here; teach the per-host form.
+        if (opts.summary) {
+          console.error(
+            "rig ps --all-hosts/--hosts --summary: summary does not compose with the merged fan-out payload.\n" +
+            "Summarize one host: rig ps --host <id> --summary; or drop --summary for the merged AggregatedPayload.",
+          );
+          process.exitCode = 1;
+          return;
+        }
+        await runFanOutPs(opts, deps, { parsedFilter, limit, fields });
         return;
       }
 
@@ -636,62 +822,6 @@ Exit codes:
         return;
       }
 
-      // Parse filter once up front so unknown keys/malformed filters surface
-      // as exit-1 errors before any HTTP call.
-      //
-      // PL-019 item 1: --active is sugar for --filter agentActivity.state=running.
-      // Combining --active with --filter is rejected (composition is
-      // ambiguous — pick one explicit form). Parity is verified end-to-end
-      // by the focused test: `--active` and the explicit filter must yield
-      // identical output on the same fixture.
-      let effectiveFilter = opts.filter;
-      if (opts.active) {
-        if (effectiveFilter) {
-          console.error(
-            `--active and --filter cannot be combined. ` +
-            `--active is sugar for --filter agentActivity.state=running. ` +
-            `Pick one form, or compose by upgrading to --filter directly.`
-          );
-          process.exitCode = 1;
-          return;
-        }
-        effectiveFilter = "agentActivity.state=running";
-      }
-      let parsedFilter: ParsedFilter | null = null;
-      if (effectiveFilter) {
-        const result = parseFilter(effectiveFilter);
-        if ("error" in result) {
-          console.error(result.error);
-          process.exitCode = 1;
-          return;
-        }
-        parsedFilter = result;
-      }
-
-      const limit = opts.limit !== undefined ? Number(opts.limit) : null;
-      if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
-        console.error(`--limit must be a non-negative integer; got '${opts.limit}'`);
-        process.exitCode = 1;
-        return;
-      }
-      // C9a: validate --fields against the per-level allow-list before any HTTP
-      // call, mirroring the --filter validation above. Level is determined by
-      // --nodes; both branches downstream use the same `fields` variable, so
-      // one up-front validation covers both paths.
-      let fields: string[] | null = null;
-      if (opts.fields !== undefined) {
-        const fieldsLevel: "rig" | "nodes" = opts.nodes ? "nodes" : "rig";
-        const fieldsAllowed = fieldsLevel === "nodes" ? ALLOWED_NODE_FIELDS : ALLOWED_RIG_FIELDS;
-        const fieldsResult = parseFields(opts.fields, fieldsAllowed, fieldsLevel);
-        if ("error" in fieldsResult) {
-          console.error(fieldsResult.error);
-          process.exitCode = 1;
-          return;
-        }
-        fields = fieldsResult;
-      }
-      const useEnvelope = parsedFilter !== null || limit !== null || fields !== null || opts.summary === true;
-
       const client = deps.clientFactory(getDaemonUrl(status));
 
       if (opts.nodes) {
@@ -699,7 +829,10 @@ Exit codes:
         return;
       }
 
-      const res = await client.get<PsEntry[]>(psApiPath(opts));
+      // OPR.0.4.4.21 FR-1: ONE O(rigs) fetch including archived so the
+      // count line can be computed; visibility is split client-side below
+      // (JSON keeps today's default of excluding archived — parity).
+      const res = await client.get<PsEntry[]>("/api/ps?includeArchived=true");
 
       if (res.status >= 400) {
         console.error(`Failed to fetch rig list from daemon (HTTP ${res.status}). Check daemon status with: rig status`);
@@ -709,9 +842,17 @@ Exit codes:
 
       const all = res.data;
 
+      // OPR.0.4.4.21 — archived visibility parity: the daemon call above
+      // always includes archived (for the count line); without
+      // --include-archived they are dropped from BOTH renders here, exactly
+      // as the daemon default used to do. archivedCount feeds the FR-1
+      // count line only.
+      const archivedCount = all.filter((e) => e.isArchived === true).length;
+      const visible = opts.includeArchived ? all : all.filter((e) => e.isArchived !== true);
+
       const rigScoped = opts.rig
-        ? all.filter((e) => (e.rigName ?? e.name) === opts.rig)
-        : all;
+        ? visible.filter((e) => (e.rigName ?? e.name) === opts.rig)
+        : visible;
 
       // Apply CLI-side filter (Amendment A: prefer CLI shaping).
       const filtered = parsedFilter ? applyRigFilter(rigScoped, parsedFilter) : rigScoped;
@@ -756,17 +897,35 @@ Exit codes:
       if (limited.length === 0) {
         if (parsedFilter) {
           console.log(`No rigs match --filter ${parsedFilter.key}=${parsedFilter.value}`);
+        } else if (archivedCount > 0 && !opts.includeArchived) {
+          // Proven-empty with the history pointer, never a bare "No rigs"
+          // while archived history exists.
+          console.log(`No active rigs · ${archivedCount} archived (rig ps --include-archived)`);
         } else {
           console.log("No rigs");
         }
         return;
       }
 
-      // Human output: apply default truncation budget unless --full.
-      const humanList = (opts.full || limit !== null) ? limited : limited.slice(0, HUMAN_RIG_BUDGET);
-      const humanTruncated = !opts.full && limit === null && filtered.length > HUMAN_RIG_BUDGET;
+      // OPR.0.4.4.21 FR-1 (human table ONLY — JSON keeps ALL non-archived
+      // entries including stopped; this scope split is a STATED contract
+      // sentence in the help text): on the BARE default (no filter, no
+      // --rig, no --include-archived) stopped rigs fold into the count
+      // line — history is what the default drops, not field of view.
+      const bareDefault = !parsedFilter && !opts.rig && !opts.includeArchived;
+      const tableRows = bareDefault ? limited.filter((e) => e.status !== "stopped") : limited;
+      const stoppedCount = bareDefault ? limited.length - tableRows.length : 0;
 
-      const header = padRigRow("RIG", "NODES", "RUNNING", "ACTIVE", "WORK", "STATUS", "LIFECYCLE", "UPTIME", "SNAPSHOT");
+      // FR-1 display element 1: the host rollup line.
+      const rollupSeats = tableRows.reduce((n, e) => n + e.nodeCount, 0);
+      const rollupAttention = tableRows.reduce((n, e) => n + (e.attentionCount ?? 0), 0);
+      console.log(`${tableRows.length} rig${tableRows.length === 1 ? "" : "s"} · ${rollupSeats} seat${rollupSeats === 1 ? "" : "s"} · ${rollupAttention} need${rollupAttention === 1 ? "s" : ""} attention`);
+
+      // Human output: apply default truncation budget unless --full.
+      const humanList = (opts.full || limit !== null) ? tableRows : tableRows.slice(0, HUMAN_RIG_BUDGET);
+      const humanTruncated = !opts.full && limit === null && tableRows.length > HUMAN_RIG_BUDGET;
+
+      const header = padRigRow("RIG", "NODES", "RUNNING", "ACTIVE", "WORK", "ATTN", "STATUS", "LIFECYCLE", "UPTIME", "SNAPSHOT");
       console.log(header);
       let anyArchivedShown = false;
       for (const e of humanList as PsEntry[]) {
@@ -781,6 +940,9 @@ Exit codes:
           // Slice 15 — "—" when daemon predates the field; honest absence.
           e.activeCount !== undefined ? String(e.activeCount) : "—",
           e.hasWorkCount !== undefined ? String(e.hasWorkCount) : "—",
+          // OPR.0.4.4.21 — the founder's field-of-view anchor: where is
+          // something that might concern me. "—" = daemon predates the field.
+          e.attentionCount !== undefined ? (e.attentionCount > 0 ? `▲${e.attentionCount}` : "0") : "—",
           e.status,
           abbrevRigLifecycle(e.lifecycleState),
           e.uptime ?? "—",
@@ -789,6 +951,17 @@ Exit codes:
       }
       if (anyArchivedShown) {
         console.log("* = archived (hidden from the default view; shown via --include-archived). Reverse with: rig unarchive <rig>");
+      }
+      // FR-1 display element 2: history as ONE count line, never rows.
+      if (stoppedCount > 0 || (!opts.includeArchived && archivedCount > 0)) {
+        const parts: string[] = [];
+        if (stoppedCount > 0) parts.push(`${stoppedCount} stopped (rig ps --filter status=stopped)`);
+        if (!opts.includeArchived && archivedCount > 0) parts.push(`${archivedCount} archived (rig ps --include-archived)`);
+        console.log(`not shown: ${parts.join(" · ")}`);
+      }
+      // FR-1 display element 3: the affordance footer — the drill ladder.
+      if (bareDefault) {
+        console.log("drill: rig ps --rig <name> (one rig) · rig ps --nodes --rig <name> (its seats) · --full (everything)");
       }
       if (humanTruncated) {
         const remaining = filtered.length - HUMAN_RIG_BUDGET;
@@ -835,7 +1008,12 @@ async function handleNodes(
       console.error(`Warning: failed to fetch nodes for rig "${rig.rigName ?? rig.name}" (HTTP ${nodesRes.status}). List rigs with: rig ps`);
       continue;
     }
-    allNodes.push(...nodesRes.data);
+    const parentRigName = rig.rigName ?? rig.name;
+    allNodes.push(...nodesRes.data.map((n) => ({
+      ...n,
+      rigId: n.rigId ?? rig.rigId,
+      rigName: n.rigName ?? parentRigName,
+    })));
   }
 
   let narrowed = allNodes;
@@ -961,7 +1139,7 @@ function fitCell(value: string, width: number): string {
   return truncate(value, width).padEnd(width);
 }
 
-function padRigRow(rig: string, nodes: string, running: string, active: string, work: string, status: string, lifecycle: string, uptime: string, snapshot: string): string {
+function padRigRow(rig: string, nodes: string, running: string, active: string, work: string, attn: string, status: string, lifecycle: string, uptime: string, snapshot: string): string {
   return [
     fitCell(rig, 24),
     fitCell(nodes, 7),
@@ -972,6 +1150,8 @@ function padRigRow(rig: string, nodes: string, running: string, active: string, 
     // operators see which dimension differs at a glance.
     fitCell(active, 8),
     fitCell(work, 6),
+    // OPR.0.4.4.21 — ATTN: seats needing attention (the field-of-view anchor).
+    fitCell(attn, 6),
     fitCell(status, 10),
     fitCell(lifecycle, 11),
     fitCell(uptime, 11),
@@ -1077,7 +1257,10 @@ async function runCrossHostPs(
   // OPR.0.4.0.34: forward the breadth flag so `--host h -A` keeps all-rigs
   // breadth across the hop (the current-rig default is local-only and never
   // applied to a remote call, but an explicit -A must still reach the remote).
-  if (opts.allRigs) argv.push("--all-rigs");
+  // OPR.0.4.4.21 FR-3: -A is legal only alongside --nodes (the validator
+  // already rejected the bare form before any dispatch; this guard keeps
+  // the reconstructed remote argv obeying the same grammar).
+  if (opts.allRigs && opts.nodes) argv.push("--all-rigs");
   if (opts.limit !== undefined) argv.push("--limit", opts.limit);
   if (opts.fields !== undefined) argv.push("--fields", opts.fields);
   if (opts.summary) argv.push("--summary");
@@ -1127,39 +1310,16 @@ async function runHttpPs(
     return;
   }
 
-  let effectiveFilter = opts.filter;
-  if (opts.active) {
-    if (effectiveFilter) {
-      console.error("--active and --filter cannot be combined.");
-      process.exitCode = 1;
-      return;
-    }
-    effectiveFilter = "agentActivity.state=running";
-  }
-  let parsedFilter: ParsedFilter | null = null;
-  if (effectiveFilter) {
-    const result = parseFilter(effectiveFilter);
-    if ("error" in result) { console.error(result.error); process.exitCode = 1; return; }
-    parsedFilter = result;
-  }
-  const limit = opts.limit !== undefined ? Number(opts.limit) : null;
-  if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
-    console.error(`--limit must be a non-negative integer; got '${opts.limit}'`);
+  const controls = parsePsControls(opts);
+  if ("error" in controls) {
+    console.error(controls.error);
     process.exitCode = 1;
     return;
   }
-  let fields: string[] | null = null;
-  if (opts.fields !== undefined) {
-    const fieldsLevel: "rig" | "nodes" = opts.nodes ? "nodes" : "rig";
-    const fieldsAllowed = fieldsLevel === "nodes" ? ALLOWED_NODE_FIELDS : ALLOWED_RIG_FIELDS;
-    const fieldsResult = parseFields(opts.fields, fieldsAllowed, fieldsLevel);
-    if ("error" in fieldsResult) { console.error(fieldsResult.error); process.exitCode = 1; return; }
-    fields = fieldsResult;
-  }
+  const { parsedFilter, limit, fields, useEnvelope } = controls;
 
   const client = deps.clientFactory(host.url);
   const headers = buildRemoteHeaders(bearerResult.token);
-  const useEnvelope = parsedFilter !== null || limit !== null || fields !== null || opts.summary === true;
 
   try {
     if (opts.nodes) {
@@ -1211,15 +1371,38 @@ async function runHttpPs(
   }
 }
 
+/** INTERNAL transport result of one fan-out leg (arch adjudication: the
+ *  shared P4 contract is fanout-contract's AggregatedPayload/PerHostStatus;
+ *  this shape survives only as the fan-out's internal carriage, adapted
+ *  below before anything is emitted). */
 interface FanOutHostResult {
   host: string;
   ok: boolean;
-  failedStep: import("../cross-host-types.js").FailedStep;
+  failedStep: import("../cross-host-types.js").FailedStep | "unsupported-transport";
   data?: unknown;
   error?: string;
 }
 
-async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
+/** OPR.0.4.4.21 FR-5 — adapter to the intra-P4 shared contract
+ *  (fanout-contract.ts, slice 15 first-lander at 0ecd329b; the closed
+ *  status enum is THE contract, failedStep rides as additive detail). */
+function toPerHostStatus(r: FanOutHostResult): PerHostStatus {
+  const status: PerHostStatus["status"] =
+    r.ok ? "ok"
+    : r.failedStep === "unsupported-transport" ? "unsupported-transport"
+    : r.failedStep === "permission-gate" ? "auth-failed"
+    : "unreachable";
+  const out: PerHostStatus = { hostId: r.host, status };
+  if (r.error) out.error = r.error;
+  if (!r.ok && r.failedStep !== "unsupported-transport") out.failedStep = r.failedStep;
+  return out;
+}
+
+async function runFanOutPs(
+  opts: PsCliOptions,
+  deps: PsDeps,
+  shaping: { parsedFilter: ParsedFilter | null; limit: number | null; fields: string[] | null },
+): Promise<void> {
   const loader = deps.hostRegistryLoader ?? loadHostRegistry;
   const registry = loader();
   if (!registry.ok) {
@@ -1239,7 +1422,10 @@ async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
       return;
     }
   } else {
-    targetIds = allHosts.filter((h) => h.transport === "http").map((h) => h.id);
+    // OPR.0.4.4.21 fixback (qa1 F1): target EVERY declared host — non-HTTP
+    // hosts must appear in hosts[] as unsupported-transport (R15-2), never
+    // be silently absent. The per-host leg classifies transport.
+    targetIds = allHosts.map((h) => h.id);
   }
 
   const results: FanOutHostResult[] = await Promise.all(
@@ -1247,7 +1433,10 @@ async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
       const host = allHosts.find((h) => h.id === id);
       if (!host) return { host: id, ok: false, failedStep: "remote-daemon-unreachable", error: `unknown host ${id}` };
       if (host.transport !== "http") {
-        return { host: id, ok: false, failedStep: "remote-command-failed", error: `host ${id} uses transport ${host.transport}; HTTP fan-out requires transport: http` };
+        // R15-2 (shared contract): an SSH-declared host is a STRUCTURED
+        // unsupported-transport status — never prose-only, never silently
+        // thinner output.
+        return { host: id, ok: false, failedStep: "unsupported-transport", error: `host ${id} uses transport ${host.transport}; HTTP fan-out requires transport: http` };
       }
       const httpHost = host as HttpHostEntry;
       const bearerResult = resolveRemoteBearer(httpHost);
@@ -1255,16 +1444,35 @@ async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
         return { host: id, ok: false, failedStep: bearerResult.failedStep, error: bearerResult.error };
       }
       const client = deps.clientFactory(httpHost.url);
+      const headers = buildRemoteHeaders(bearerResult.token);
       try {
         const psQuery = opts.includeArchived ? "?includeArchived=true" : "";
-        const res = await client.get<unknown>(`/api/ps${psQuery}`, {
-          headers: buildRemoteHeaders(bearerResult.token),
-        });
+        const res = await client.get<unknown>(`/api/ps${psQuery}`, { headers });
         const failedStep = classifyHttpFailedStep(res.status);
         if (failedStep !== "none") {
           return { host: id, ok: false, failedStep, error: `HTTP ${res.status}` };
         }
-        return { host: id, ok: true, failedStep: "none", data: res.data };
+        if (!opts.nodes) {
+          return { host: id, ok: true, failedStep: "none", data: res.data };
+        }
+        // OPR.0.4.4.21 FR-5 — the full explicit ladder (--nodes -A, --full
+        // for complete records): per-host node fan-out, projected unless
+        // --full (the invariant's last rung; validated as -A-only upstream).
+        const rigs = Array.isArray(res.data) ? (res.data as PsEntry[]) : [];
+        const nodes: NodeEntry[] = [];
+        for (const rig of rigs) {
+          const nodesRes = await client.get<NodeEntry[]>(`/api/rigs/${encodeURIComponent(rig.rigId)}/nodes`, { headers });
+          if (nodesRes.status >= 400) {
+            return { host: id, ok: false, failedStep: classifyHttpFailedStep(nodesRes.status), error: `HTTP ${nodesRes.status} fetching nodes for rig ${rig.rigName ?? rig.name}` };
+          }
+          const parentRigName = rig.rigName ?? rig.name;
+          nodes.push(...nodesRes.data.map((n) => ({
+            ...n,
+            rigId: n.rigId ?? rig.rigId,
+            rigName: n.rigName ?? parentRigName,
+          })));
+        }
+        return { host: id, ok: true, failedStep: "none", data: nodes };
       } catch (err) {
         return { host: id, ok: false, failedStep: classifyHttpError(err), error: (err as Error).message };
       }
@@ -1274,7 +1482,51 @@ async function runFanOutPs(opts: PsCliOptions, deps: PsDeps): Promise<void> {
   const hasFailure = results.some((r) => !r.ok);
 
   if (opts.json) {
-    console.log(JSON.stringify({ hosts: results }));
+    // OPR.0.4.4.21 FR-5 — the intra-P4 shared payload (ONE contract with
+    // slice 15): items = each host's rows stamped with their origin hostId
+    // (flat-mergeable; origin never positional), hosts = the per-host
+    // structured status array. EVERY targeted host appears in hosts[] —
+    // ok or not (no silent thinning).
+    const rawItems: Array<Record<string, unknown>> = results.flatMap((r) =>
+      r.ok && Array.isArray(r.data)
+        ? (r.data as Array<Record<string, unknown>>).map((row) => ({ ...row, hostId: r.host }))
+        : [],
+    );
+    const hostStatuses = results.map(toPerHostStatus);
+    let narrowed = rawItems;
+    if (opts.rig) narrowed = narrowed.filter((e) => (e.rigName ?? e.name) === opts.rig);
+    if (opts.nodes && opts.session) narrowed = narrowed.filter((n) => n.canonicalSessionName === opts.session);
+
+    const filtered = shaping.parsedFilter
+      ? opts.nodes
+        ? (applyNodeFilter(narrowed as unknown as NodeEntry[], shaping.parsedFilter) as unknown as Array<Record<string, unknown>>)
+        : (applyRigFilter(narrowed as unknown as PsEntry[], shaping.parsedFilter) as unknown as Array<Record<string, unknown>>)
+      : narrowed;
+
+    let items: Array<Record<string, unknown>>;
+    if (opts.summary) {
+      items = [
+        opts.nodes
+          ? summarizeNodes(filtered as unknown as NodeEntry[])
+          : summarizeRigs(filtered as unknown as PsEntry[]),
+      ];
+    } else {
+      const limited = shaping.limit !== null ? filtered.slice(0, shaping.limit) : filtered;
+      items = shaping.fields
+        ? selectFanOutFields(limited, shaping.fields)
+        : opts.nodes && !opts.full
+          ? compactNodeProjection(limited as unknown as NodeEntry[]).map((row, i) => ({
+              ...row,
+              hostId: limited[i]?.hostId,
+            }))
+          : limited;
+    }
+
+    const payload: AggregatedPayload<Record<string, unknown>> = {
+      items,
+      hosts: hostStatuses,
+    };
+    console.log(JSON.stringify(payload));
   } else {
     for (const r of results) {
       if (r.ok) {

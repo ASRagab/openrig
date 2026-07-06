@@ -19,6 +19,10 @@ export const MISSION_CONTROL_VERBS = [
   "hold",
   "drop",
   "handoff",
+  // OPR.0.4.4.19 FR-7 — resolve: the human's on-surface answer to a leg-1
+  // parked qitem (state=blocked on a human seat). NON-CLOSURE: blocked →
+  // in-progress only; the decision text lands in queue_transitions.
+  "resolve",
 ] as const;
 
 export type MissionControlVerb = (typeof MISSION_CONTROL_VERBS)[number];

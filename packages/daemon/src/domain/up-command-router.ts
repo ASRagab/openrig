@@ -2,8 +2,9 @@ import { LegacyRigSpecCodec as LegacyCodec } from "./rigspec-codec.js";
 import { LegacyRigSpecSchema as LegacySchema } from "./rigspec-schema.js";
 import { RigSpecCodec as PodCodec } from "./rigspec-codec.js";
 import { RigSpecSchema as PodSchema } from "./rigspec-schema.js";
+import { yamlTextHasTopLevelRigsList } from "./topology/topology-manifest.js";
 
-export type SourceKind = "rig_spec" | "rig_bundle" | "rig_name";
+export type SourceKind = "rig_spec" | "rig_bundle" | "rig_name" | "topology";
 
 export interface RouteResult {
   sourceKind: SourceKind;
@@ -31,8 +32,12 @@ export class UpCommandRouter {
   }
 
   route(sourceRef: string): RouteResult {
-    // Rig name detection: no '/' and no file extension → treat as existing rig name
-    if (!sourceRef.includes("/") && !sourceRef.match(/\.(ya?ml|rigbundle)$/i)) {
+    // Rig name detection: no '/' and no file extension → treat as existing rig name.
+    // OPR.0.4.4.11 (guard G-1): `.rigtopology` counts as a file extension here,
+    // so a bare `factory.rigtopology` reaches topology routing. A no-slash
+    // EXTENSIONLESS source keeps rig_name precedence byte-for-byte (FR-2
+    // negative AC; `./file` is the explicit path escape hatch).
+    if (!sourceRef.includes("/") && !sourceRef.match(/\.(ya?ml|rigbundle|rigtopology)$/i)) {
       return { sourceKind: "rig_name", sourceRef };
     }
 
@@ -45,7 +50,26 @@ export class UpCommandRouter {
     if (ext === "rigbundle") {
       return { sourceKind: "rig_bundle", sourceRef };
     }
+    // OPR.0.4.4.11 (arch ruling 1): the declared extension BINDS — a
+    // `.rigtopology` file failing manifest validation errors downstream AS a
+    // topology; it never falls through to rig-spec parsing.
+    if (ext === "rigtopology") {
+      return { sourceKind: "topology", sourceRef };
+    }
     if (ext === "yaml" || ext === "yml") {
+      // OPR.0.4.4.11 (guard yaml fold): a YAML document with a top-level
+      // `rigs:` LIST is a topology by the FR-1 detection contract — sniff
+      // BEFORE rig-spec validation so a `factory.yaml` topology never dies
+      // in a confusing rig-spec error. A rig spec never carries top-level
+      // `rigs:`, so the sniff is unambiguous. Unreadable files flow to the
+      // existing rig-spec path, which reports them unchanged.
+      try {
+        if (yamlTextHasTopLevelRigsList(this.fs.readFile(sourceRef))) {
+          return { sourceKind: "topology", sourceRef };
+        }
+      } catch {
+        // fall through — validateYamlAsRigSpec owns the error surface
+      }
       // Validate semantically — reject bundle.yaml, package.yaml, etc.
       return this.validateYamlAsRigSpec(sourceRef);
     }
@@ -106,6 +130,14 @@ export class UpCommandRouter {
     // Try parsing as YAML and validating as rig spec (canonical first, then legacy)
     try {
       const content = this.fs.readFile(sourceRef);
+
+      // OPR.0.4.4.11 (guard G-1): extensionless PATH-form sources gain the
+      // top-level `rigs:` list sniff → topology. Only reachable for path
+      // forms — a no-slash extensionless source classified rig_name above
+      // and never reaches autoDetect (documented precedence).
+      if (yamlTextHasTopLevelRigsList(content)) {
+        return { sourceKind: "topology", sourceRef };
+      }
 
       // Try canonical pod-aware
       const podRaw = PodCodec.parse(content);

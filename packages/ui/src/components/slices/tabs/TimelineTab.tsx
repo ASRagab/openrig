@@ -199,8 +199,10 @@ function flowLabel(event: StoryEvent): { source: string | null; target: string |
 }
 
 function eventBody(event: StoryEvent, queueItem: QueueItemDetail | undefined): string {
+  // OPR.0.4.4.19 FR-2: labels read summary-first (plain language for the
+  // human); body remains available on drill-in via qitemViewerData.
   const detailBody = detailString(event.detail, ["body", "content", "message"]);
-  return queueItem?.body ?? detailBody ?? event.summary;
+  return queueItem?.summary ?? queueItem?.body ?? detailBody ?? event.summary;
 }
 
 function qitemViewerData(event: StoryEvent, queueItem: QueueItemDetail | undefined) {

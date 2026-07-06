@@ -10,6 +10,18 @@ created: {{created_date}}
 
 # Slice {{slice_number}} — {{title}}
 
+## Intent
+
+[The recorded intent — the thing we are trying to learn and why. The Living Notes UI projects this text as the INTENT section.]
+
+## Mini-requirements
+
+1. [What a sufficient answer looks like. For research this may BE the whole plan.]
+
+## Proof contract
+
+- [ ] [The findings artifact answering the question — captured. Pair with proof via `rig proof add … --evidences` (media attached with `--media`).]
+
 ## Question
 
 [The thing we are trying to learn]
@@ -21,3 +33,7 @@ created: {{created_date}}
 ## Findings
 
 [Captured as work progresses]
+
+---
+
+> **How you work this slice (SOP):** conventions SSOT: `docs/reference/sdlc-conventions.md`; full flow: the `mission-slice-sop` skill. Author intent → mini-requirements + proof contract (→ mockups for UI slices) → plan-lock (`rig scope slice approve --scope spec`) → build the locked set → QA visual compare → `rig proof add … --evidences --media` drops into `proof/` (never hand-place evidence without the drop) → proof-lock (`--scope delivery`). Track on PROGRESS.md; a slice is **not done** until every proof-contract item has evidence. Verify with `rig scope audit`.

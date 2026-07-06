@@ -18,6 +18,14 @@ import type { FeedActionOutcome } from "../../for-you/FeedCard.js";
 export interface VerbActionsProps {
   qitemId: string;
   actorSession: string;
+  /** CORRECTIVE §7.1 (founder 2026-07-05): render ONLY the verb button(s) —
+   *  no "Choose response" header/explainer chrome; buttons are self-evident.
+   *  The mutation + receipt + error paths are identical. */
+  bare?: boolean;
+  /** OPR.0.4.4.15 FR-4 — the item's ORIGIN host (from the aggregated feed
+   *  card). Remote ids ride the mutation so the daemon forwards the verb to
+   *  where the qitem lives; absent/'local' changes nothing. */
+  hostId?: string;
   /** Restrict the verbs offered (e.g., my-queue may only show approve/deny). */
   enabledVerbs?: MissionControlVerb[];
   /**
@@ -95,6 +103,8 @@ const verbToneClass: Record<MissionControlVerb, { idle: string; active: string }
 export function VerbActions({
   qitemId,
   actorSession,
+  bare = false,
+  hostId,
   enabledVerbs = [...MISSION_CONTROL_VERBS],
   oneClickVerbs,
   onSettled,
@@ -145,6 +155,9 @@ export function VerbActions({
         destinationSession: dest,
         annotation: annotationText,
         reason: reasonText,
+        // G15-CF6-1: remote cards carry their origin so the daemon
+        // forwards; local/absent adds NOTHING to the body (byte-parity).
+        ...(hostId && hostId !== "local" ? { hostId } : {}),
       },
       {
         // Demo-bug fix #1 — split onSuccess / onError so the error
@@ -195,6 +208,10 @@ export function VerbActions({
 
   return (
     <div data-testid="mc-verb-actions" className="space-y-2">
+      {/* CORRECTIVE §7.1 (founder 2026-07-05): `bare` renders ONLY the verb
+          button(s) — buttons are self-evident, no explainer chrome. The
+          mutation + receipt + error paths are byte-identical. */}
+      {!bare ? (
       <div className="flex flex-wrap items-start justify-between gap-2 border border-outline-variant bg-surface-lowest/40 px-2 py-1.5 backdrop-blur-sm">
         <div>
           <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface">Choose response</div>
@@ -208,6 +225,7 @@ export function VerbActions({
           </div>
         ) : null}
       </div>
+      ) : null}
       <div className="flex flex-wrap gap-1">
         {enabledVerbs.map((verb) => {
           const meta = ACTION_VERB_META[verb];

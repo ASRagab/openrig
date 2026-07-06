@@ -57,10 +57,15 @@ function singleFileInline(): Plugin {
 // `TWIN_ROUTE=/topology/rig/rig_delivery npm run twin:build`. Default = Dashboard.
 const twinRoute = process.env.TWIN_ROUTE && process.env.TWIN_ROUTE.length > 0 ? process.env.TWIN_ROUTE : "/";
 
+// 0.4.3.29 theming — optional palette seed for the built twin (dark|light|system).
+const twinTheme =
+  process.env.TWIN_THEME && /^(dark|light|system)$/.test(process.env.TWIN_THEME) ? process.env.TWIN_THEME : "";
+
 export default defineConfig({
   root: path.resolve(__dirname, "twin"),
   define: {
     __TWIN_ROUTE__: JSON.stringify(twinRoute),
+    __TWIN_THEME__: JSON.stringify(twinTheme),
   },
   plugins: [react(), singleFileInline()],
   resolve: {

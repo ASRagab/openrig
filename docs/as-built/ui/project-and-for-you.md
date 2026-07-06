@@ -14,7 +14,7 @@ applies-when: |
 siblings: [shell-and-routing.md, ../architecture/mission-control.md]
 prerequisite-reads: [../README.md, shell-and-routing.md]
 last-verified-against-source: 7eaf524c
-last-updated: 2026-05-16
+last-updated: 2026-07-06
 ---
 
 # UI Project Observability, For You, Dashboard
@@ -166,19 +166,29 @@ handoff]` — defined at the Mission Control system level (slice-00
 > annotate→annotation L98; hold/drop→reason L99) @HEAD; slice-00
 > 0.3.0-GT §1.6 + seam (c).
 
-> **OPEN — For-You verb-subset (slice-00 0.3.0-GT OPEN-3; NOT smoothed).**
-> `VerbActions` accepts an `enabledVerbs` prop to restrict the offered
-> verbs (`VerbActions.tsx:21-22`). The For-You `FeedCard` currently
-> passes `enabledVerbs={["approve", "deny", "route"]}`
-> (`FeedCard.tsx:492`). **The exact shipped For-You-surface verb subset
-> is an unresolved velocity slice-01 ruling** (slice-00 0.3.0-GT OPEN-3:
-> CHANGELOG `[0.3.1]` enumerates the full 7 on `FeedCard`, while
-> source-material §6 frames it as a "subset" — the discrepancy is OPEN).
-> Per the slice-08 contract this module describes the **7-verb
-> system-level vocabulary only** and does NOT assert a definitive
-> For-You verb subset. The `enabledVerbs` prop value above is reported
-> as the literal current source state, explicitly NOT as a resolution
-> of OPEN-3.
+> **OPEN-3 RESOLVED (v0.4.4 living-notes corrective, founder ruling
+> N-1, 2026-07-05).** The For-You actionable-card surface is **bare
+> one-tap APPROVE + CHAT — nothing else**. `FeedCard` passes
+> `enabledVerbs={["approve"]}` + `oneClickVerbs={["approve"]}` + the
+> v0.4.4 `bare` prop (JSX-only: skips the "Choose response" header
+> chrome; the mutation/receipt/error paths are byte-identical — pinned
+> by a raw-body test), beside a CHAT button that opens the **shared
+> `ProgressiveTerminal`** seeded via `buildChatPreamble` (terminal,
+> never a chat panel — BR-12). Deny/route are RETIRED from this
+> surface (including the action-required lens's empty-state copy:
+> "one-tap approve and chat with the owning agent"); the card-level
+> kind tag is the status label "Action required", never instruction
+> chrome. The 7-verb vocabulary above remains the MISSION-CONTROL
+> system-level vocabulary; For-You offers the two-action subset.
+>
+> Source @`bb5ad219`: `FeedCard.tsx:547-593` (bare `VerbActions`
+> `enabledVerbs=["approve"]` :561-566 + chat button + inline
+> `ProgressiveTerminal`), `:87-94` (`resolveCardTerminalSession` —
+> human-action cards chat with the SENDER), `Feed.tsx:76-82`
+> (`EMPTY_COPY["action-required"]`), `VerbActions.tsx` (`bare` prop),
+> `review/chat.ts:21` (`buildChatPreamble`); tests
+> `test/foryou-bare-approve-chat.test.tsx` (byte-identical mutation +
+> chatBtns:1/denyRoute:0 + retired-copy source-scan).
 
 On mutation success `VerbActions` fires `onOptimisticOutcome`; `Feed`
 keeps an optimistic-outcome map keyed by `qitemId` so the
@@ -295,7 +305,8 @@ misconfiguration). `progress` folds in `AcceptanceTab` (acceptance is
 the canonical slice-scope progress proof); `story` renders `TimelineTab`
 with curated `timeline.md` (`useSliceTimelineMarkdown`) above the
 auto-captured event feed; `topology` renders the slice's
-workflow-instance-aware `TopologyTab`.
+workflow-instance-aware `TopologyTab`; **`review` (v0.4.4) renders the
+Living Notes `SliceReviewTab`** (§3.5).
 
 > Source: `components/project/ScopePages.tsx:1187-1297` (`SliceScopePage`;
 > default `overview` `:1192`, timeline md `:1204`, loading-state
@@ -317,6 +328,51 @@ active tab (`active !== "overview"`) so the overview path stays cheap.
 > (`useProjectScopeRollup`; `rowsForScope` `:193-196`),
 > rollup components `:219-532`; gate `:679`,`:754` (`active !== "overview"`)
 > @HEAD.
+
+### 3.5 Review tabs (v0.4.4 — the Living Notes surface)
+
+Both the slice and mission scope pages mount a `Review` tab
+(`SLICE_TABS`/mission tabs, `ScopePages.tsx:99-113`). The slice tab
+(`review/SliceReviewTab.tsx`) renders the ONE reviewable structure per
+slice — bands in order **NEEDS YOU → AGENTS → INTENT / PLAN / DELIVERED →
+verify-lineage → SETTLED** — from `GET /api/review/slice/:name`
+(`hooks/useReview.ts`):
+
+- **DELIVERED** pairs each planned deliverable with its curated proof down
+  the column (planned mockup above delivered artifact), media inline at text
+  height expanding on tap one-at-a-time (`?item=` deep link); `verified`
+  renders QA's recorded comparison in plain words (✓ QA-verified · ◇
+  unverified · ✗ missing + QA's note) — visible, never blocking. "See all
+  proof" drills into `proof/`.
+- **Media actually plays**: video renders inline with native controls
+  (`?seek`/`?play` deep links for capture verification); images open the
+  shipped `Lightbox`; evidence and the "full PRD →" door open the shipped
+  `FileViewer` in the shared **right-edge** drawer (the v0.4.4 corrective
+  reverted the FR-11.1 left flip at its three tokens).
+- **Two locks** (§4 of the architecture module) render as deliberate stamps:
+  plan-lock in PLAN, both stamps in SETTLED; an unaudited stamp renders
+  loudly as UNVERIFIED.
+- Review cards ride ONE vellum recipe (`review/vellum.ts` —
+  background-matched translucency + backdrop blur, token-driven for both
+  themes); DELIVERED rows stack vertically below the `sm` breakpoint
+  (phone-first single-column scan).
+- The mission tab (`review/MissionReviewTab.tsx`) is board-first: stage
+  cells from the collapsed contract, the completion ledger, cut-complete,
+  and a U5 row expansion reading the SAME contract (intent verbatim + a
+  bounded per-item verified summary; the full pairing lives on the slice
+  page). The rig altitude (`review/RigAgentsPage.tsx`) reads
+  `GET /api/review/rig`.
+
+Backend contract + composition: see
+[`../architecture/living-notes-review.md`](../architecture/living-notes-review.md).
+
+> Source @`bb5ad219`: `components/review/{SliceReviewTab,MissionReviewTab,
+> NeedsYouAccordion,AgentsBandView,VerifyLineageCard,EvidenceOpener,
+> RigAgentsPage}.tsx`, `review/vellum.ts`, `hooks/useReview.ts`,
+> `SharedDetailDrawer.tsx` (right-edge anchor + pre-flip z);
+> tests `test/{fileviewer-resolvable-target,drawer-primitives}.test.tsx`.
+> The rejected three-column compare and the separate item-join table are
+> DELETED files (corrective delete-not-demote; zero references remain).
 
 ## 4. Dashboard — the landing surface (`/` → `Dashboard`)
 

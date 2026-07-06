@@ -225,6 +225,21 @@ function FileViewerWithFetch(data: FileViewerData) {
 
 export function FileViewer(data: FileViewerData) {
   if (!data.root && !data.absolutePath) {
+    // OPR.0.4.4.20 retro-demo fixback: a caller that provides neither inline
+    // content NOR any readable target (root/readPath or absolutePath) can
+    // never load anything — say so honestly instead of the misleading
+    // eternal "Loading ..." the demo proof caught (backend reads were fine;
+    // the viewer was never given a target to ask for).
+    if (!data.content && !data.imageUrl) {
+      return (
+        <EmptyState
+          label="NOT RESOLVABLE"
+          description={`No readable target for ${data.path}: the caller provided neither content nor a file root/absolute path.`}
+          variant="card"
+          testId="file-viewer-unresolvable"
+        />
+      );
+    }
     return (
       <FileViewerBody
         path={data.path}

@@ -221,7 +221,7 @@ via single-hop ssh. SSH success is NOT verify success: the remote rig's
       const res = await client.post<Record<string, unknown>>("/api/transport/send", {
         session, text: outboundText, verify: opts.verify, force: opts.force, waitForIdleMs,
         dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
-      }, { ...waitForIdleRequestOptions(waitForIdleMs), headers: terminalAuthHeaders() });
+      }, transportRequestOptions(waitForIdleMs));
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));
@@ -359,9 +359,7 @@ async function runFanOutSend(params: {
     body.envelopeSender = senderSession && senderSession.trim().length > 0 ? senderSession : SENDER_FALLBACK;
   }
 
-  const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, {
-    headers: terminalAuthHeaders(),
-  });
+  const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportRequestOptions());
 
   if (opts.json) {
     console.log(JSON.stringify(res.data));
@@ -402,4 +400,15 @@ function parseWaitForIdleMs(value: string | undefined): number | undefined | nul
 function waitForIdleRequestOptions(waitForIdleMs: number | undefined): { timeoutMs: number } | undefined {
   if (waitForIdleMs === undefined) return undefined;
   return { timeoutMs: waitForIdleMs + WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS };
+}
+
+function transportRequestOptions(waitForIdleMs?: number): { timeoutMs?: number; headers?: Record<string, string> } | undefined {
+  const waitOptions = waitForIdleRequestOptions(waitForIdleMs);
+  const headers = terminalAuthHeaders();
+  const hasHeaders = Object.keys(headers).length > 0;
+  if (!waitOptions && !hasHeaders) return undefined;
+  return {
+    ...(waitOptions ?? {}),
+    ...(hasHeaders ? { headers } : {}),
+  };
 }

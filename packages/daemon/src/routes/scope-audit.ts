@@ -18,6 +18,23 @@ function directoryHasEntries(dir: string): boolean {
   }
 }
 
+// OPR.0.4.4.19 FR-10 (C1 backstop input) — list the slice's proof/ markdown
+// artifacts with raw frontmatter. Media files are exempt by construction.
+// Undefined when the dir is absent/unreadable so the classifier stays inert.
+function listProofArtifactsForAudit(proofDir: string): Array<{ path: string; frontmatterRaw: string | null }> | undefined {
+  if (!fs.existsSync(proofDir)) return undefined;
+  try {
+    return fs.readdirSync(proofDir)
+      .filter((f) => f.toLowerCase().endsWith(".md"))
+      .map((f) => {
+        const artifactPath = path.join(proofDir, f);
+        return { path: artifactPath, frontmatterRaw: extractFrontmatterRaw(fs.readFileSync(artifactPath, "utf-8")) };
+      });
+  } catch {
+    return undefined;
+  }
+}
+
 export function scopeAuditRoutes(): Hono {
   const app = new Hono();
 
@@ -125,7 +142,8 @@ export function scopeAuditRoutes(): Hono {
           continue;
         }
 
-        const sliceFm = extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"));
+        const sliceReadmeContent = fs.readFileSync(sliceReadme, "utf-8");
+        const sliceFm = extractFrontmatterRaw(sliceReadmeContent);
         const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
         const indexedSlice = indexer.get(entry);
 
@@ -144,6 +162,14 @@ export function scopeAuditRoutes(): Hono {
           proofDirHasEntries: directoryHasEntries(proofDir),
           hasProofPacket: indexedSlice?.proofPacket !== null && indexedSlice?.proofPacket !== undefined,
           sliceStatus: indexedSlice?.rawStatus ?? null,
+          // OPR.0.4.4.19 FR-10 backstop inputs (parity with the CLI builder).
+          proofArtifacts: listProofArtifactsForAudit(proofDir),
+          implementationPrdExists: fs.existsSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md")),
+          // OPR.0.4.4.23 convention-section advisory inputs (parity with the CLI builder).
+          readmeContent: sliceReadmeContent,
+          implementationPrdContent: fs.existsSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md"))
+            ? fs.readFileSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md"), "utf-8")
+            : null,
         });
 
         if (!/^\d{2}-/.test(entry)) {

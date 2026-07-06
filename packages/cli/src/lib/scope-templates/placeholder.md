@@ -10,9 +10,17 @@ created: {{created_date}}
 
 # Slice {{slice_number}} — {{title}}
 
-## Goal
+## Intent
 
-[1-2 sentence goal.]
+[The recorded intent, verbatim — what was asked for and why. The Living Notes UI projects this text as the INTENT section.]
+
+## Mini-requirements
+
+1. [The concise one-glance requirement tier — numbered observable outcomes. For a small slice this may BE the whole plan.]
+
+## Proof contract
+
+- [ ] [One promised deliverable, written as an observable outcome — captured. Each item pairs with its proof via `rig proof add … --evidences` (media attached with `--media`); UI deliverables name their planned mockup.]
 
 ## Source material
 
@@ -34,10 +42,6 @@ Non-visual slices: mark this section N/A.
 
 - [Cross-slice / cross-release]
 
-## Acceptance
-
-- [3-5 bullets]
-
 ---
 
-> **How you work this slice (SOP):** track on PROGRESS.md, prove on PROOF.md (+ `proof/`), carry state in the mission's MISSION_NOTES.md, and hand off via `rig queue`. A slice is **not done until PROOF.md exists** and every acceptance bullet has evidence. The full operating procedure lives in the mission README's Mission/Slice SOP section and the `mission-slice-sop` skill. Verify with `rig scope audit`.
+> **How you work this slice (SOP):** conventions SSOT: `docs/reference/sdlc-conventions.md`; full flow: the `mission-slice-sop` skill. Author intent → mini-requirements + proof contract (→ mockups for UI slices) → plan-lock (`rig scope slice approve --scope spec`) → build the locked set → QA visual compare → `rig proof add … --evidences --media` drops into `proof/` (never hand-place evidence without the drop) → proof-lock (`--scope delivery`). Track on PROGRESS.md; a slice is **not done** until every proof-contract item has evidence. Verify with `rig scope audit`.

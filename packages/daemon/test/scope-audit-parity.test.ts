@@ -90,3 +90,79 @@ describe("scope-audit CLI/daemon parity (CI-FAILING)", () => {
     }
   });
 });
+
+// OPR.0.4.4.19 FR-10 — classifier-level backstop tests (run against the
+// daemon copy; the parity test above guarantees the CLI copy is identical).
+import { describe as describeFr10, it as itFr10, expect as expectFr10 } from "vitest";
+import { classifyScopeItem } from "../src/domain/scope/scope-audit.js";
+
+describeFr10("FR-10 backstops (OPR.0.4.4.19)", () => {
+  const base = {
+    id: null,
+    path: "/w/missions/release-x/slices/19-signal-layer",
+    readmeFrontmatterRaw: "id: OPR.X.19\nstatus: building",
+    progressFileExists: true,
+    readmeOnlyMarker: false,
+    isActiveRelease: true,
+    level: "slice" as const,
+  };
+
+  itFr10("C1: a headerless proof artifact yields a finding naming the file, the missing fields, and the fix", () => {
+    const result = classifyScopeItem({
+      ...base,
+      implementationPrdExists: true,
+      proofArtifacts: [{ path: "/w/.../proof/rogue.md", frontmatterRaw: null }],
+    });
+    const finding = result.findings.find((f) => f.kind === "proof_artifact_c1_invalid");
+    expectFr10(finding).toBeDefined();
+    expectFr10(finding!.path).toBe("/w/.../proof/rogue.md");
+    expectFr10(finding!.message).toContain("slice, candidate_sha, artifact_type, verdict, money_evidence");
+    expectFr10(finding!.remediation).toContain("rig proof add");
+  });
+
+  itFr10("C1: out-of-set values are flagged naming the closed sets; valid headers are clean", () => {
+    const bad = classifyScopeItem({
+      ...base,
+      implementationPrdExists: true,
+      proofArtifacts: [{
+        path: "/w/.../proof/bad.md",
+        frontmatterRaw: "slice: OPR.X.19\ncandidate_sha: abc\nartifact_type: designer\nverdict: SHIP-IT\nmoney_evidence: m",
+      }],
+    });
+    const finding = bad.findings.find((f) => f.kind === "proof_artifact_c1_invalid");
+    expectFr10(finding).toBeDefined();
+    expectFr10(finding!.message).toContain("designer");
+    expectFr10(finding!.message).toContain("SHIP-IT");
+
+    const good = classifyScopeItem({
+      ...base,
+      implementationPrdExists: true,
+      proofArtifacts: [{
+        path: "/w/.../proof/good.md",
+        frontmatterRaw: "slice: OPR.X.19\ncandidate_sha: abc\nartifact_type: qa\nverdict: CLEAR\nmoney_evidence: the walk shows the decision",
+      }],
+    });
+    expectFr10(good.findings.some((f) => f.kind === "proof_artifact_c1_invalid")).toBe(false);
+  });
+
+  itFr10("C7: building-or-later status with no IMPLEMENTATION-PRD.md yields the missing-spec finding naming the pinned filename", () => {
+    const result = classifyScopeItem({ ...base, implementationPrdExists: false });
+    const finding = result.findings.find((f) => f.kind === "missing_impl_prd");
+    expectFr10(finding).toBeDefined();
+    expectFr10(finding!.path).toContain("IMPLEMENTATION-PRD.md");
+  });
+
+  itFr10("C7 NEGATIVE: shaping (pre-spec) status with no PRD yields NO missing-spec finding (status-gated)", () => {
+    const result = classifyScopeItem({
+      ...base,
+      readmeFrontmatterRaw: "id: OPR.X.19\nstatus: shaping",
+      implementationPrdExists: false,
+    });
+    expectFr10(result.findings.some((f) => f.kind === "missing_impl_prd")).toBe(false);
+  });
+
+  itFr10("inert without caller context: undefined proofArtifacts/implementationPrdExists produce no FR-10 findings", () => {
+    const result = classifyScopeItem(base);
+    expectFr10(result.findings.some((f) => f.kind === "proof_artifact_c1_invalid" || f.kind === "missing_impl_prd")).toBe(false);
+  });
+});

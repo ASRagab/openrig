@@ -16,9 +16,12 @@ import {
   checkDaemonReload,
   checkOptionalSliceDocs,
   checkMissionNotesPresence,
+  checkSdlcConventionSections,
   runWorkspaceDoctor,
   type DoctorCheck,
 } from "../src/domain/workspace/workspace-doctor.js";
+
+const CONVENTION_BODY = "# S\n## Intent\nx\n## Mini-requirements\n1. y\n## Proof contract\n- [ ] z\n";
 
 let dir: string;
 
@@ -435,7 +438,7 @@ describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
     fs.mkdirSync(path.join(missions, "getting-started"));
     fs.writeFileSync(path.join(missions, "getting-started", "MISSION_NOTES.md"), "");
     fs.mkdirSync(path.join(missions, "getting-started", "slices", "s1"), { recursive: true });
-    fs.writeFileSync(path.join(missions, "getting-started", "slices", "s1", "README.md"), "");
+    fs.writeFileSync(path.join(missions, "getting-started", "slices", "s1", "README.md"), CONVENTION_BODY);
     const configPath = path.join(root, ".test-config.json");
     fs.writeFileSync(configPath, "{}");
     const oldMtime = new Date(Date.now() - 60_000);
@@ -443,7 +446,7 @@ describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
     return { missions, configPath };
   }
 
-  it("returns a 7-check report with summary counts on a healthy workspace", () => {
+  it("returns an 8-check report with summary counts on a healthy workspace", () => {
     const { missions, configPath } = scaffoldHealthyWorkspace(dir);
     const report = runWorkspaceDoctor({
       workspaceRoot: dir,
@@ -456,7 +459,7 @@ describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
       daemonStartTime: new Date(Date.now() - 5_000),
     });
     expect(report.workspaceRoot).toBe(dir);
-    expect(report.checks).toHaveLength(7);
+    expect(report.checks).toHaveLength(8);
     expect(report.checks.map((c) => c.check)).toEqual([
       "workspace_root_reachable",
       "missions_folder_present",
@@ -465,8 +468,9 @@ describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
       "daemon_reload_needed",
       "optional_slice_docs",
       "mission_notes_presence",
+      "sdlc_convention_sections",
     ]);
-    expect(report.summary.ok).toBe(7);
+    expect(report.summary.ok).toBe(8);
     expect(report.summary.warn).toBe(0);
     expect(report.summary.fail).toBe(0);
     expect(typeof report.daemonResolvedAt).toBe("string");
@@ -540,5 +544,70 @@ describe("FR-5 runWorkspaceDoctor — orchestrator", () => {
     );
     const fingerprints = reports.map((r) => r.checks.map((c) => c.check).join(","));
     expect(new Set(fingerprints).size).toBe(1);
+  });
+});
+
+// OPR.0.4.4.23 check #8 — SDLC convention sections (advisory warn).
+describe("OPR.0.4.4.23 check #8 — SDLC convention sections", () => {
+  it("returns ok when every slice README carries the three convention sections", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "slices", "s1", "README.md"), CONVENTION_BODY);
+    const result = checkSdlcConventionSections({ missionsRoot: missions });
+    expect(result.check).toBe("sdlc_convention_sections");
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.offenders).toEqual([]);
+  });
+
+  // Discriminator-flip: an old-shape README (Goal/Acceptance) must warn
+  // and NAME which sections are missing.
+  it("returns warn naming slices whose README misses convention sections", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "old-shape"), { recursive: true });
+    fs.mkdirSync(path.join(missions, "m1", "slices", "ok-slice"), { recursive: true });
+    fs.writeFileSync(path.join(missions, "m1", "slices", "old-shape", "README.md"), "# S\n## Goal\nx\n## Acceptance\n- y\n");
+    fs.writeFileSync(path.join(missions, "m1", "slices", "ok-slice", "README.md"), CONVENTION_BODY);
+    const result = checkSdlcConventionSections({ missionsRoot: missions });
+    expect(result.status).toBe("warn");
+    const offenders = result.evidence?.offenders as Array<{ slice: string; missing: string[] }>;
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]?.slice).toBe("old-shape");
+    expect(offenders[0]?.missing).toEqual(["## Intent", "## Mini-requirements", "## Proof contract"]);
+  });
+
+  // Fail-open boundary: a slice with NO README is check #6's finding, not
+  // a section offender here (no double-reporting).
+  it("skips slices with no README (check #6 owns bare slices)", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(path.join(missions, "m1", "slices", "bare"), { recursive: true });
+    const result = checkSdlcConventionSections({ missionsRoot: missions });
+    expect(result.status).toBe("ok");
+    expect(result.evidence?.slicesChecked).toBe(0);
+  });
+
+  // Advisory posture: missing missions root warns, never fails.
+  it("returns warn (not fail) when missions root is absent", () => {
+    const result = checkSdlcConventionSections({ missionsRoot: path.join(dir, "no-missions") });
+    expect(result.status).toBe("warn");
+    expect(result.evidence?.errorCode).toBe("ENOENT");
+  });
+
+  it("runWorkspaceDoctor includes check #8 in the report", () => {
+    const missions = path.join(dir, "missions");
+    fs.mkdirSync(missions, { recursive: true });
+    const configPath = path.join(dir, "config.json");
+    fs.writeFileSync(configPath, "{}");
+    const report = runWorkspaceDoctor({
+      workspaceRoot: dir,
+      workspaceRootSource: "env",
+      slicesRoot: missions,
+      allowlistValue: `workspace:${fs.realpathSync(dir)}`,
+      allowlistSource: "default",
+      daemonResolvedWorkspaceRoot: dir,
+      configFilePath: configPath,
+      daemonStartTime: new Date(Date.now() - 5_000),
+    });
+    expect(report.checks.some((c) => c.check === "sdlc_convention_sections")).toBe(true);
+    expect(report.checks).toHaveLength(8);
   });
 });

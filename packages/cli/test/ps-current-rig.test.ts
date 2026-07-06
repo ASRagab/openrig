@@ -112,9 +112,11 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
   let server: http.Server;
   let port: number;
   let savedSession: string | undefined;
+  const requestLog: string[] = [];
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
+      requestLog.push(req.url ?? "");
       const m = req.url?.match(/^\/api\/rigs\/([^/]+)\/nodes/);
       if (m && req.method === "GET") {
         const rigId = decodeURIComponent(m[1]!);
@@ -152,17 +154,39 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
     process.env.OPENRIG_SESSION_NAME = name;
   }
 
-  // AC-1: rig-level defaults to current rig
-  it("AC-1: bare rig ps --json returns only the caller's rig", async () => {
+  // OPR.0.4.4.21 FR-1: the rig tier is consolidated ALL-rigs by default —
+  // the current-rig-only default is RETIRED (it hid running rigs from the
+  // operator's field of view). Session context no longer narrows the rig tier.
+  it("OPR.0.4.4.21 AC-1: bare rig ps --json returns ALL rigs (consolidated default; bare array)", async () => {
     setSession("dev1-driver@openrig-delivery");
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--json"]);
     });
     const parsed = JSON.parse(logs.join(""));
     expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed.length).toBe(1);
-    expect(parsed[0].rigName ?? parsed[0].name).toBe("openrig-delivery");
+    expect(parsed.length).toBe(2);
+    const names = parsed.map((e: { rigName?: string; name: string }) => e.rigName ?? e.name).sort();
+    expect(names).toEqual(["openrig-comms", "openrig-delivery"]);
   });
+
+  // OPR.0.4.4.21 §1 — THE token-safety invariant: the consolidated default
+  // fetches NO per-node records (one O(rigs) call; no /api/rigs/:id/nodes).
+  it("OPR.0.4.4.21 invariant: bare rig ps fetches zero per-node records", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    requestLog.length = 0;
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps"]);
+    });
+    expect(requestLog.length).toBeGreaterThan(0);
+    expect(requestLog.filter((u) => u.includes("/nodes"))).toEqual([]);
+    // and the same for JSON encoding
+    requestLog.length = 0;
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--json"]);
+    });
+    expect(requestLog.filter((u) => u.includes("/nodes"))).toEqual([]);
+  });
+
 
   // AC-1: node-level defaults to current rig
   it("AC-1: bare rig ps --nodes --json returns only the current rig's nodes", async () => {
@@ -178,14 +202,100 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
     }
   });
 
-  // AC-1: -A restores fleet breadth
-  it("AC-1: -A shows all rigs", async () => {
+  // OPR.0.4.4.21 FR-3: -A has exactly ONE meaning — the --nodes fleet
+  // widener. Bare -A is a structured teaching error naming the new default,
+  // the --nodes -A rung, and --include-archived for history.
+  it("OPR.0.4.4.21 FR-3: -A without --nodes errors with the new grammar", async () => {
     setSession("dev1-driver@openrig-delivery");
-    const { logs } = await captureLogs(async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--json", "-A"]);
     });
-    const parsed = JSON.parse(logs.join(""));
-    expect(parsed.length).toBe(2);
+    const output = logs.join("\n");
+    expect(exitCode).toBe(1);
+    expect(output).toContain("exactly one meaning");
+    expect(output).toContain("rig ps --nodes -A");
+    expect(output).toContain("--include-archived");
+  });
+
+  // OPR.0.4.4.21 FR-2 — the no-context error (local): outside a managed
+  // session, --nodes has no current rig to default to; explicit-or-error.
+  it("OPR.0.4.4.21 FR-2: --nodes outside session context errors asking for a target", async () => {
+    savedSession = process.env.OPENRIG_SESSION_NAME;
+    delete process.env.OPENRIG_SESSION_NAME;
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+    });
+    const output = logs.join("\n");
+    expect(exitCode).toBe(1);
+    expect(output).toContain("no target");
+    expect(output).toContain("--rig <name>");
+    expect(output).toContain("rig ps --nodes -A");
+  });
+
+  // OPR.0.4.4.21 FR-2/FR-5 — remote combos error BEFORE any dispatch
+  // (implicit scope defaults don't cross host boundaries). No host registry
+  // or HTTP fixture is needed: the validator fires first.
+  it("OPR.0.4.4.21: --host h --nodes without --rig/-A errors (session default never crosses hosts)", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--host", "vm-1", "--nodes"]);
+    });
+    const output = logs.join("\n");
+    expect(exitCode).toBe(1);
+    expect(output).toContain("not a remote scope");
+    expect(output).toContain("--rig <name>");
+  });
+
+  it("OPR.0.4.4.21: --all-hosts --nodes without -A errors (full ladder taught)", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--all-hosts", "--nodes"]);
+    });
+    const output = logs.join("\n");
+    expect(exitCode).toBe(1);
+    expect(output).toContain("FULL explicit ladder");
+    expect(output).toContain("--nodes -A");
+  });
+
+  it("OPR.0.4.4.21 FR-3: --host h -A (no --nodes) errors on the remote path too", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--host", "vm-1", "-A"]);
+    });
+    expect(exitCode).toBe(1);
+    expect(logs.join("\n")).toContain("exactly one meaning");
+  });
+
+  it("OPR.0.4.4.21 FR-3: --all-hosts -A (no --nodes) errors on the fan-out path too", async () => {
+    setSession("dev1-driver@openrig-delivery");
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--all-hosts", "-A"]);
+    });
+    expect(exitCode).toBe(1);
+    expect(logs.join("\n")).toContain("exactly one meaning");
+  });
+
+  // Positive rungs: the explicit ladder still works.
+  it("OPR.0.4.4.21 FR-2 positive: --nodes -A works WITHOUT session context (explicit fleet)", async () => {
+    savedSession = process.env.OPENRIG_SESSION_NAME;
+    delete process.env.OPENRIG_SESSION_NAME;
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json"]);
+    });
+    expect(exitCode).toBeUndefined();
+    const nodes = JSON.parse(logs.join(""));
+    expect(nodes.length).toBe(5); // 3 delivery + 2 comms — the whole fixture fleet
+  });
+
+  it("OPR.0.4.4.21 FR-2 positive: --nodes --rig <name> works WITHOUT session context (explicit target)", async () => {
+    savedSession = process.env.OPENRIG_SESSION_NAME;
+    delete process.env.OPENRIG_SESSION_NAME;
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--rig", "openrig-comms", "--json"]);
+    });
+    expect(exitCode).toBeUndefined();
+    const nodes = JSON.parse(logs.join(""));
+    expect(nodes.length).toBe(2);
   });
 
   // AC-1: explicit --rig overrides caller default

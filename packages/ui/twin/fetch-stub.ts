@@ -20,6 +20,16 @@ import {
   missionBriefMd,
   artifactsTreeByPath,
 } from "./fixtures.js";
+// CORRECTIVE REDESIGN 2026-07-05 — the one-structure review contract fixtures
+// (typed vs useReview.ts). Lookups degrade to a benign 404 on a miss.
+import {
+  correctiveReviewBySlice,
+  correctiveMissionReview,
+  correctiveSlices,
+  correctiveDetailByName,
+  correctiveQitemById,
+  correctiveMdByPath,
+} from "./corrective/fixtures-corrective.js";
 
 // Mission workspace root (matches /api/config workspace.root); the Steering
 // tab's brief reads MISSION_BRIEF.md relative to a files-root containing the mission path.
@@ -47,7 +57,43 @@ function route(pathname: string, search: URLSearchParams): Response {
   }
   if (pathname.startsWith("/api/spec-library") || pathname.startsWith("/api/library")) return json(specLibrary);
   // Workspace slices (the /project surface; missions derive from these).
-  if (pathname === "/api/slices") return json(sliceList);
+  // The corrective demo slices merge into the base list (same fictional family).
+  if (pathname === "/api/slices") {
+    return json({ ...sliceList, slices: [...sliceList.slices, ...correctiveSlices], totalCount: sliceList.slices.length + correctiveSlices.length });
+  }
+
+  // CORRECTIVE — the composed one-structure review contract (§3.1).
+  let cr = pathname.match(/^\/api\/review\/slice\/([^/]+)$/);
+  if (cr) {
+    const v = correctiveReviewBySlice[decodeURIComponent(cr[1]!)];
+    return v ? json(v) : json({ error: "not_found" }, 404);
+  }
+  cr = pathname.match(/^\/api\/review\/mission\/([^/]+)$/);
+  if (cr) {
+    const v = correctiveMissionReview[decodeURIComponent(cr[1]!)];
+    return v ? json(v) : json({ error: "not_found" }, 404);
+  }
+  if (pathname === "/api/review/agents") {
+    const scope = search.get("scope") ?? "";
+    const m07 = correctiveReviewBySlice["EX.2.0.0.07"];
+    if (scope.startsWith("slice:")) {
+      const v = correctiveReviewBySlice[scope.slice("slice:".length)];
+      return v ? json(v.agents) : json({ error: "not_found" }, 404);
+    }
+    return m07 ? json({ ...m07.agents, scope }) : json({ error: "not_found" }, 404);
+  }
+  // Slice-page prerequisite (useSliceDetail) — miss → the page's honest 404.
+  cr = pathname.match(/^\/api\/slices\/([^/]+)$/);
+  if (cr) {
+    const v = correctiveDetailByName[decodeURIComponent(cr[1]!)];
+    return v ? json(v) : json({ error: "not_found" }, 404);
+  }
+  // useQueueItemMap — feed-card actionability + NeedsYou drill.
+  cr = pathname.match(/^\/api\/queue\/([^/]+)$/);
+  if (cr) {
+    const v = correctiveQitemById[decodeURIComponent(cr[1]!)];
+    return v ? json(v) : json({ error: "not_found" }, 404);
+  }
 
   // Mission Steering tab.
   // Panel 1: GET /api/steering -> the STEERING.md projection payload.
@@ -67,12 +113,15 @@ function route(pathname: string, search: URLSearchParams): Response {
     const p = search.get("path") ?? "";
     return json({ root: "workspace", path: p, entries: artifactsTreeByPath[p] ?? [] });
   }
-  // useFilesRead -> serve the MISSION_BRIEF.md content (Panel 2); other files unavailable.
+  // useFilesRead -> MISSION_BRIEF.md (Panel 2) + the corrective evidence md
+  // (the §7.2 RIGHT drawer is LIVE in the twin); other files unavailable.
   if (pathname === "/api/files/read") {
     const p = search.get("path") ?? "";
     if (p.endsWith("MISSION_BRIEF.md")) {
       return json({ content: missionBriefMd, mtime: "2026-06-23T08:30:00.000Z", contentHash: "twin-brief" });
     }
+    const md = correctiveMdByPath[p];
+    if (md) return json({ content: md, mtime: "2025-09-01T02:40:00.000Z", contentHash: `twin-${p}` });
     return json({ error: "not_found" }, 404);
   }
 

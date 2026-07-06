@@ -8,6 +8,7 @@ import {
   validateClosure,
   type ClosureReason,
 } from "./hot-potato-enforcer.js";
+import { isHumanSeatSession, validateHumanPark, validateHumanRoute } from "./human-route-enforcer.js";
 
 export const QUEUE_STATES = [
   "pending",
@@ -44,6 +45,10 @@ export interface QueueItem {
    *  NULL for pre-18 qitems + any an author omitted (the Story consumer
    *  degrades on null). The agent-speak `body` stays the source of truth. */
   summary: string | null;
+  /** OPR.0.4.4.19 FR-5 — pointer to the durable artifact a human judges
+   *  (convention C3). NULL for all non-human-routed items (BR-1); required
+   *  at the domain write path only when the §5 predicate is true. */
+  evidenceRef: string | null;
   closureReason: ClosureReason | null;
   closureTarget: string | null;
   closureRequiredAt: string | null;
@@ -76,6 +81,7 @@ interface QueueItemRow {
   chain_of_record: string | null;
   body: string;
   summary: string | null;
+  evidence_ref: string | null;
   closure_reason: string | null;
   closure_target: string | null;
   closure_required_at: string | null;
@@ -120,6 +126,9 @@ export interface QueueCreateInput {
   /** OPR.0.4.1.18 — optional ~1–2 sentence human-readable summary. Persisted
    *  when present; omitted → NULL → Story degrade. */
   summary?: string | null;
+  /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
+   *  present; required at the domain layer only for human-routed items. */
+  evidenceRef?: string | null;
   /**
    * R1 fix (PL-004 Phase A revision): Phase A is durable + waking by default.
    * When true (or omitted), the repository nudges the destination after the
@@ -149,6 +158,16 @@ export interface QueueUpdateInput {
    * blocker reference (qitem id, gate name) is recoverable from queue state.
    */
   blockedOn?: string;
+  /**
+   * OPR.0.4.4.19 FR-6 — park-time inputs. summary + evidence_ref are
+   * updatable AT THE PARK MOMENT (state=blocked with a human-seat blocker),
+   * not create-only: `rig queue block --summary --evidence-ref` persists
+   * them onto the EXISTING item so the attention query + Packet 2 read
+   * them. Ignored (not persisted) on non-park transitions to keep the
+   * update surface tight.
+   */
+  summary?: string | null;
+  evidenceRef?: string | null;
 }
 
 export interface QueueHandoffInput {
@@ -169,6 +188,9 @@ export interface QueueHandoffInput {
    *  inherited from the source (a handoff authors its own summary); omitted
    *  → NULL → Story degrade. */
   summary?: string | null;
+  /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer for the NEW qitem.
+   *  NOT inherited from the source (same authorship semantics as summary). */
+  evidenceRef?: string | null;
 }
 
 /**
@@ -250,6 +272,7 @@ export class QueueRepository {
    *  Production daemons always have the column (migration is in startup.ts). */
   private readonly hasTargetRepoColumn: boolean;
   private readonly hasSummaryColumn: boolean;
+  private readonly hasEvidenceRefColumn: boolean;
 
   constructor(
     db: Database.Database,
@@ -274,6 +297,7 @@ export class QueueRepository {
     this.transport = opts?.transport;
     this.hasTargetRepoColumn = detectQueueColumn(db, "target_repo");
     this.hasSummaryColumn = detectQueueColumn(db, "summary");
+    this.hasEvidenceRefColumn = detectQueueColumn(db, "evidence_ref");
 
     // OPR.0.3.2.20 — register the EXACT human-seat regex predicate as
     // a SQLite function so the attention query can apply the strict
@@ -283,10 +307,12 @@ export class QueueRepository {
     // behind them (guard re-verify-3 qitem-20260518193005 BLOCKER 1).
     // better-sqlite3 db.function is idempotent; safe to call once at
     // construction.
-    db.function("is_human_seat_session", { deterministic: true }, (value: unknown) => {
-      if (typeof value !== "string") return 0;
-      return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(value) ? 1 : 0;
-    });
+    // OPR.0.4.4.19: single-source regex — the SQL function delegates to the
+    // human-route-enforcer's exported predicate so SQL-side and TS-side
+    // checks cannot drift.
+    db.function("is_human_seat_session", { deterministic: true }, (value: unknown) =>
+      isHumanSeatSession(value) ? 1 : 0
+    );
   }
 
   /**
@@ -322,10 +348,13 @@ export class QueueRepository {
     destinationSession: string,
     nudgeOpt: boolean | undefined,
     sourceSession?: string,
+    bodyOverride?: string,
   ): Promise<void> {
     if (nudgeOpt === false) return;
     if (!this.transport) return;
-    const bareBody = `Queue handoff: ${qitemId} - check your queue.`;
+    // OPR.0.4.4.19 FR-7: bodyOverride lets the resolve verb carry the
+    // decision text to the parked owner; default stays the handoff nudge.
+    const bareBody = bodyOverride ?? `Queue handoff: ${qitemId} - check your queue.`;
     const text = wrapPaneEnvelope(sourceSession, destinationSession, bareBody);
     try {
       const res = await this.transport.send(destinationSession, text, { verify: true });
@@ -415,6 +444,20 @@ export class QueueRepository {
     qitemId: string;
     persistedEvent: PersistedEvent;
   } {
+    // OPR.0.4.4.19 FR-4/FR-5 — human-routed items require summary +
+    // evidence_ref at the domain write path (the validateClosure pattern).
+    // The validator is a no-op for non-human-routed items (BR-1).
+    const humanRoute = validateHumanRoute({
+      tier: input.tier ?? null,
+      destinationSession: input.destinationSession,
+      summary: input.summary ?? null,
+      evidenceRef: input.evidenceRef ?? null,
+    });
+    if (!humanRoute.ok) {
+      throw new QueueRepositoryError(humanRoute.code, humanRoute.message, {
+        missingFields: humanRoute.missingFields,
+      });
+    }
     const id = input.qitemId ?? newQitemId();
     const ts = new Date().toISOString();
     const priority = input.priority ?? "routine";
@@ -444,6 +487,7 @@ export class QueueRepository {
         .run(id, ts, ts, input.sourceSession, input.destinationSession, priority, tier, tags, expiresAt, chain, input.body);
     }
     this.persistSummary(id, input.summary ?? null);
+    this.persistEvidenceRef(id, input.evidenceRef ?? null);
     this.transitionLog.append({
       qitemId: id,
       state: "pending",
@@ -457,6 +501,7 @@ export class QueueRepository {
       destinationSession: input.destinationSession,
       priority,
       tier,
+      summary: input.summary ?? null,
     });
     return { qitemId: id, persistedEvent };
   }
@@ -495,6 +540,21 @@ export class QueueRepository {
     const tags = input.tags ? JSON.stringify(input.tags) : (source.tags ? JSON.stringify(source.tags) : null);
     const chain = JSON.stringify([...(source.chainOfRecord ?? []), source.qitemId]);
     const targetRepo = input.targetRepo === undefined ? source.targetRepo : input.targetRepo;
+
+    // OPR.0.4.4.19 FR-4/FR-5 — the handoff authors a NEW qitem; when that
+    // new item is human-routed it requires its OWN summary + evidence_ref
+    // (neither is inherited from the source — 044 semantics preserved).
+    const humanRoute = validateHumanRoute({
+      tier,
+      destinationSession: input.toSession,
+      summary: input.summary ?? null,
+      evidenceRef: input.evidenceRef ?? null,
+    });
+    if (!humanRoute.ok) {
+      throw new QueueRepositoryError(humanRoute.code, humanRoute.message, {
+        missingFields: humanRoute.missingFields,
+      });
+    }
 
     const events: Array<{ name: string; payload: import("./types.js").RigEvent }> = [];
 
@@ -541,6 +601,7 @@ export class QueueRepository {
       }
 
       this.persistSummary(newId, input.summary ?? null);
+      this.persistEvidenceRef(newId, input.evidenceRef ?? null);
 
       this.transitionLog.append({
         qitemId: newId,
@@ -555,6 +616,7 @@ export class QueueRepository {
         fromSession: input.fromSession,
         toSession: input.toSession,
         closureReason: "handed_off_to",
+        summary: source.summary ?? null,
       });
       events.push({ name: "queue.handed_off", payload: handoffEvent });
 
@@ -565,6 +627,7 @@ export class QueueRepository {
         destinationSession: input.toSession,
         priority,
         tier,
+        summary: input.summary ?? null,
       });
       events.push({ name: "queue.created", payload: createdEvent });
     });
@@ -619,6 +682,19 @@ export class QueueRepository {
     const chain = JSON.stringify([...(source.chainOfRecord ?? []), source.qitemId]);
     const targetRepo = input.targetRepo === undefined ? source.targetRepo : input.targetRepo;
 
+    // OPR.0.4.4.19 FR-4/FR-5 — same new-item enforcement as handoff().
+    const humanRoute = validateHumanRoute({
+      tier,
+      destinationSession: input.toSession,
+      summary: input.summary ?? null,
+      evidenceRef: input.evidenceRef ?? null,
+    });
+    if (!humanRoute.ok) {
+      throw new QueueRepositoryError(humanRoute.code, humanRoute.message, {
+        missingFields: humanRoute.missingFields,
+      });
+    }
+
     const events: Array<{ name: string; payload: import("./types.js").RigEvent }> = [];
 
     const txn = this.db.transaction(() => {
@@ -664,6 +740,7 @@ export class QueueRepository {
       }
 
       this.persistSummary(newId, input.summary ?? null);
+      this.persistEvidenceRef(newId, input.evidenceRef ?? null);
 
       this.transitionLog.append({
         qitemId: newId,
@@ -678,6 +755,7 @@ export class QueueRepository {
         fromSession: input.fromSession,
         toSession: input.toSession,
         closureReason: "handed_off_to",
+        summary: source.summary ?? null,
       });
       events.push({ name: "queue.handed_off", payload: handoffEvent });
 
@@ -688,6 +766,7 @@ export class QueueRepository {
         destinationSession: input.toSession,
         priority,
         tier,
+        summary: input.summary ?? null,
       });
       events.push({ name: "queue.created", payload: createdEvent });
     });
@@ -803,6 +882,7 @@ export class QueueRepository {
         destinationSession: input.destinationSession,
         claimedAt: ts,
         closureRequiredAt,
+        summary: qitem.summary ?? null,
       });
     });
 
@@ -848,6 +928,7 @@ export class QueueRepository {
         qitemId,
         destinationSession,
         reason,
+        summary: qitem.summary ?? null,
       });
     });
 
@@ -936,6 +1017,32 @@ export class QueueRepository {
       });
     }
 
+    // OPR.0.4.4.19 FR-6 — leg-1 park (state=blocked on a HUMAN-seat blocker):
+    // enforce summary + evidence_ref at the park moment, evaluated on the
+    // EFFECTIVE values (provided on this call, else already on the item) so
+    // an item that carried them from create parks without re-entry. The
+    // enforcement is here at the write path — the `rig queue block` verb and
+    // raw `update --state blocked` hit the same validator (no verb-only
+    // enforcement). Blocking on another qitem requires nothing new (BR-1).
+    const effectiveBlockedOn = input.blockedOn ?? qitem.blockedOn;
+    const isHumanPark = input.state === "blocked" && isHumanSeatSession(effectiveBlockedOn);
+    let effectiveSummary = qitem.summary;
+    let effectiveEvidenceRef = qitem.evidenceRef;
+    if (isHumanPark) {
+      effectiveSummary = input.summary ?? qitem.summary;
+      effectiveEvidenceRef = input.evidenceRef ?? qitem.evidenceRef;
+      const park = validateHumanPark({
+        blockedOn: effectiveBlockedOn,
+        summary: effectiveSummary,
+        evidenceRef: effectiveEvidenceRef,
+      });
+      if (!park.ok) {
+        throw new QueueRepositoryError(park.code, park.message, {
+          missingFields: park.missingFields,
+        });
+      }
+    }
+
     const ts = new Date().toISOString();
     const fromState = qitem.state;
 
@@ -960,6 +1067,14 @@ export class QueueRepository {
         input.qitemId
       );
 
+    // FR-6: park-time summary/evidence_ref are PERSISTED onto the existing
+    // item (not merely validated-then-dropped) — visible to the attention
+    // query and to Packet 2. Only the park path writes them.
+    if (isHumanPark) {
+      this.persistSummary(input.qitemId, input.summary ?? null);
+      this.persistEvidenceRef(input.qitemId, input.evidenceRef ?? null);
+    }
+
     this.transitionLog.append({
       qitemId: input.qitemId,
       state: input.state,
@@ -977,6 +1092,9 @@ export class QueueRepository {
       closureReason: validation.closureReason ?? null,
       closureTarget: validation.closureTarget ?? null,
       actorSession: input.actorSession,
+      // FR-1 × FR-6: the event carries the summary as of THIS mutation
+      // (park-time summary included) so surfaces refresh without a fetch.
+      summary: effectiveSummary ?? null,
     });
   }
 
@@ -1095,11 +1213,16 @@ export class QueueRepository {
     // (e.g., 'human-@kernel' — empty name segment) are rejected at
     // the SQL stage, BEFORE LIMIT, so they cannot saturate the LIMIT
     // window and hide valid attention items.
+    // OPR.0.4.4.19 FR-6 — the attention predicate gains the leg-1 park
+    // clause: a qitem parked as state=blocked on a HUMAN-seat blocker is a
+    // decision the human owes. Blocking on another qitem (today's shipped
+    // usage) does NOT match — is_human_seat_session rejects qitem ids.
     const conditions: string[] = [
       `state IN (${statePlaceholders})`,
       `(
         tier = 'human-gate'
         OR is_human_seat_session(destination_session) = 1
+        OR (state = 'blocked' AND is_human_seat_session(blocked_on) = 1)
       )`,
     ];
     const params: unknown[] = [...states];
@@ -1229,6 +1352,14 @@ export class QueueRepository {
     }
   }
 
+  /** OPR.0.4.4.19 FR-5 — persist the optional evidence_ref additively, same
+   *  contract as persistSummary (pre-048 fixtures degrade; NULL default). */
+  private persistEvidenceRef(qitemId: string, evidenceRef: string | null): void {
+    if (this.hasEvidenceRefColumn && evidenceRef !== null) {
+      this.db.prepare("UPDATE queue_items SET evidence_ref = ? WHERE qitem_id = ?").run(evidenceRef, qitemId);
+    }
+  }
+
   private rowToItem(row: QueueItemRow): QueueItem {
     return {
       qitemId: row.qitem_id,
@@ -1249,6 +1380,9 @@ export class QueueRepository {
       // OPR.0.4.1.18: summary present only when migration 044 has applied;
       // legacy/minimal fixtures supply rows where summary is undefined → null.
       summary: row.summary ?? null,
+      // OPR.0.4.4.19 FR-5: evidence_ref present only when migration 048 has
+      // applied; legacy fixtures degrade to null.
+      evidenceRef: row.evidence_ref ?? null,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

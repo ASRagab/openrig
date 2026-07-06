@@ -65,7 +65,9 @@ describe("Ps CLI", () => {
     psData = [];
     nodesData = {};
     server = http.createServer(async (req, res) => {
-      if (req.url === "/api/ps" && req.method === "GET") {
+      // OPR.0.4.4.21: the rig tier always requests ?includeArchived=true
+      // (client-side visibility split) — match by prefix, not exact URL.
+      if (req.url?.startsWith("/api/ps") && req.method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(psData));
       } else if (req.url?.match(/^\/api\/rigs\/([^/]+)\/nodes(?:\?.*)?$/) && req.method === "GET") {
@@ -113,10 +115,52 @@ describe("Ps CLI", () => {
     expect(output).toContain("RUNNING");
     expect(output).toContain("STATUS");
     expect(output).toContain("review-rig");
-    expect(output).toContain("dev-rig");
+    // OPR.0.4.4.21 FR-1: on the bare default, stopped rigs are HISTORY —
+    // one count line, not rows (field of view stays O(active rigs)).
+    expect(output).not.toContain("dev-rig");
+    expect(output).toContain("not shown: 1 stopped (rig ps --filter status=stopped)");
+    // FR-1 display elements: host rollup line + affordance footer.
+    expect(output).toContain("1 rig · 3 seats · 0 need attention");
+    expect(output).toContain("drill: rig ps --rig <name>");
     expect(output).toContain("running");
-    expect(output).toContain("stopped");
     expect(exitCode).toBeUndefined(); // 0
+  });
+
+  // OPR.0.4.4.21 FR-1 (arch pin, STATED contract): the JSON-vs-table scope
+  // split — default --json keeps ALL non-archived entries INCLUDING stopped
+  // rigs (a stopped rig vanishing from default JSON would silently break
+  // status-monitoring scripts); only the HUMAN table folds them.
+  it("OPR.0.4.4.21: default --json keeps stopped rigs while the table folds them", async () => {
+    psData = [
+      { rigId: "rig-1", name: "live-rig", nodeCount: 1, runningCount: 1, status: "running", uptime: "1m", latestSnapshot: null },
+      { rigId: "rig-2", name: "halted-rig", nodeCount: 2, runningCount: 0, status: "stopped", uptime: null, latestSnapshot: null },
+    ];
+    const { logs: jsonLogs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--json"]);
+    });
+    const parsed = JSON.parse(jsonLogs.join(""));
+    expect(parsed.map((e: { name: string }) => e.name).sort()).toEqual(["halted-rig", "live-rig"]);
+
+    const { logs: humanLogs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps"]);
+    });
+    const output = humanLogs.join("\n");
+    expect(output).toContain("live-rig");
+    expect(output).not.toContain("halted-rig");
+    expect(output).toContain("not shown: 1 stopped (rig ps --filter status=stopped)");
+  });
+
+  // OPR.0.4.4.21 fixback (qa1 F4): attentionCount is selectable via --fields
+  // (it is emitted by default JSON, so the allow-list must carry it).
+  it("OPR.0.4.4.21: --fields attentionCount projects the additive field", async () => {
+    psData = [
+      { rigId: "rig-1", name: "attn-rig", rigName: "attn-rig", nodeCount: 2, runningCount: 2, status: "running", uptime: "1m", latestSnapshot: null, attentionCount: 1 },
+    ];
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "ps", "--json", "--fields", "rigName,attentionCount"]);
+    });
+    const parsed = JSON.parse(logs.join(""));
+    expect(parsed.entries[0]).toEqual({ rigName: "attn-rig", attentionCount: 1 });
   });
 
   // T10: ps --json outputs PsEntry[]
@@ -199,7 +243,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--full"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--full"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("RIG");
@@ -235,7 +279,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--full"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--full"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("demo-rig#rig-old");
@@ -262,7 +306,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--full"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json", "--full"]);
     });
     const parsed = JSON.parse(logs.join(""));
     expect(Array.isArray(parsed)).toBe(true);
@@ -298,7 +342,7 @@ describe("Ps CLI", () => {
     ];
 
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);
     });
 
     const output = logs.join("\n");
@@ -321,7 +365,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("infra-daemon@test-rig");
@@ -360,7 +404,7 @@ describe("Ps CLI", () => {
     ];
 
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);
     });
     const lines = logs.join("\n").split("\n");
     expect(lines[1]).toContain("…");
@@ -395,7 +439,7 @@ describe("Ps CLI", () => {
     ];
     nodesData = {}; // no nodes data → server returns 404
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("Warning");
@@ -429,7 +473,9 @@ describe("Ps CLI", () => {
       { rigId: "rig-5", name: "att-rig", nodeCount: 2, runningCount: 2, status: "running", lifecycleState: "attention_required", uptime: "10m", latestSnapshot: null },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps"]);
+      // OPR.0.4.4.21 — --include-archived is the full-breadth view (no
+      // stopped fold), so every lifecycle abbreviation stays visible here.
+      await makeCmd().parseAsync(["node", "rig", "ps", "--include-archived"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("LIFECYCLE");
@@ -476,7 +522,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);
     });
     const output = logs.join("\n");
     expect(output).toContain("LIFECYCLE");
@@ -498,7 +544,7 @@ describe("Ps CLI", () => {
       },
     ];
     const { logs } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
+      await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json"]);
     });
     const parsed = JSON.parse(logs.join(""));
     expect(parsed[0].lifecycleState).toBe("recoverable");
@@ -705,7 +751,7 @@ describe("Ps CLI", () => {
 
     it("ps --nodes --json --fields rejects 'name' with rigName hint (load-bearing aliasing decision)", async () => {
       const { logs, exitCode } = await captureLogs(async () => {
-        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--fields", "name,logicalId"]);
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json", "--fields", "name,logicalId"]);
       });
       const stderr = logs.join("\n");
       expect(stderr).toContain("Unknown --fields key 'name'");
@@ -715,7 +761,7 @@ describe("Ps CLI", () => {
 
     it("ps --nodes --json --fields rejects bogus key with sorted node-level supported list", async () => {
       const { logs, exitCode } = await captureLogs(async () => {
-        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--fields", "rigName,bogus"]);
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json", "--fields", "rigName,bogus"]);
       });
       const stderr = logs.join("\n");
       expect(stderr).toContain("Unknown --fields key 'bogus'");
@@ -822,7 +868,7 @@ describe("Ps CLI", () => {
         tmuxAttachCommand: null, resumeCommand: null, latestError: null,
       }));
       const { logs } = await captureLogs(async () => {
-        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json"]);
       });
       const parsed = JSON.parse(logs.join(""));
       expect(Array.isArray(parsed)).toBe(true);
@@ -840,7 +886,7 @@ describe("Ps CLI", () => {
         tmuxAttachCommand: null, resumeCommand: null, latestError: null,
       }));
       const { logs } = await captureLogs(async () => {
-        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--limit", "2"]);
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json", "--limit", "2"]);
       });
       const parsed = JSON.parse(logs.join(""));
       expect(parsed.entries).toHaveLength(2);

@@ -215,6 +215,49 @@ export function isSettingsValidKey(key: string): key is SettingsValidKey {
   return (SETTINGS_VALID_KEYS as readonly string[]).includes(key);
 }
 
+// ── OPR.0.4.4.15 (guard G15-P1 fold, arch-endorsed) ─────────────────────────
+// ONE registered dynamic key CLASS — NOT a general dynamic-key mechanism:
+// `feed.subscriptions.<hostId>.enabled` (boolean; the v1 per-host key set is
+// CLOSED to {enabled}). The closed-set discipline applies to the store's key
+// GRAMMAR: only this pattern is accepted beyond SETTINGS_VALID_KEYS; every
+// other unknown key keeps the existing reject-loud behavior byte-for-byte.
+// hostId segment: [A-Za-z0-9_-]+ (a dotted host id is inexpressible in
+// dotted keys — the write gate rejects it as unknown; readers warn-and-
+// ignore); RESERVED segments (the flat toggle tails + 'enabled') never parse
+// as host ids, so the flat keys and the dynamic class cannot collide.
+// No env-var mapping for the dynamic class in v1 — file/API only.
+// Twin: packages/cli/src/config-store.ts carries the same class (parity test
+// pins them — the host-registry twin discipline).
+const FEED_HOST_KEY_RE = /^feed\.subscriptions\.([A-Za-z0-9_-]+)\.enabled$/;
+// Reserved in BOTH spellings: the key-level snake_case toggle tails AND the
+// camelCase FILE-level leaf names (KEY_TO_PATH maps audit_log→auditLog etc.),
+// so no host id can ever shadow a flat toggle at either layer.
+export const FEED_HOST_RESERVED_SEGMENTS = new Set([
+  "action_required",
+  "actionRequired",
+  "approvals",
+  "shipped",
+  "progress",
+  "audit_log",
+  "auditLog",
+  "enabled",
+]);
+
+export function parseFeedHostSubscriptionKey(key: string): { hostId: string } | null {
+  const m = key.match(FEED_HOST_KEY_RE);
+  if (!m) return null;
+  const hostId = m[1]!;
+  if (FEED_HOST_RESERVED_SEGMENTS.has(hostId)) return null;
+  return { hostId };
+}
+
+function coerceFeedHostSubscriptionValue(key: string, raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  throw new Error(`Invalid value for ${key}: expected "true" or "false", got "${raw}"`);
+}
+
 function readEnv(primary: string, legacy?: string): string | undefined {
   const p = process.env[primary];
   if (p !== undefined && p !== "") return p;
@@ -605,6 +648,18 @@ export class SettingsStore {
   }
 
   set(key: string, value: string): void {
+    // OPR.0.4.4.15: the ONE registered dynamic class is accepted here;
+    // every OTHER unknown key keeps the reject-loud behavior below
+    // byte-for-byte.
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (feedHost) {
+      const coercedDyn = coerceFeedHostSubscriptionValue(key, value);
+      const fcDyn = this.readConfigFile();
+      setNestedValue(fcDyn, ["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
+      mkdirSync(path.dirname(this.configPath), { recursive: true });
+      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
+      return;
+    }
     if (!isSettingsValidKey(key)) {
       throw new Error(`Unknown config key "${key}". Valid keys: ${SETTINGS_VALID_KEYS.join(", ")}`);
     }
@@ -616,9 +671,60 @@ export class SettingsStore {
     writeFileSync(this.configPath, JSON.stringify(fc, null, 2) + "\n", "utf-8");
   }
 
+  /** OPR.0.4.4.15 — resolve one dynamic feed-host subscription key.
+   *  File-or-default only (no env mapping for the dynamic class in v1);
+   *  default false = not subscribed. Returns null for keys outside the
+   *  registered class. */
+  resolveFeedHostSubscription(key: string): ResolvedSetting | null {
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (!feedHost) return null;
+    const fc = this.readConfigFile();
+    const fileVal = getNestedValue(fc, ["feed", "subscriptions", feedHost.hostId, "enabled"]);
+    if (typeof fileVal === "boolean") return { value: fileVal, source: "file", defaultValue: false };
+    return { value: false, source: "default", defaultValue: false };
+  }
+
+  /** OPR.0.4.4.15 — enumerate persisted per-host subscriptions (the
+   *  aggregator's read). Reserved segments and non-conforming shapes are
+   *  WARNED and IGNORED (the ratified guard: operator error surfaces
+   *  visibly, never misparses, never rejects the whole config). */
+  listFeedHostSubscriptions(): Array<{ hostId: string; enabled: boolean }> {
+    const fc = this.readConfigFile();
+    const subs = getNestedValue(fc, ["feed", "subscriptions"]);
+    if (subs === null || subs === undefined || typeof subs !== "object" || Array.isArray(subs)) return [];
+    const out: Array<{ hostId: string; enabled: boolean }> = [];
+    for (const [segment, node] of Object.entries(subs as Record<string, unknown>)) {
+      if (node === null || typeof node !== "object" || Array.isArray(node)) continue; // flat toggle leaves — not host nodes
+      if (FEED_HOST_RESERVED_SEGMENTS.has(segment) || !/^[A-Za-z0-9_-]+$/.test(segment)) {
+        process.stderr.write(
+          `[openrig-settings] feed.subscriptions.${segment} ignored as a host subscription: segment is ${FEED_HOST_RESERVED_SEGMENTS.has(segment) ? "a reserved toggle name" : "not a valid host id segment ([A-Za-z0-9_-]+)"}\n`,
+        );
+        continue;
+      }
+      const enabled = (node as Record<string, unknown>)["enabled"];
+      if (typeof enabled !== "boolean") {
+        process.stderr.write(`[openrig-settings] feed.subscriptions.${segment}.enabled ignored: expected boolean, got ${JSON.stringify(enabled)}\n`);
+        continue;
+      }
+      out.push({ hostId: segment, enabled });
+    }
+    return out;
+  }
+
   reset(key?: string): void {
     if (key === undefined) {
       try { unlinkSync(this.configPath); } catch { /* missing is fine */ }
+      return;
+    }
+    // OPR.0.4.4.15: dynamic-class reset removes the whole host node
+    // (unsubscribe leaves no residue).
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (feedHost) {
+      if (!existsSync(this.configPath)) return;
+      const fcDyn = this.readConfigFile();
+      const parent = getNestedValue(fcDyn, ["feed", "subscriptions"]) as Record<string, unknown> | undefined;
+      if (parent && feedHost.hostId in parent) delete parent[feedHost.hostId];
+      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
       return;
     }
     if (!isSettingsValidKey(key)) {

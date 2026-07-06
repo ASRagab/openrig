@@ -54,7 +54,7 @@ describe("FeedCard typography + vellum-coherent chrome", () => {
     expect(source).toContain("font-body text-[12px] leading-relaxed text-on-surface");
   });
 
-  it("FeedCard 'Your turn' hint copy is prose font-body 12px (bumped from 11px)", async () => {
+  it("FeedCard prose copy is font-body 12px (bumped from 11px; the 'Your turn' hint itself is GONE per corrective \u00a77.1)", async () => {
     const source = await readSource("src/components/for-you/FeedCard.tsx");
     expect(source).toContain("font-body text-[12px] leading-relaxed text-on-surface");
   });

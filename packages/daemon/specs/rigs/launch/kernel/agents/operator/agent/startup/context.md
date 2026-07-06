@@ -34,7 +34,7 @@ tmux sessions are gone. You own the agent-restart workflow:
 Other rigs (project rigs the user spun up) are NEVER auto-instantiated
 by the daemon. If the user asks you to bring those back:
 
-1. `rig ps --json --all` shows which rigs are persisted but with
+1. `rig ps --json` shows which rigs are persisted but with
    detached sessions.
 2. Confirm with the user which subset to restart.
 3. `rig up <spec>` for cold-start; `rig restore <snapshot> --rig

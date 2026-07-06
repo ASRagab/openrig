@@ -3,6 +3,14 @@ import { streamSSE } from "hono/streaming";
 import type Database from "better-sqlite3";
 import type { EventBus } from "../domain/event-bus.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
+import { LOCAL_HOST_ID } from "../domain/hosts/fanout-contract.js";
+import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
+import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
+
+/** OPR.0.4.4.15 FR-4 — the remote-action deadline class (a transactional
+ *  write, not a bootstrap; named at this call-site per the arch
+ *  required-argument sharpening). */
+const REMOTE_ACTION_TIMEOUT_MS = 10_000;
 import {
   MissionControlActionLogError,
   MISSION_CONTROL_VERBS,
@@ -231,6 +239,8 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
         : err.code === "qitem_already_terminal" ? 409
         : err.code === "destination_required" ? 400
         : err.code === "annotation_required" ? 400
+        : err.code === "decision_required" ? 400
+        : err.code === "qitem_not_leg1_parked" ? 409
         : 500;
       return c.json(
         { error: err.code, message: err.message, ...(err.details ?? {}) },
@@ -295,6 +305,9 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
   app.post("/notifications/test", requireAuth);
 
   // POST /action — execute one of 7 verbs through the atomic write contract.
+  // OPR.0.4.4.15 FR-4: an OPTIONAL hostId routes the SAME verb to the
+  // ORIGIN host's daemon server-side (the item's verbs execute where the
+  // qitem lives). hostId absent or 'local' = today's path byte-for-byte.
   app.post("/action", async (c) => {
     const body = await c.req
       .json<{
@@ -305,8 +318,10 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
         body?: string;
         annotation?: string;
         reason?: string;
+        decision?: string;
         notify?: boolean;
         auditNotes?: Record<string, unknown>;
+        hostId?: string;
       }>()
       .catch(() => ({} as never));
     if (!body.verb) return c.json({ error: "verb is required" }, 400);
@@ -322,6 +337,55 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
     }
     if (!body.qitemId) return c.json({ error: "qitemId is required" }, 400);
     if (!body.actorSession) return c.json({ error: "actorSession is required" }, 400);
+    if (typeof body.hostId === "string" && body.hostId !== "" && body.hostId !== LOCAL_HOST_ID) {
+      // Remote forward (arch ruling 4: ONE write-path, ONE verb allowlist —
+      // the checks above already ran; the origin daemon re-validates on its
+      // own route). NOTHING is written to the LOCAL mission_control_actions
+      // here — the origin host's audit row + this structured passthrough
+      // are THE record (R15-3; local outbound audit log DROPPED by arch).
+      const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? loadHostRegistry;
+      const fetchImpl = c.get("remoteFetchImpl" as never) as typeof fetch | undefined;
+      const hostId = body.hostId;
+      const fail = (detail: string, failureClass: string, remoteStatus?: number) =>
+        c.json({ error: "remote_action_failed", hostId, failureClass, ...(remoteStatus !== undefined ? { remoteStatus } : {}), detail }, 502);
+      const reg = registryLoader();
+      if (!reg.ok) return fail(reg.error, "registry");
+      const resolved = resolveHost(reg.registry, hostId);
+      if (!resolved.ok) return fail(resolved.error, "unknown-host");
+      if (resolved.host.transport !== "http") {
+        return fail(`host '${hostId}' is SSH-declared; remote actions require an http-transport registry entry (url + bearer)`, "unsupported-transport");
+      }
+      const { hostId: _dropped, ...forwardBody } = body as Record<string, unknown>;
+      const res = await remoteJsonRequest(resolved.host, "/api/mission-control/action", {
+        method: "POST",
+        body: forwardBody,
+        timeoutMs: REMOTE_ACTION_TIMEOUT_MS,
+        fetchImpl,
+      });
+      if (res.ok) {
+        // The origin's structured success response, verbatim — no
+        // optimistic local re-shaping, no local audit write.
+        return c.json(res.payload as Record<string, unknown>);
+      }
+      switch (res.kind) {
+        case "bearer":
+          return fail(res.detail, "auth-failed");
+        case "timeout":
+          return fail(
+            res.phase === "body"
+              ? `remote action timed out: response headers arrived (HTTP ${res.status}) but the body never completed`
+              : `remote action timed out after ${REMOTE_ACTION_TIMEOUT_MS}ms`,
+            "unreachable",
+            res.status,
+          );
+        case "network":
+          return fail(res.detail, "unreachable");
+        case "http":
+          // The origin refused (its own validation/auth/conflict) — its
+          // structured error rides through; NO fake success.
+          return fail(res.detail || `HTTP ${res.status}`, res.status === 401 || res.status === 403 ? "auth-failed" : "remote-error", res.status);
+      }
+    }
     try {
       const result = await getWriteContract(c).act({
         verb: body.verb,
@@ -331,6 +395,7 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
         body: body.body,
         annotation: body.annotation,
         reason: body.reason,
+        decision: body.decision,
         notify: body.notify,
         auditNotes: body.auditNotes,
       });
@@ -353,8 +418,14 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
     const until = c.req.query("until") || undefined;
     const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
     const beforeId = c.req.query("before_id") || undefined;
+    // OPR.0.4.4.19 FR-9 — scope-approval target filters (pinned
+    // audit_notes_json read path).
+    const scopeTier = c.req.query("scope_tier") || undefined;
+    const scopeId = c.req.query("scope_id") || undefined;
+    const scopePath = c.req.query("scope_path") || undefined;
+    const approvalScope = c.req.query("approval_scope") || undefined;
     try {
-      const result = audit.query({ qitemId, actionVerb, actorSession, since, until, limit, beforeId });
+      const result = audit.query({ qitemId, actionVerb, actorSession, since, until, limit, beforeId, scopeTier, scopeId, scopePath, approvalScope });
       return c.json(result);
     } catch (err) {
       return c.json(

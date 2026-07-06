@@ -19,6 +19,11 @@ last-updated: 2026-05-16
 
 # Content Surfaces — Files Browser, Atomic Write, Progress Tree, Steering Composer
 
+> **See also (v0.4.4):** the Living Notes review surface — the composed
+> intent→plan→delivered projection over this same allowlisted content layer —
+> is documented in [`living-notes-review.md`](living-notes-review.md).
+
+
 The **content surfaces** are the operator-allowlisted, filesystem-canonical
 read/write layer that the Project / Steering UI sits on: a fail-closed file
 browser, an atomic conflict-checked write service with a JSONL edit audit,
@@ -141,7 +146,14 @@ surfaces it as a 500 so the failure is honest, not swallowed.)
   detection stays honest even on a truncated read; response carries
   `truncated` / `truncatedAtBytes` / `totalBytes`.
 - `GET /asset?root&path` — raw bytes for embedded images/video/pdf (inferred
-  `Content-Type`, 5-min cache).
+  `Content-Type`, 5-min cache). **v0.4.4 (OPR.0.4.4.20 FR-5):** serves HTTP
+  **byte ranges** — single-range form, `206` + `Content-Range` +
+  `Accept-Ranges: bytes` (malformed/unsatisfiable → `416`) — the
+  iOS-Safari-class media-playback requirement; and `.html` renders as
+  `text/html` ONLY under the explicit `?render=1` opt-in (text/plain stays
+  the default). The slice proof-asset route (`/api/slices/:name/proof-asset/*`)
+  carries the same range semantics (living-notes corrective). See
+  [`living-notes-review.md`](living-notes-review.md) §5.
 - `POST /write` — atomic write (§2); 503 when no write service
   (`OPENRIG_FILES_ALLOWLIST` empty); 409 `write_conflict` on stale
   mtime/hash with the current values for the UI's refresh prompt.

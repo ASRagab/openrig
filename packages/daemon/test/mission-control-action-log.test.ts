@@ -27,7 +27,7 @@ describe("MissionControlActionLog (PL-005 Phase A; append-only)", () => {
 
   afterEach(() => db.close());
 
-  it("record persists all 7 verbs", () => {
+  it("record persists all Mission Control verbs", () => {
     for (const verb of MISSION_CONTROL_VERBS) {
       const e = log.record({
         actionVerb: verb,
@@ -40,7 +40,7 @@ describe("MissionControlActionLog (PL-005 Phase A; append-only)", () => {
       expect(e.actionVerb).toBe(verb);
       expect(e.actionId).toMatch(/^[0-9A-Z]{26}$/);
     }
-    expect(log.countAll()).toBe(7);
+    expect(log.countAll()).toBe(MISSION_CONTROL_VERBS.length);
   });
 
   it("record(annotate) requires annotation", () => {

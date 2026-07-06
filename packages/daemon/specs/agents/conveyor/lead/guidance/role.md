@@ -8,6 +8,7 @@ ready.
 ## Skills Loaded
 
 - `openrig-user`
+- `mission-slice-sop`
 - `orchestration-team`
 - `backlog-capture`
 - `writing-plans`

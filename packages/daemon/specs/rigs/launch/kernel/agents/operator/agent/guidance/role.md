@@ -11,7 +11,7 @@ with them and escalate to them when ops decisions need human approval.
   rig**; other rigs require explicit operator-initiated restart.
   When the user says "bring my rigs back online":
   1. List rigs that were running pre-reboot using daemon persisted
-     state (`rig ps --json --all`) and any operator-saved roster.
+     state (`rig ps --json`) and any operator-saved roster.
   2. Confirm with the user which subset to restart.
   3. Restart each via `rig up <spec>` (or `rig restore <snapshot>`
      if a snapshot exists).

@@ -42,7 +42,7 @@ docs/as-built/
 ├── codemap.md           ← navigation index (use-case lookup, source-root pointers)
 ├── frontmatter-schema.md← the frontmatter convention these docs follow
 ├── cli-reference.md     ← full rig CLI surface (kept whole)
-├── architecture/        ← 13 backend/runtime modules
+├── architecture/        ← 14 backend/runtime modules
 └── ui/                  ← 4 operator-surface modules
 ```
 
@@ -67,6 +67,7 @@ at the repo `docs/` root** by design — it is referenced by many existing
 | [transport-and-transcripts.md](architecture/transport-and-transcripts.md) | rig send/capture/broadcast over tmux, pipe-pane transcript capture + search, durable SQLite chat, `rig ask`, MCP-name vs tmux-key distinction. |
 | [workspace-primitive.md](architecture/workspace-primitive.md) | The PL-007 typed workspace declaration (root/repos/defaultRepo/knowledgeRoot), migrations 038/039, per-item repo-scope gating, file-backed missions/slices indexing. |
 | [content-surfaces.md](architecture/content-surfaces.md) | The operator-allowlisted file browser, atomic conflict-checked writes + JSONL edit audit, PROGRESS.md tree indexer, the one-screen Steering composer. |
+| [living-notes-review.md](architecture/living-notes-review.md) | **v0.4.4** — the Living Notes review surface: the ONE `ComposedSliceReview` (intent→plan→delivered) projection, pure composer + gatherer, staged-approval locks, C1-bound `verified`, `/api/review/*` routes, freeze export, ranged media serving, and the SDLC on-disk convention it projects. |
 | [plugin-agent-image-context-pack.md](architecture/plugin-agent-image-context-pack.md) | The filesystem-canonical content layer — plugin discovery, agent images, context packs, the Claude auto-compaction policy enforcer. |
 | [packaging-bootstrap-bundles.md](architecture/packaging-bootstrap-bundles.md) | Bundle assembly (schema-v2 pod bundles + legacy v1), bundle create/inspect/install + `/api/up`, the staged BootstrapOrchestrator, legacy install seams. |
 | [architecture-rules-and-event-system.md](architecture/architecture-rules-and-event-system.md) | The cross-cutting invariants — the 25 architecture rules, the RigEvent union + SSE delivery, intentional compatibility limits. |

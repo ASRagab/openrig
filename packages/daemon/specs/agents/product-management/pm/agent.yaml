@@ -16,6 +16,7 @@ profiles:
     uses:
       skills:
         - openrig-user
+        - mission-slice-sop
         - office-hours
         - context-builder
         - requirements-writer

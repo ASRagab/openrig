@@ -4,9 +4,9 @@
 //   - `rig workspace validate` (slice-01) — walks a workspace root,
 //     parses each .md file's YAML frontmatter, emits a structured gap
 //     report. Advisory only — never modifies. curate-steward consumes.
-//   - `rig workspace doctor` (slice-21 FR-5) — runs the 7-check
-//     workspace-readiness diagnostic against the daemon's resolved
-//     workspace (or a --workspace override). Reports state + fix-hints.
+//   - `rig workspace doctor` (slice-21 FR-5; +1 check OPR.0.4.4.23) — runs
+//     the 8-check workspace-readiness diagnostic against the daemon's
+//     resolved workspace (or a --workspace override). Reports state + fix-hints.
 
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
@@ -76,7 +76,7 @@ function emit3PartError(json: boolean, fact: string, consequence: string, action
 
 export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
   const cmd = new Command("workspace").description(
-    "PL-007 Workspace Primitive — typed-kind tooling. `validate` walks a root and reports frontmatter gaps; `doctor` runs the 7-check workspace-readiness diagnostic.",
+    "PL-007 Workspace Primitive — typed-kind tooling. `validate` walks a root and reports frontmatter gaps; `doctor` runs the 8-check workspace-readiness diagnostic.",
   );
 
   const getDeps = (): WorkspaceDeps =>
@@ -148,7 +148,7 @@ export function workspaceCommand(depsOverride?: WorkspaceDeps): Command {
   cmd
     .command("doctor")
     .description(
-      "Run the 7-check workspace-readiness diagnostic against the daemon's resolved workspace. Reports state of workspace root, missions folder, file allowlist, daemon alignment, daemon reload, slice docs, and MISSION_NOTES. Read-only.",
+      "Run the 8-check workspace-readiness diagnostic against the daemon's resolved workspace. Reports state of workspace root, missions folder, file allowlist, daemon alignment, daemon reload, slice docs, MISSION_NOTES, and SDLC convention sections. Read-only.",
     )
     .option(
       "--workspace <path>",
@@ -243,7 +243,7 @@ interface DoctorReport {
 
 const DOCTOR_CHECK_GROUPS: ReadonlyArray<{ category: string; checks: ReadonlyArray<string> }> = [
   { category: "workspace", checks: ["workspace_root_reachable", "file_allowlist_sane"] },
-  { category: "missions", checks: ["missions_folder_present", "optional_slice_docs", "mission_notes_presence"] },
+  { category: "missions", checks: ["missions_folder_present", "optional_slice_docs", "mission_notes_presence", "sdlc_convention_sections"] },
   { category: "daemon", checks: ["daemon_points_at_this_workspace", "daemon_reload_needed"] },
 ];
 

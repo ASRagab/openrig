@@ -451,6 +451,95 @@ export function checkOptionalSliceDocs(opts: CheckSliceDocsInput): DoctorCheck {
   };
 }
 
+// OPR.0.4.4.23 — the SDLC convention sections a slice README must carry to
+// project in the Living Notes UI. SSOT: docs/reference/sdlc-conventions.md.
+const SDLC_CONVENTION_SECTIONS = ["## Intent", "## Mini-requirements", "## Proof contract"] as const;
+
+interface SliceMissingSections {
+  mission: string;
+  slice: string;
+  path: string;
+  missing: string[];
+}
+
+/**
+ * Check #8 — SDLC convention sections (OPR.0.4.4.23).
+ *
+ * Walks each mission's slices and reports slice READMEs missing any of the
+ * convention sections (`## Intent` / `## Mini-requirements` /
+ * `## Proof contract`) the Living Notes UI projects. Warn-only (advisory /
+ * fail-open — the deep per-slice audit is `rig scope audit`; this row is
+ * the workspace-level pointer). Slices with no README at all are check #6's
+ * concern, not double-reported here.
+ */
+export function checkSdlcConventionSections(opts: CheckSliceDocsInput): DoctorCheck {
+  const { missionsRoot } = opts;
+  let missions: string[];
+  try {
+    missions = fs.readdirSync(missionsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return {
+      check: "sdlc_convention_sections",
+      status: "warn",
+      message: code === "ENOENT"
+        ? `missions root '${missionsRoot}' does not exist; no slice sections to check`
+        : `cannot read missions root '${missionsRoot}': ${(err as Error).message}`,
+      evidence: { missionsRoot, errorCode: code ?? "unknown" },
+    };
+  }
+
+  const offenders: SliceMissingSections[] = [];
+  let slicesChecked = 0;
+  for (const mission of missions) {
+    const slicesDir = path.join(missionsRoot, mission, "slices");
+    let slices: string[];
+    try {
+      slices = fs.readdirSync(slicesDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch {
+      continue; // no slices subdir is fine — mission may not be slice-organized
+    }
+    for (const slice of slices) {
+      const slicePath = path.join(slicesDir, slice);
+      const readmePath = path.join(slicePath, "README.md");
+      let readme: string;
+      try {
+        readme = fs.readFileSync(readmePath, "utf-8");
+      } catch {
+        continue; // no README = check #6's finding, not a section finding
+      }
+      slicesChecked++;
+      const missing = SDLC_CONVENTION_SECTIONS.filter(
+        (section) => !new RegExp(`^${section.replace("## ", "##\\s+")}\\s*$`, "m").test(readme),
+      );
+      if (missing.length > 0) {
+        offenders.push({ mission, slice, path: slicePath, missing: [...missing] });
+      }
+    }
+  }
+
+  if (offenders.length === 0) {
+    return {
+      check: "sdlc_convention_sections",
+      status: "ok",
+      message: `every slice README under '${missionsRoot}' carries the SDLC convention sections (${slicesChecked} checked)`,
+      evidence: { missionsRoot, slicesChecked, offenders: [] },
+    };
+  }
+  return {
+    check: "sdlc_convention_sections",
+    status: "warn",
+    message: `${offenders.length} slice README${offenders.length === 1 ? " is" : "s are"} missing SDLC convention sections (Intent / Mini-requirements / Proof contract) and will not fully project in the Living Notes UI`,
+    fixHint:
+      "add the missing sections per docs/reference/sdlc-conventions.md (rig scope slice create scaffolds them); run rig scope audit <mission> for per-slice findings — advisory only, nothing is blocked",
+    evidence: { missionsRoot, slicesChecked, offenders },
+  };
+}
+
 export interface CheckMissionNotesInput {
   missionsRoot: string;
 }
@@ -581,6 +670,10 @@ export function runWorkspaceDoctor(input: RunDoctorInput): DoctorReport {
       missionsRoot: input.slicesRoot,
     }),
     checkMissionNotesPresence({
+      missionsRoot: input.slicesRoot,
+    }),
+    // OPR.0.4.4.23 — check #8: SDLC convention sections (advisory warn).
+    checkSdlcConventionSections({
       missionsRoot: input.slicesRoot,
     }),
   ];

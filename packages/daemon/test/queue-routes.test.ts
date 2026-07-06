@@ -256,6 +256,8 @@ describe("queue routes", () => {
           destinationSession: "b@r",
           body: "approve please",
           tier: "human-gate",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
         }),
       });
       const res = await app.request("/api/queue/list?attention=1");
@@ -272,6 +274,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-bob@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "needs human",
         }),
       });
@@ -288,6 +292,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human@host",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "needs human attention",
         }),
       });
@@ -318,6 +324,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-x@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "done already",
         }),
       });
@@ -364,6 +372,8 @@ describe("queue routes", () => {
           destinationSession: "b@r",
           body: "approve me",
           tier: "human-gate",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
         }),
       });
       // Then create >100 routine qitems (no attention markers); these
@@ -403,6 +413,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "advisor@r1",
           destinationSession: "human-alice@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "for alice",
         }),
       });
@@ -414,6 +426,8 @@ describe("queue routes", () => {
           destinationSession: "human-bob@kernel",
           body: "for bob",
           tier: "human-gate",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
         }),
       });
       // Also create a non-attention routine qitem destined to alice;
@@ -424,6 +438,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "advisor@r1",
           destinationSession: "human-alice@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           state: "pending",
           body: "another for alice",
         }),
@@ -446,6 +462,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "advisor-a@r",
           destinationSession: "human-x@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "from advisor-a",
         }),
       });
@@ -455,6 +473,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "advisor-b@r",
           destinationSession: "human-y@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "from advisor-b",
         }),
       });
@@ -473,6 +493,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-x@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "global x",
         }),
       });
@@ -482,6 +504,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "b@r",
           destinationSession: "human-y@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "global y",
         }),
       });
@@ -515,6 +539,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "advisor@r",
           destinationSession: "human-alice@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "valid attention",
         }),
       });
@@ -570,6 +596,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-bob@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "for repo-a",
           targetRepo: "repo-a",
         }),
@@ -580,6 +608,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-carol@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "for repo-b",
           targetRepo: "repo-b",
         }),
@@ -600,6 +630,8 @@ describe("queue routes", () => {
         body: JSON.stringify({
           sourceSession: "a@r",
           destinationSession: "human-z@kernel",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
           body: "repo-X attention",
           targetRepo: "repo-X",
         }),
@@ -635,6 +667,8 @@ describe("queue routes", () => {
           destinationSession: "b@r",
           body: "approve me — oldest",
           tier: "human-gate",
+          summary: "test summary (FR-4 human-routed fixture)",
+          evidenceRef: "proof/test-evidence.md",
         }),
       });
       // 1100 routine OPEN qitems land AFTER the attention item. They

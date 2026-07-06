@@ -435,27 +435,47 @@ honestly and the UI exposes a one-click open-missing affordance.
 
 v0.4.0 flips the five most frequently invoked read-commands from firehose-by-default to compact-by-default, and `rig queue list` adopts the docker / kubectl read-command grammar. **All defaults preserve breadth and capability — the firehose is one explicit flag away.**
 
-### `rig ps` — current-rig default + compact-by-default + `-A`/`--all-rigs` + `--full`
+### `rig ps` — consolidated all-rigs default + the disclosure ladder (v0.4.4)
 
 ```bash
-rig ps                      # CURRENT-RIG, all-states, compact rig summaries (default)
-rig ps --json               # compact JSON array (TL;DR per node: session, rig, activity, assigned/pending, resumeTokenPresent boolean)
-rig ps -A                   # all-rigs (fleet breadth; was the v0.3.4 default)
-rig ps --rig <name>         # explicit-rig (overrides current-rig default)
-rig ps --nodes              # compact node inventory (current rig)
-rig ps --nodes -A           # cross-rig node inventory (was v0.3.4 default)
-rig ps --nodes --full       # complete record (the v0.3.4 per-node default shape; resumeToken VALUE retained here for downstream consumers)
+rig ps                      # ALL ACTIVE RIGS, one compact row each + rollup line + count line + ladder footer (default)
+rig ps --json               # bare array of ALL non-archived rigs (incl. stopped; existing keys + additive attentionCount)
+rig ps --rig <name>         # one rig's detail
+rig ps --nodes              # compact node inventory (current rig — session default, LOCAL only)
+rig ps --nodes --rig <name> # compact node inventory, named rig
+rig ps --nodes -A           # fleet node inventory, projected rows
+rig ps --nodes -A --full    # complete per-node records (the ONLY full fan-out; resumeToken VALUE retained here for downstream consumers)
 rig ps --nodes --session <sess>  # narrow to one canonical session
+rig ps --include-archived   # archived history as rows (otherwise ONE count line)
 rig ps --active             # opt-in active-state filter (does NOT change the all-states default — ps surfaces topology/readiness, where stopped/recoverable/attention IS the actionable signal)
 ```
 
-**v0.4.0 breadth + projection changes**:
-- **Slice 34**: default breadth is CURRENT-RIG (derived from `OPENRIG_SESSION_NAME`'s `@<rig>` suffix), not all-rigs. `-A` / `--all-rigs` widens to fleet. Matches the `rig queue list -A` pattern.
-- **Slice 25 + 26**: per-node TL;DR projection (compact) is the default; `--full` returns the raw byte-equivalent passthrough. Daemon-side `recoveryGuidance` relocated to a guidance-by-reference map (no longer duplicated per-node) — even `--full` benefits.
-- **All-states stays default** (different from `rig queue list` which defaults to active-only) — for `ps`, non-running states ARE often the actionable signal.
-- **Resume-token security (slice 34)**: `--full` JSON emits `resumeTokenPresent` (boolean) — the actual `resumeToken` value also remains in `--full` for downstream consumers that legitimately need it, but the compact default never carries it (an orch glance never accidentally leaks token material).
+**v0.4.4 consolidated default + disclosure ladder (OPR.0.4.4.21)**:
+- **The default is the fleet MAP**: every active rig as one O(rigs) compact row, with the host rollup ("N rigs · M seats · K need attention"), the archived/stopped count line, and the drill-ladder footer. The v0.4.0 current-rig default is RETIRED — it hid running rigs from the operator's field of view.
+- **`-A` has exactly ONE meaning**: the `--nodes` fleet widener. Bare `rig ps -A` errors (all-rigs IS the default; archived history stays behind `--include-archived`).
+- **The session-rig default applies ONLY to `--nodes`, and only locally.** Implicit scope defaults don't cross host boundaries: `rig ps --host <id> --nodes` requires an explicit `--rig` or `-A`; multi-host fan-out is rollup-only by default; the full explicit ladder (`--all-hosts --nodes -A`, `--full` for complete records) fans out per-node with hostId-stamped projected rows.
+- **STATED JSON contract**: default `--json` = bare array of ALL non-archived rigs INCLUDING stopped ones (scope-not-shape: existing keys preserved, additive `attentionCount`); only the human table folds stopped rigs into the count line.
+- **Resume-token security unchanged**: compact output never carries token material; `--full` retains it for consumers that legitimately need it.
 
-**STOP using `rig ps --nodes --json` as a fleet-wide casual status check assuming the v0.3.4 shape.** The v0.4.0 default is CURRENT-RIG + compact; explicit `-A --full` is the fleet firehose. The ~77,000-token status-glance incident is closed twice over (compact + scope).
+**The casual status glance is just `rig ps`.** The old fleet firehose is the explicit last rung: `rig ps --nodes -A --full`. The ~77,000-token incident class stays closed (compact + O(rigs) default + explicit ladder).
+
+### `rig host` — the multi-host registry verbs (v0.4.4)
+
+```bash
+rig host add --id <id> --transport ssh --target <tailnet-alias> --user openrig
+rig host add --id <id> --transport http --url http://100.x.y.z:7433 --bearer-env MY_TOKEN
+rig host list                       # pointers only — never secret values
+rig host doctor <id>                # stepwise: transport -> rig binary -> daemon -> identity
+rig host doctor <id> --posture product-factory-vps [--public-addr <ip>]
+```
+
+Exactly three verbs (capped); the VPS factory bootstrap is script + runbook
+(`docs/reference/product-factory-vps-runbook.md`). **Transport posture is
+DECIDED and documented** (cli-reference §Cross-host execution): ssh = pane ops
+(`send`/`capture`), http = daemon REST (`up`/`down`/`launch`), `ps`/`whoami`
+follow the DECLARED transport; fan-out is http-only; no cross-transport
+fallback; no http parity for send/capture in 0.4.4. Posture/doctor UNKNOWN is
+never pass — each unknown carries the command that verifies it.
 
 ### `rig whoami` — compact-by-default + `--full` (`--verbose` alias)
 
@@ -543,6 +563,30 @@ rig scope slice show <slice>                          # derives read-time effect
 
 Composes with slice 33's `progress` + scaffolding to make `rig scope` the **deterministic enforcer** of `conventions/scope-and-versioning` §1 (dot-IDs) + §2 (maturity vocabulary). Agents update `stage` / `verified` / `id` through commands rather than hand-editing markdown and drifting. The `--against` MANDATORY rule on `verified` is the anti-stale keystone: bare timestamps are rejected because a bare timestamp is exactly what lets stale trackers lie while looking fresh. **STOP hand-editing the `stage` / `verified` / `id` fields in scope frontmatter; use the new verbs.** Existing missions / slices with `id:null` ghosts or missing `PROGRESS.md` are repaired idempotently via `reconcile`.
 
+### The SDLC control plane — convention sections, the two locks, `rig proof` (v0.4.4)
+
+The Living Notes UI is a plain projection of well-formed on-disk markdown. The conventions live in ONE shipped document — **`docs/reference/sdlc-conventions.md`** (in the CLI package) — and the operating procedure is the **`mission-slice-sop`** skill. The command surface:
+
+```bash
+rig scope slice create <mission> <slug> [--template <kind>]   # scaffolds ## Intent / ## Mini-requirements / ## Proof contract
+                                                              # + proof/ + PROOF.md + IMPLEMENTATION-PRD.md — EVERY template kind
+
+rig scope slice approve <slice> --scope spec                  # PLAN-LOCK: "the PRD matches my intent; this set gets built"
+rig scope slice approve <slice> --scope delivery              # PROOF-LOCK: the terminal sign-off (default scope; fires the freeze)
+
+rig proof add <slice> --artifact-type qa --verdict PASS \
+  --candidate-sha <tip> --money-evidence "<one line>" \
+  --evidences "1,3" --media "walk.webm" \
+  --self-check "<looked at it>"                               # C1 proof drop into proof/; --evidences joins the drop to its
+                                                              # proof-contract items and --media names the curated proof/-relative
+                                                              # media it stands behind (what the DELIVERED section pairs + renders)
+
+rig scope audit <mission>                                     # deterministic backstop — flags missing sections / malformed
+                                                              # proof contract / invalid C1 headers; ADVISORY, never blocks
+```
+
+The flow: intent → mini-requirements + proof contract (→ mockups for UI slices) → plan-lock → build the locked set → QA visual compare → `rig proof` drops → proof-lock. Approval is freeze/sign-off, **never** proven-green — proven-green requires recorded C1 verdicts.
+
 ### `rig skill audit` — skill cascade provenance (slice 10)
 
 ```bash
@@ -584,7 +628,7 @@ Typical operator loop:
 
 ```bash
 rig up secrets-manager --cwd /path/to/project
-rig ps --nodes --json
+rig ps --nodes --rig secrets-manager --json
 rig send vault-specialist@secrets-manager "Check Vault health and report back." --verify
 rig env status secrets-manager
 rig env logs secrets-manager
@@ -634,10 +678,12 @@ JSON form exposes `peersNote` directly for programmatic consumers.
 rig ps
 rig ps --json
 rig ps --nodes
-rig ps --nodes --json
+rig ps --nodes --rig <name> --json
+rig ps --nodes -A --json
+rig ps --nodes -A --full --json
 ```
 
-Use `rig ps --nodes --json` for the current node inventory across rigs. It is the best machine-readable operator surface for:
+Use `rig ps --nodes --rig <name> --json` for one rig's node inventory, or `rig ps --nodes -A --json` for fleet-wide projected node inventory. Use `--full` only when a downstream consumer truly needs complete per-node records. The node inventory surface carries:
 - session name
 - runtime
 - session/startup status
@@ -964,7 +1010,7 @@ rig whoami --json
 
 Notes:
 - for tmux-backed self-attach, `rig whoami --json` is the right verification
-- for raw/external self-attach, `rig ps --nodes --json` is currently the more reliable verification surface
+- for raw/external self-attach, `rig ps --nodes --rig <rigId-or-name> --json` is currently the more reliable verification surface
 - if the current shell is outside tmux, pass `--display-name <name>` when you want a stable human session label recorded
 
 ### Adopt a topology and bind live sessions
@@ -1031,13 +1077,13 @@ Verification loop:
 ```bash
 rig discover --json
 rig adopt <fragment.yaml> --bindings-file <bindings.yaml> --target-rig <rigId>
-rig ps --nodes --json
+rig ps --nodes --rig <target-rig-name> --json
 rig export <rigId> -o rig.yaml
 ```
 
 Success looks like:
 - the new sessions stop appearing in `rig discover`
-- the new logical IDs appear in `rig ps --nodes --json`
+- the new logical IDs appear in `rig ps --nodes --rig <target-rig-name> --json`
 - `rig export` includes the new pod
 
 ### Mixed-origin rigs are allowed
@@ -1055,7 +1101,7 @@ Current safety rule:
 The proven operator pattern is:
 - keep one OpenRig manager session outside the rig it manages
 - address the target by rig name, not cached rig ID
-- resolve the current owner from fresh `rig ps --nodes --json`
+- resolve the current owner from fresh `rig ps --nodes -A --json`
 - send the manager the spec path, bindings path, and verification steps with `rig send`
 
 This lets ordinary agents ask the manager for OpenRig help instead of every agent needing to be an OpenRig expert.
@@ -1152,7 +1198,7 @@ When the CLI behaves strangely, use the smallest truthful check first:
 ```bash
 rig whoami --json
 rig daemon status
-rig ps --nodes --json
+rig ps --nodes
 ```
 
 Specific operator rules:
@@ -1188,7 +1234,7 @@ Design assumptions that hold in the shipped CLI:
 
 1. `rig whoami --json`
 2. `rig transcript <your-session> --tail 100`
-3. `rig ps --nodes --json`
+3. `rig ps --nodes`
 4. `rig chatroom history <rig> --limit 50`
 
 ## Commands That Do Not Exist

@@ -192,13 +192,14 @@ export function runDoctorChecks(deps: DoctorDeps): { checks: DoctorCheck[]; port
   });
 
   // 7. Port availability (async) — daemon already running on that port counts as OK
+  const fetchFn = deps.fetch ?? globalThis.fetch;
   const portCheck = deps.checkPort(DEFAULT_PORT).then(async (available): Promise<DoctorCheck> => {
     if (available) {
       return { name: "port", status: "pass", message: `Port ${DEFAULT_PORT} available.` };
     }
     // Port in use — check if it's our daemon via healthz
     try {
-      const res = await fetch(`http://127.0.0.1:${DEFAULT_PORT}/healthz`);
+      const res = await fetchFn(`http://127.0.0.1:${DEFAULT_PORT}/healthz`);
       if (res.ok) {
         return { name: "port", status: "pass", message: `Port ${DEFAULT_PORT} in use by OpenRig daemon.` };
       }
@@ -215,7 +216,6 @@ export function runDoctorChecks(deps: DoctorDeps): { checks: DoctorCheck[]; port
   // 8. Daemon cmux control (async, only when shell cmux passed)
   const asyncChecks: Promise<DoctorCheck>[] = [portCheck];
   if (shellCmuxPassed) {
-    const fetchFn = deps.fetch ?? globalThis.fetch;
     const daemonCmuxCheck = (async (): Promise<DoctorCheck> => {
       try {
         const healthRes = await fetchFn(`http://127.0.0.1:${DEFAULT_PORT}/healthz`);

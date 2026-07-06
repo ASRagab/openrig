@@ -44,10 +44,18 @@ export type SettingsKey =
   | "policies.claude_compaction.compact_instruction"
   | "policies.claude_compaction.message_inline"
   | "policies.claude_compaction.message_file_path"
-  | "policies.claude_compaction.post_restore_audit_instruction";
+  | "policies.claude_compaction.post_restore_audit_instruction"
+  // OPR.0.4.4.15 (G15-P1) — the ONE registered dynamic key class:
+  // per-host feed subscriptions. v1 per-host key set is CLOSED to
+  // {enabled}; hostId segment [A-Za-z0-9_-]+, reserved toggle names
+  // excluded daemon-side.
+  | `feed.subscriptions.${string}.enabled`;
 
 export interface SettingsResponse {
   settings: Record<SettingsKey, ResolvedSetting>;
+  /** OPR.0.4.4.15 — additive dynamic-class enumeration: persisted per-host
+   *  feed subscriptions. Absent on pre-slice daemons (defensive-optional). */
+  feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }>;
 }
 
 async function fetchSettings(): Promise<SettingsResponse> {

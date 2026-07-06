@@ -71,7 +71,7 @@ describe("OPR.0.4.0.28 — queue list compact + scope-default", () => {
       seedItem(db, `q-${i}`, {
         source: `seat-${i % 3}@rig-a`,
         destination: `seat-${(i + 1) % 3}@rig-a`,
-        body: `Long body for item ${i}. `.repeat(50),
+        body: `Long body for item ${i}. `.repeat(100),
         tags: ["tag-a", "tag-b", "tag-c"],
       });
     }

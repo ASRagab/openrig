@@ -80,7 +80,7 @@ This produces automated proof artifacts in `demo/proof/`:
 | Artifact | Source | Type |
 |----------|--------|------|
 | `up-transcript.txt` | `rig up demo/rig.yaml` output | Automatic |
-| `ps-nodes.txt` | `rig ps --nodes` after boot | Automatic |
+| `ps-nodes.txt` | `rig ps --nodes --rig <rig>` after boot | Automatic |
 | `health-after-boot.json` | `check-demo-health.ts` after boot | Automatic |
 | `native-resume-after-boot.txt` | immediate native probe after boot | Automatic |
 | `native-resume-after-boot.json` | immediate native probe machine output | Automatic |
@@ -91,7 +91,7 @@ This produces automated proof artifacts in `demo/proof/`:
 | `down-transcript.txt` | `rig down` output | Automatic |
 | `tmux-check.txt` | `tmux ls` after teardown | Automatic |
 | `restore-transcript.txt` | `rig restore <snapshotId> --rig <rigId>` output | Automatic |
-| `ps-restored.txt` | `rig ps --nodes` after restore | Automatic |
+| `ps-restored.txt` | `rig ps --nodes --rig <rig>` after restore | Automatic |
 | `browser-screenshot.png` | Explorer + Graph + Detail Panel | **Manual** |
 | `resume-test.txt` | Post-restore agent context check | **Manual** |
 

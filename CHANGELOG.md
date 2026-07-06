@@ -8,6 +8,75 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.4.4] - 2026-07-06
+
+**Status**: shipped; multi-host + Living Notes theme.
+
+### Summary For Installing Agents
+
+- **Package version**: bumps from `0.4.3`.
+- **Migrations**: additive only. Existing v0.4.3 databases upgrade by running `rig daemon start` on the new daemon.
+- **Node engines**: unchanged.
+- **Backward compatibility**: `rig ps` default view flips to a consolidated all-active-rigs compact projection (the v0.4.0 current-rig-only default is retired); progressive-disclosure via `--full` / `-A` / `--rig <name>` returns the v0.4.3 default shape. `--json` shape unchanged (scope-not-shape). `rig host` gains three new verbs (`add` / `list` / `doctor`); transport posture documented (no behavior change).
+
+### Headline
+
+**Multi-host + Living Notes.** A shared rig topology can now span multiple hosts with staged whole-topology spin-up, real cross-host file movement, and a consolidated For-You feed that aggregates activity across every registered host. Living Notes ships as the durable INTENT → PLAN → DELIVERED signal layer with a one-structure review contract (single vertical stack, delete-not-demote) and cheap composer surfaces. Operator UX picks up `rig ps` consolidated default (with progressive disclosure), an agent-altitude coordination panel, and the operationalize-SDLC control plane. As-built docs closeout catches everything up.
+
+### The SDLC control plane ships in source (OPR.0.4.4.23 — release requirement)
+
+- **Conventions SSOT**: `docs/reference/sdlc-conventions.md` (copied into the assembled CLI package) — the section names the Living Notes UI projects (`## Intent` / `## Mini-requirements` / `## Proof contract`), the proof-contract format + `plannedRef` mockup pairing, the two staged-approval locks, the C1 proof header + closed sets, the three role contracts, the curation rule, the elastic-middle doctrine, and the advisory fail-open audit posture. Once shipped, the repo doc is the living SSOT; the corrective-redesign spec it derives from is the historical design record.
+- **Scaffold**: `rig scope slice create` emits the convention sections + `proof/` + `PROOF.md` + an `IMPLEMENTATION-PRD.md` skeleton (elastic-middle note in its header) for **EVERY template kind** — enumeration-tested, so a future kind fails until covered. Mission templates carry the conventions pointer.
+- **Advisory audit**: `rig scope audit` (both byte-identical classifier copies) gains `missing_intent_section` / `mini_requirements_missing_or_malformed` / `proof_contract_missing_or_malformed` / `ui_slice_missing_mockup` (mockup ref = a real image ref or plannedRef token, never bare prose) — low/info severities by construction (the exit code flips on HIGH findings only; records-and-advises, never gates). `rig workspace doctor` gains check #8 (`sdlc_convention_sections`, advisory warn) — the 7-check diagnostic is now 8.
+- **Skill**: `mission-slice-sop` now ships in the canonical product skill source (+ `skills/_canonical` mirror), updated to teach the full flow: intent → mini-requirements + proof contract → mockups (UI slices) → plan-lock (`--scope spec`) → build the locked set → QA mockup↔delivered visual compare → `rig proof add` C1 drops → proof-lock (`--scope delivery`). The bundled openrig-core plugin's copy is now pinned by a CI byte-parity test. **Census (verbatim)**: before this slice, `mission-slice-sop` was absent from the canonical shared skill source and `skills/_canonical` mirror; the bundled plugin carried a stale orphan copy (from `c7f501a7`) with no guard — that orphan is replaced and parity-guarded. KNOWN residue: the plugin's `openrig-user` copy remains a wholesale-stale older edition with no mechanical guard (routed as a follow-up candidate, not swept here).
+- **Bootstrap**: the shipped `openrig-start.md` overlay (the CLAUDE.md/AGENTS.md floor every managed seat sees) + the product-team and pm-team rig-spec cultures point fresh seats at the SOP skill and the SSOT at boot.
+- **CLI help**: `rig proof`, `rig scope slice create`, and `rig scope slice approve` help text teach the flow and cite the SSOT; cli-reference gains the SDLC control-plane verbs section (`approve` locks, `rig proof add`, the audit advisories).
+
+### `rig host` verbs + the documented multi-host transport posture (OPR.0.4.4.13)
+
+- **New verbs (capped at exactly three)**: `rig host add` (registry writes validated by the loader's own rules — no more hand-edited YAML for the standard path), `rig host list` (config pointers, never secret values), `rig host doctor <id>` (stepwise distinct errors: transport → remote rig binary → daemon health → identity) with `--posture product-factory-vps` — the ONE built-in security baseline, three-valued per item (UNKNOWN is never pass).
+- **Transport posture DECIDED + documented** (no behavior change): ssh carries pane ops (`send`/`capture`), http-bearer carries daemon REST (`up`/`down`/`launch`), `ps`/`whoami` follow the host's declared transport, fan-out is http-only; NO cross-transport fallback; NO http parity for send/capture in 0.4.4. Per-command table in cli-reference §Cross-host execution.
+- **Product-factory bootstrap**: `scripts/bootstrap-product-factory-vps.sh` + `docs/reference/product-factory-vps-runbook.md` (fresh Ubuntu VPS → factory-ready; the 2026-06-23 OVH smoke-test posture as encoded defaults; safe UI tunnel + restricted fail-closed reverse-path recipes).
+
+### BREAKING: `rig ps` consolidated all-rigs default + explicit disclosure ladder (OPR.0.4.4.21)
+
+- **Default scope flips**: bare `rig ps` now shows **every ACTIVE rig on the host** as one compact O(rigs) row (the v0.4.0 current-rig-only default is retired — it hid running rigs from the operator's field of view). New display elements: the host rollup line ("N rigs · M seats · K need attention"), the archived/stopped count line, the drill-ladder footer, and an ATTN column (additive `attentionCount` JSON field).
+- **`--json` is scope-not-shape**: still a bare array with the existing per-entry keys; scope widens to ALL non-archived rigs INCLUDING stopped ones (only the human table folds stopped rigs into the count line). Scripts that assumed current-rig-only add the existing `--rig <name>` flag — same schema, wider scope. **One-line migration for the old fleet firehose: `rig ps --nodes -A --full`.**
+- **`-A`/`--all-rigs` keeps exactly ONE meaning** — the `--nodes` fleet widener. Bare `rig ps -A` is now a structured teaching error (all-rigs IS the default; archived history stays behind `--include-archived`).
+- **`--nodes` names its scope everywhere**: session default applies locally only; `rig ps --host <id> --nodes` requires an explicit `--rig` or `-A` (implicit scope defaults don't cross host boundaries); multi-host fan-out is rollup-only by default; the full explicit ladder (`--all-hosts --nodes -A`, `--full` for complete records) fans out per-node with hostId-stamped projected rows.
+- **`--all-hosts`/`--hosts --json` shape change**: emits the intra-P4 shared `AggregatedPayload` — `items` (per-host O(rigs) rows stamped with their origin `hostId`) + `hosts` (closed-enum per-host statuses: `ok | unreachable | unsupported-transport | auth-failed`).
+
+### Multi-host foundation (OPR.0.4.4.11 + 13 + 15 + 18)
+
+- **Shareable whole-topology staged spin-up (S11)** — a rig topology can be brought up in stages across multiple hosts; the spec + the daemon coordinate to reach a green whole-fleet state without requiring single-host bring-up.
+- **VPS product-factory multi-host hardening (S13)** — `rig host` verbs (above) + the documented transport posture harden the fresh-Ubuntu-VPS → factory-ready flow. Product-factory bootstrap script + runbook ship for the OVH-smoke-tested posture.
+- **Multi-host consolidated For-You feed (S15)** — the For-You feed aggregates activity across all registered hosts in the topology. Real-host feed-subscription capture is sequenced as a lifecycle-post-publish belt-and-suspenders proof.
+- **`rig file` cross-host movement (S18)** — files move across registered hosts via the `rig file` surface. Real registered-host two-host round-trip proves the flow on top of the VM stand-ins already merged.
+
+### Living Notes signal layer (OPR.0.4.4.19 + 20 + corrective rebuild)
+
+- **Living Notes signal layer (S19)** — durable agent-authored notes at mission and slice altitude; INTENT / PLAN / DELIVERED entries thread down the mission tree with agent authorship + timestamps.
+- **Living Notes composer surfaces (S20)** — cheap authoring surfaces make Living Notes the first-class place agents record decisions, plans, and delivered work.
+- **One-structure review contract §3.1 (corrective rebuild)** — the review surface reads left-to-right as a single vertical stack (INTENT above, PLAN + mockup in the middle, DELIVERED with paired proof at the bottom); a plan change **deletes** the old plan and writes a new one — never demotes / stacks multiple competing plans. Replaced an earlier three-column layout after human review.
+
+### Operator UX (OPR.0.4.4.22)
+
+- **Agent altitude coordination panel (S22)** — a coordination surface scoped to the right altitude (workspace / mission / slice) so the operator sees actual coordination state without drowning in per-seat detail. Composes with the workspace observability tabs shipped at 0.4.1.
+
+### Docs closeout (OPR.0.4.4.24)
+
+- **As-built docs closeout (S24)** — the as-built documentation family (`docs/as-built/architecture.md`, `docs/as-built/cli-reference.md`, codemaps) is caught up to what shipped through 0.4.4.
+
+### Known Follow-ons
+
+- **R2 — iOS-Safari S20** — deferred to 0.4.5 for iOS Safari verification.
+- **R4 — S18 symlink footgun** — routed to the 0.4.5+ backlog.
+- **`openrig-user` stale plugin copy + `whoami --all-hosts` silent host filter** — 0.4.5 candidates.
+- **Wider mission-template prose sweep** — post-cut sequencing.
+- **Belt-and-suspenders real-host proofs (R13-1 / R1 / R3)** — published-npm Linux install smoke, real registered-host two-host e2e for S13 + S18, and S15 real-host feed-subscription capture sequenced as post-publish lifecycle validation lanes. Shipped code already proven via VM/SSH stand-ins per PM rulings; real-host lanes are defense-in-depth belt-and-suspenders, not release gates.
+
+---
+
 ## [0.4.3] - 2026-07-03
 
 **Status**: shipped; "rigs that survive" theme.

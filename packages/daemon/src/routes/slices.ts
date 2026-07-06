@@ -133,15 +133,7 @@ export function slicesRoutes(): Hono {
     if (!abs) return c.json({ error: "proof_asset_not_found" }, 404);
 
     const contentType = inferContentType(abs);
-    const data = fs.readFileSync(abs);
-    return new Response(new Uint8Array(data), {
-      status: 200,
-      headers: {
-        "Content-Type": contentType,
-        // Cache aggressively — proof assets are immutable once published.
-        "Cache-Control": "public, max-age=86400",
-      },
-    });
+    return fileAssetResponse(abs, contentType, c.req.header("Range"));
   });
 
   // 3) Doc serving for the Docs tab — markdown content of a single file
@@ -208,4 +200,55 @@ function inferContentType(absPath: string): string {
     case ".json": return "application/json; charset=utf-8";
     default: return "application/octet-stream";
   }
+}
+
+function fileAssetResponse(absPath: string, contentType: string, rangeHeader?: string): Response {
+  const size = fs.statSync(absPath).size;
+  const cacheControl = "public, max-age=86400";
+
+  if (rangeHeader) {
+    const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+    const start = m && m[1] !== "" ? Number(m[1]) : m && m[2] !== "" ? size - Number(m[2]) : NaN;
+    const end = m && m[1] !== "" && m[2] !== "" ? Number(m[2]) : size - 1;
+    if (!m || Number.isNaN(start) || start < 0 || start >= size || end < start) {
+      return new Response(null, {
+        status: 416,
+        headers: {
+          "Content-Range": `bytes */${size}`,
+          "Accept-Ranges": "bytes",
+        },
+      });
+    }
+
+    const boundedEnd = Math.min(end, size - 1);
+    const length = boundedEnd - start + 1;
+    const fd = fs.openSync(absPath, "r");
+    try {
+      const buf = Buffer.alloc(length);
+      fs.readSync(fd, buf, 0, length, start);
+      return new Response(new Uint8Array(buf), {
+        status: 206,
+        headers: {
+          "Content-Type": contentType,
+          "Content-Range": `bytes ${start}-${boundedEnd}/${size}`,
+          "Content-Length": String(length),
+          "Accept-Ranges": "bytes",
+          "Cache-Control": cacheControl,
+        },
+      });
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  const data = fs.readFileSync(absPath);
+  return new Response(new Uint8Array(data), {
+    status: 200,
+    headers: {
+      "Content-Type": contentType,
+      "Content-Length": String(size),
+      "Accept-Ranges": "bytes",
+      "Cache-Control": cacheControl,
+    },
+  });
 }

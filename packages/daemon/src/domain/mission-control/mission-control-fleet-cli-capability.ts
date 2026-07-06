@@ -218,7 +218,7 @@ export class MissionControlFleetCliCapability {
       staleCliCount,
       degradedFields: Array.from(allDegradedFields),
       // v0 reads from the daemon-internal rig registry + queue_items;
-      // future versions can shell out to `rig ps --nodes --json` and
+      // future versions can shell out to `rig ps --nodes -A --json` and
       // set sourceFallback to "daemon-internal" when the CLI is
       // unavailable.
       sourceFallback: "daemon-internal-projection",

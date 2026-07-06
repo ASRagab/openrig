@@ -59,6 +59,7 @@ This document reflects the current `rig` surface as shipped. Where live help tex
 | `unarchive` | Unarchive a rig (reverse of `rig archive`): returns it to the default view |
 | `add` | Add a member to an existing pod in a running rig (`add_member` converge op) |
 | `env` | Inspect and control rig environment services |
+| `file` | Cross-host file movement over ssh/rsync (v0.4.4; one explicit verb: `copy`) |
 | `ps` | List rigs and their status |
 | `mcp` | MCP server for agent integration |
 | `agent` | Manage agent specs |
@@ -117,6 +118,7 @@ Subcommands:
 Notes:
 - `start` launches the daemon process and accepts runtime overrides for port, host, and DB path.
 - `logs` reads daemon log output and can follow it.
+- **Deploy identity (v0.4.4, OPR.0.4.4.11 FR-6/7)**: a PACKAGED build (built via `scripts/build-package.sh`) is stamped with `{semver, commit, dirty, builtAt}`; the daemon's `/healthz` payload carries the four stamp fields additively and `rig --version` renders `<semver> (<commit8>[, dirty])`. A source/dev run has NO stamp and adds NOTHING (never an invented SHA) — `/healthz` keeps its legacy body and `--version` prints the plain semver. This is the 30-second stale-deploy diagnostic: an unstamped or old-commit `/healthz` on a long-running host means you are looking at an older deployed build, not the source tree. Source: `packages/{daemon,cli}/src/build-info.ts` (`stampFields`), `packages/daemon/src/server.ts` (`/healthz`), `packages/cli/src/version.ts`.
 
 ### `rig status`
 
@@ -153,6 +155,8 @@ Supported keys:
 - `snapshots.periodic.enabled` (default `true`) — daemon-side periodic snapshot scheduler on/off (v0.3.4)
 - `snapshots.periodic.interval_seconds` (default `300`) — interval between periodic snapshots
 - `snapshots.periodic.retention_keep` (default `10`) — number of periodic snapshots to retain per rig
+- `feed.subscriptions.{action_required|approvals|shipped|progress|audit_log}` (booleans) — the For-You feed's five flat lens toggles (`OPENRIG_FEED_SUBSCRIPTIONS_*` env mapping)
+- `feed.subscriptions.<hostId>.enabled` (boolean; **v0.4.4, OPR.0.4.4.15**) — ONE registered dynamic key CLASS (not a general dynamic-key mechanism): per-host feed subscription toggles for the aggregated multi-host For-You feed. `hostId` segment charset `[A-Za-z0-9_-]+` (dotted host ids are inexpressible in dotted keys and reject as unknown); the flat toggle tails + `enabled` are RESERVED segments in both spellings, so a host id can never shadow a flat key. No env-var mapping for the dynamic class in v1 — file/API only. The CLI config store carries the same class (parity-pinned against the daemon store).
 
 Precedence:
 - CLI flag
@@ -328,6 +332,7 @@ Current behavior notes:
 - If you copy a built-in spec to a new directory, keep its `agents/` tree beside it or rewrite those refs to `path:/absolute/path`.
 - Managed apps are first-class `up` targets. `rig up secrets-manager` launches the shipped Vault example from the library.
 - v0.3.2 paper-cut fix-round (slice-22): pre-launch failures now return structured HTTP 4xx (`cycle_error` / `preflight_failed` / `validation_failed` / `service_boot_failed`) instead of bare 500; failed boots no longer leave orphan rig records on disk.
+- **v0.4.4 (OPR.0.4.4.11) — whole-topology sources**: a `.rigtopology` manifest (or a YAML file whose body declares the topology form) boots MULTIPLE rigs in one staged spin-up. v0 manifest entries are **spec paths only** (a closed-key manifest: `.rigbundle` and bare library-name entries are rejected at parse time with per-entry what/why/fix naming the v0 boundary). Per-entry `host: <id>` is the ONLY placement mechanism for topology entries — `rig up --host <id> <topology>` is REJECTED pre-dispatch (two placement mechanisms must not coexist). The launcher acquires per-rig launch locks route-side and reports a CLOSED per-entry aggregate `{ok | failed | skipped}` (skipped is explicit — a lock conflict or upstream failure never reads as silent success). Source: `packages/cli/src/commands/up.ts` (`.rigtopology` sniff + `--host` rejection), `packages/daemon/src/domain/topology/{topology-manifest,multi-rig-launcher,remote-up-leaf}.ts`, `packages/daemon/src/routes/up.ts`.
 - v0.3.4: `rig up` is resume-original-by-default for existing rigs. Per-seat opt-in to deliberate fresh-prime is via `--fresh <seats...>`. The five-term restore status vocabulary surfaced per-node is `resumed` / `fresh-primed` / `awaiting-decision` / `attention_required` / `failed`. On TTY, `awaiting-decision` nodes trigger an interactive [y/N] ASK; in headless mode they are reported honestly with the exact `rig up --existing <rig> --fresh <logicalId>` follow-up command.
 
 Success modes:
@@ -402,20 +407,20 @@ Usage:
 - `rig ps --nodes [--json] [--full] [--rig <name>] [-A | --all-rigs] [--session <sess>] [--limit <n>] [--fields <list>] [--summary] [--filter <key=value>] [--active] [--host <id>]`
 
 Notes:
-- **v0.4.0 — current-rig default + compact-by-default (slices 25 + 34)**: the default breadth is **current-rig** (derived from `OPENRIG_SESSION_NAME`'s `@<rig>` suffix), not all-rigs. `-A` / `--all-rigs` widens to fleet breadth. `--rig <name>` overrides the current-rig default explicitly. `--session <sess>` narrows further. The default `--json` output is a compact TL;DR projection per node: `session`, `rig` (to disambiguate under `-A`), `activity` (state + reason), `assigned` / `pending` counts, resume summary as `resumeType` + `resumeTokenPresent` (boolean — NOT the token value, per the slice-34 security correction). `--full` returns the complete per-node record (raw byte-equivalent passthrough — preserves the prior shape including `tmuxAttachCommand`, `resumeCommand`, `contextUsage`, `agentActivity` full, `restoreOutcome`, etc.; `resumeToken` value is still part of `--full` for downstream consumers that need it). All-states stays the default (per the orch-lead-grounded ruling: ps surfaces topology/readiness, where stopped/recoverable/attention IS the actionable signal — unlike queue-list which defaults to active items only). `--active` / `--running` is the opt-in active-filter (already existed). Closes a ~77,000-token status-glance incident at root + a fleet-scale unbounded-default-output bomb.
+- **v0.4.4 — consolidated all-rigs default + disclosure ladder (OPR.0.4.4.21)**: the default is **every ACTIVE rig, one compact row each** — O(rigs), never a fleet node fan-out — plus three load-bearing display elements: the host rollup line ("N rigs · M seats · K need attention"), the archived/stopped count line (history folds to ONE line), and the affordance footer teaching the drill ladder. The v0.4.0 current-rig default is RETIRED (it hid running rigs from the operator's field of view); the session-rig default now applies ONLY to `--nodes`, and only locally — **implicit scope defaults don't cross host boundaries** (remote `--nodes` requires explicit `--rig` or `-A`). `-A`/`--all-rigs` keeps exactly ONE meaning: the `--nodes` fleet widener; bare `-A` is a structured teaching error naming `--include-archived` for history. STATED contract: default `--json` is a bare array of ALL non-archived rigs INCLUDING stopped ones (existing keys preserved; additive `attentionCount`); only the human table folds stopped rigs. Fan-out (`--all-hosts`/`--hosts`) emits the intra-P4 shared `AggregatedPayload` (hostId-stamped `items` + closed-enum per-host `hosts[]` statuses) and is rollup-only by default; the full explicit ladder (`--all-hosts --nodes -A`, `--full` for complete records) fans out per-node with hostId-stamped projected rows. Migration from the old firehose: `rig ps --nodes -A --full`. The default `--json` output is a compact TL;DR projection per node: `session`, `rig` (to disambiguate under `-A`), `activity` (state + reason), `assigned` / `pending` counts, resume summary as `resumeType` + `resumeTokenPresent` (boolean — NOT the token value, per the slice-34 security correction). `--full` returns the complete per-node record (raw byte-equivalent passthrough — preserves the prior shape including `tmuxAttachCommand`, `resumeCommand`, `contextUsage`, `agentActivity` full, `restoreOutcome`, etc.; `resumeToken` value is still part of `--full` for downstream consumers that need it). All-states stays the default (per the orch-lead-grounded ruling: ps surfaces topology/readiness, where stopped/recoverable/attention IS the actionable signal — unlike queue-list which defaults to active items only). `--active` / `--running` is the opt-in active-filter (already existed). Closes a ~77,000-token status-glance incident at root + a fleet-scale unbounded-default-output bomb.
 - **Daemon node-list payload trimmed at source (slice 26)**: `recoveryGuidance` is no longer serialized as near-identical templated prose on every node — relocated to a guidance-by-reference map at the top level so the 4 current consumers still resolve it. `contextUsage` is a compact summary in the list payload (full telemetry remains retrievable per-node via `rig whoami` / detail queries). Even `--full` and the UI consumers stop paying for the redundant per-node blobs.
-- `rig ps` lists rig summaries. Default human columns: `RIG`, `NODES`, `RUNNING`, `STATUS`, `LIFECYCLE`, `UPTIME`, `SNAPSHOT`. The `LIFECYCLE` column shows the rig-level fold of per-node lifecycle states with codes `run`/`rec`/`stp`/`deg`/`att`.
-- `rig ps --nodes` expands into a cross-rig node inventory. Default human columns include `STATUS`, `STARTUP`, `LIFECYCLE`, `ACTIVITY`, `RESTORE`, `ERROR` so startup-time and live runtime state can be compared side-by-side without composing a separate diagnostic command.
+- `rig ps` lists rig summaries. Default human columns (v0.4.4): `RIG`, `NODES`, `RUNNING`, `ACTIVE`, `WORK`, `ATTN`, `STATUS`, `LIFECYCLE`, `UPTIME`, `SNAPSHOT`. The `LIFECYCLE` column shows the rig-level fold of per-node lifecycle states with codes `run`/`rec`/`stp`/`deg`/`att`; `ATTN` is the additive attention count.
+- `rig ps --nodes` expands into the current (or `--rig`-named) rig's node inventory — `--nodes -A` for the cross-rig inventory (v0.4.4 scoping). Default human columns include `STATUS`, `STARTUP`, `LIFECYCLE`, `ACTIVITY`, `RESTORE`, `ERROR` so startup-time and live runtime state can be compared side-by-side without composing a separate diagnostic command.
 - JSON output for both rig and node tiers includes a `rigName` alias (equal to `name`) for forward compatibility; agent code should prefer `rigName`. Default `--json` is a bare array (back-compat); the envelope shape `{entries, totalRigs|totalNodes, truncated, hint?}` is only used when `--limit`, `--fields`, `--summary`, or `--filter` is set.
 - Default human output is bounded for context-window safety: rigs truncate at 50 with a footer naming the total + `--full` opt-out, nodes truncate at 100 with the same shape. `--full` disables truncation. `--limit <n>` sets an explicit bound.
 - `--summary` emits aggregate counts only (`byStatus`, `byLifecycle` for rigs; `bySessionStatus`, `byLifecycle` for nodes); useful for quick fleet checks without per-entry detail. Cross-facet disagreement (e.g. a `running` rig with `attention_required` nodes) is not directly visible in summary mode — narrow with `--filter lifecycleState=attention_required` instead.
-- `--fields <list>` projects JSON output to a comma-separated allow-list of top-level fields. Unknown keys are rejected before any HTTP call with an error naming the unknown key(s) and the sorted supported list. Exit code on rejection is `1`. Accepted (rig-level): `rigId`, `name`, `rigName`, `nodeCount`, `runningCount`, `status`, `lifecycleState`, `uptime`, `latestSnapshot`. Accepted (node-level, with `--nodes`): `rigId`, `rigName`, `logicalId`, `podId`, `podNamespace`, `canonicalSessionName`, `nodeKind`, `runtime`, `sessionStatus`, `startupStatus`, `restoreOutcome`, `lifecycleState`, `tmuxAttachCommand`, `resumeCommand`, `latestError`, `agentActivity`. `name` is rig-level only; for node entries use `rigName` (the rejection error includes a hint). Nested fields (e.g. `agentActivity.state`) are not drilled; pass the whole object name (e.g. `agentActivity`) and read the nested value downstream.
+- `--fields <list>` projects JSON output to a comma-separated allow-list of top-level fields. Unknown keys are rejected before any HTTP call with an error naming the unknown key(s) and the sorted supported list. Exit code on rejection is `1`. Accepted (rig-level): `rigId`, `name`, `rigName`, `nodeCount`, `runningCount`, `activeCount`, `hasWorkCount`, `attentionCount`, `status`, `lifecycleState`, `uptime`, `latestSnapshot`. Accepted (node-level, with `--nodes`): `rigId`, `rigName`, `logicalId`, `podId`, `podNamespace`, `canonicalSessionName`, `nodeKind`, `runtime`, `sessionStatus`, `startupStatus`, `restoreOutcome`, `oriented`, `lifecycleState`, `tmuxAttachCommand`, `resumeCommand`, `latestError`, `terminalActive`, `hasAssignedWork`, `pendingWorkCount`, `agentActivity`, `contextUsage`, `heldReason`. `name` is rig-level only; for node entries use `rigName` (the rejection error includes a hint). Nested fields (e.g. `agentActivity.state`) are not drilled; pass the whole object name (e.g. `agentActivity`) and read the nested value downstream.
 - `--filter <key=value>` accepts `status`, `lifecycleState`, `name-prefix`, `name`, and `agentActivity.state` (PL-019; node-level — use with `--nodes`). Unknown keys are rejected before any HTTP call with a clear error naming the supported list. For `agentActivity.state`, allowed values are `running`, `needs_input`, `idle`, `unknown`; invalid values fail fast with a three-part error (what failed / what's allowed / what to do).
 - `--active` (PL-019; node-level) is sugar for `--filter agentActivity.state=running`. Combining `--active` with `--filter` is rejected — pick one explicit form. Output is identical to the explicit-filter form on the same fixture.
 - `--host <id>` routes the same command to a remote host declared in `~/.openrig/hosts.yaml` via single-hop ssh (CLI-side shell-out; daemon untouched). Forwards every shaping flag (`--nodes`, `--full`, `--limit`, `--fields`, `--summary`, `--filter`, `--json`) to the remote `rig ps`. The remote rig's output is verbatim passthrough on success; failure is distinguished into `ssh-unreachable` / `permission-gate` / `remote-daemon-unreachable` / `remote-command-failed` per the closed cross-host execution contract.
 - Exit codes:
   - `0` success
-  - `1` daemon not running, or invalid `--filter` / `--limit`
+  - `1` daemon not running, or invalid `--filter` / `--limit` / `--fields`
   - `2` daemon fetch failure
 
 ### `rig snapshot`
@@ -786,11 +791,10 @@ Notes:
 
 ### Cross-host execution (`--host <id>`)
 
-`rig send` and `rig capture` accept a `--host <id>` flag that routes the
-command to a remote host over single-hop SSH. v0 is CLI-side shell-out
-only — the local daemon is not involved in routing, and there is no
-daemon-to-daemon networking. The remote host is expected to have its own
-managed `rig` available on `$PATH`.
+Cross-host commands route to a remote host declared by id. SSH-transport
+commands use single-hop SSH CLI-side shell-out; HTTP-transport commands talk to
+the remote daemon API. The local daemon is not involved in SSH routing. The
+remote host is expected to have its own managed `rig` available on `$PATH`.
 
 Hosts are declared by the operator in `~/.openrig/hosts.yaml`:
 
@@ -801,18 +805,19 @@ hosts:
     target: vm-claude-test.local
     user: your-username  # optional
     notes: "Tart VM"     # optional
-  - id: laptop-b
-    transport: ssh
-    target: laptop-b.tail-scale-net
-    user: your-username
+  - id: factory-http
+    transport: http
+    url: http://100.64.1.2:7433
+    bearer_env: FACTORY_HTTP_TOKEN
 ```
 
 Validation rules:
 
 - `hosts` is required and must be a non-null array.
-- Each entry: `id` required (non-empty, unique), `transport` required (v0 supports `ssh` only), `target` required (non-empty — DNS name, SSH config alias, or IP).
-- `user` and `notes` are optional.
-- The file is operator-managed; v0 does NOT include any sub-command to add, remove, or list hosts (operators edit the YAML directly).
+- Each entry: `id` required (non-empty, unique), `transport` required (`ssh` or `http`).
+- SSH entries require `target` (non-empty — DNS name, SSH config alias, or IP); `user` and `notes` are optional.
+- HTTP entries require `url` plus exactly one bearer pointer (`bearer_env` or `bearer_file`); pointers are config names/paths, never resolved token values.
+- `rig host add/list/doctor` covers the standard path; hand-editing remains the path for exotica.
 - A missing or invalid file returns a clear error pointing at the canonical path.
 
 The CLI distinguishes four structured failure modes (operators get an
@@ -823,7 +828,70 @@ actionable error per mode; JSON output preserves the `failedStep` enum):
 - `remote-daemon-unreachable` — SSH succeeded but the remote `rig` reported the remote daemon was not reachable. Start it with `ssh <target> rig daemon start`.
 - `remote-command-failed` — SSH succeeded but the remote `rig` exited non-zero for some other reason; the remote stderr is surfaced.
 
-Out of scope for v0: non-SSH transports; `--host` on `rig ps` / `rig whoami` / other commands; connection pooling; multi-hop SSH; cross-host queue routing; cross-host seat handover.
+**The transport posture (OPR.0.4.4.13 FR-4 — DECIDED, pm-ruled: document, no parity).** The
+partition is the intended posture, not an accident of history: **ssh carries interactive pane
+ops, http-bearer carries daemon REST ops, `ps`/`whoami` follow the host's DECLARED transport.**
+There is NO cross-transport fallback, and NO http parity for `send`/`capture` ships in 0.4.4
+(parity would be new attack surface with no scope-locked need). Per-command:
+
+| Command | ssh transport | http transport | Fan-out (`--all-hosts`/`--hosts`) |
+| --- | --- | --- | --- |
+| `rig send` | ✓ (ssh-ONLY) | ✗ | ✗ |
+| `rig capture` | ✓ (ssh-ONLY) | ✗ | ✗ |
+| `rig up` / `rig down` / `rig launch` | ✗ | ✓ (http-ONLY) | ✗ |
+| `rig file copy` (v0.4.4) | ✓ (ssh-ONLY, rsync-over-ssh) | ✗ | ✗ |
+| `rig ps --host` | ✓ (declared) | ✓ (declared) | http-only; non-http hosts appear as STRUCTURED `unsupported-transport` statuses in `hosts[]` |
+| `rig whoami --host` | ✓ (declared) | ✓ (declared) | http-only; non-http hosts are currently SILENTLY FILTERED from the fan-out (a shipped gap, routed for 0.4.5 triage — differs from ps's structured status) |
+| `rig host doctor` | ✓ | ✓ | n/a (single host) |
+
+Out of scope in 0.4.4: cross-transport fallback; http parity for `send`/`capture`; connection
+pooling; multi-hop SSH; cross-host queue routing; cross-host seat handover.
+
+### `rig file` (v0.4.4 — OPR.0.4.4.18)
+
+Usage: `rig file copy <src> <dst> [--dry-run] [--json]`
+
+Cross-host file movement over ssh/rsync — v0 ships ONE explicit verb, `copy`,
+for a single file.
+
+Operand grammar (parsed, never guessed):
+- `<hostId>:<absolute-path>` = remote (the `<hostId>` must resolve in the ssh
+  hosts registry; remote paths must be absolute).
+- Bare path = local. A LOCAL file whose name contains a colon needs the `./`
+  prefix (`./weird:name.txt`) — the grammar refuses the ambiguous form with a
+  structured error instead of guessing.
+- Valid shapes: local→remote, remote→local, local→local. remote→remote is not
+  a v0 shape.
+
+Semantics + safety wall (source: `packages/cli/src/lib/file-transfer.ts`):
+- An existing destination is **OVERWRITTEN** (v0 copy semantics, stated) —
+  preview with `--dry-run`, which prints the exact planned transfer (src, dst,
+  host, files/bytes) and moves nothing.
+- **Default-deny wall over live agent/credential state**: paths resolving into
+  the closed deny set `~/.openrig`, `~/.ssh`, `~/.codex`, `~/.claude` — plus
+  the ACTIVE `OPENRIG_HOME` and the active hosts registry file — are refused
+  with a named what/why error (extension of the deny set requires a ruling,
+  never a silent widening).
+- Traversal is rejected on the RAW operand: a `..` path segment refuses
+  BEFORE any normalization (normalization collapses `..`, so a post-normalize
+  check would be dead code); remote paths are additionally restricted to a
+  shell-inert charset (`A-Za-z0-9._/-` — restriction over escaping, because
+  both rsync implementations in the fleet differ on quoting flags), and every
+  rsync invocation pins operands behind `--` and spawns argv-style with no
+  shell.
+- Transport is ssh-only (see the transport-posture table above); the remote
+  side uses the same ssh registry entries `rig send`/`capture` use.
+
+### `rig host`
+
+Usage: `rig host <add|list|doctor>` — the multi-host registry verbs (OPR.0.4.4.13; capped at
+exactly these three — no edit/remove/tunnel/bootstrap verbs; hand-editing `hosts.yaml` remains
+the path for exotica, and the factory bootstrap ships as script + runbook at
+`docs/reference/product-factory-vps-runbook.md`).
+
+- `add --id <id> --transport <ssh|http> [--target <t> --user <u> | --url <u> --bearer-env <n>|--bearer-file <p>] [--notes <text>] [--json]` — writes the entry validated by the registry loader's OWN rules (add-time errors are load-time errors, verbatim; duplicate ids refused). Rewrites `hosts.yaml` canonically (hand-authored comments are not preserved).
+- `list [--json]` — id/transport/target plus AUTH as a config POINTER (`env:NAME` / `file:PATH` / `ssh-key`); never a resolved secret value.
+- `doctor <id> [--posture product-factory-vps] [--public-addr <ip>] [--json]` — stepwise, honest verification: transport reachability → remote `rig` binary (+version) → remote daemon health → remote identity; each failing step is a DISTINCT actionable error, and unknown host ids surface as the registry error class. `--posture` runs the ONE built-in baseline (`product-factory-vps`): every item reports pass/fail/**unknown** individually with a fix per non-pass — UNKNOWN is never pass; the public `:7433`/`:22` probes need `--public-addr` (outside vantage) and a reachable public daemon port FAILS loudly. Exit `1` on any fail.
 
 ### `rig broadcast`
 
@@ -1049,11 +1117,11 @@ Notes:
 
 ## Mission Control / Queue Observability (PL-005 Phase A)
 
-Mission Control is an integrated product UI inside the existing shell, NOT a new `rig` command. Per PL-005 PRD line 301: "no new commands at v0; the `rig ps --nodes --json` surface is consumed read-only."
+Mission Control is an integrated product UI inside the existing shell, NOT a new `rig` command. PL-005 originally named the read-only node surface as `rig ps --nodes --json`; under the v0.4.4 disclosure ladder, the fleet-wide projected node source is `rig ps --nodes -A --json`.
 
 Mission Control is reached via the product UI at the `/mission-control` route. The HTTP API surface (`/api/mission-control/*`) is documented in `docs/as-built/architecture/mission-control.md`. The 7 verbs (`approve`, `deny`, `route`, `annotate`, `hold`, `drop`, `handoff`) execute via `POST /api/mission-control/action`; the 7 views are read via `GET /api/mission-control/views/:view-name`.
 
-Mission Control consumes `rig ps --nodes --json` for fleet roll-up where the canonical CLI source is preferred. Cross-CLI-version drift is handled per the 4 sub-clauses of PRD § Runtime/Source Drift Acceptance: missing fields surface as honest "field unavailable on this rig's daemon version" placeholders; once-per-session-per-rig logging avoids spam; the fleet view shows a top-level "rigs running stale CLI" indicator.
+Mission Control consumes `rig ps --nodes -A --json` for fleet roll-up where the canonical CLI source is preferred. Cross-CLI-version drift is handled per the 4 sub-clauses of PRD § Runtime/Source Drift Acceptance: missing fields surface as honest "field unavailable on this rig's daemon version" placeholders; once-per-session-per-rig logging avoids spam; the fleet view shows a top-level "rigs running stale CLI" indicator.
 
 ## Agent Images, Context Packs, and Workspace (v0.3.0)
 
@@ -1101,7 +1169,7 @@ Usage: `rig workspace <subcommand>` — Workspace Primitive (PL-007), v0 typed-k
 
 Subcommands:
 - `validate [root] [--kind <kind>] [--no-recursive] [--require-frontmatter] [--max-files <n>] [--json]` — walk a workspace root, parse each `.md` file's YAML frontmatter, and emit a structured gap report. Advisory only — never modifies files. Default root: `cwd`. `--kind` validates against a specific workspace kind (`user | project | knowledge | lab | delivery`). `--max-files` (default `10000`) hard-caps the walk; v0.3.2 slice-01 GA enforces strict-int regex on this flag.
-- `doctor [--workspace <path>] [--strict] [--json]` — v0.3.2 slice-21 FR-5. Run a 7-check workspace-readiness diagnostic against the daemon's resolved workspace (workspace root, missions folder, file allowlist, daemon alignment, daemon reload, optional slice docs, MISSION_NOTES presence). Read-only. Default exit-code: non-zero only on `fail`; `--strict` makes warn-or-fail non-zero. The CLI overlays `OPENRIG_FILES_ALLOWLIST` from the operator's shell env so doctor reflects the operator's intended allowlist even when the daemon's env is unchanged.
+- `doctor [--workspace <path>] [--strict] [--json]` — v0.3.2 slice-21 FR-5 (+1 check v0.4.4 slice 23). Run an 8-check workspace-readiness diagnostic against the daemon's resolved workspace (workspace root, missions folder, file allowlist, daemon alignment, daemon reload, optional slice docs, MISSION_NOTES presence, SDLC convention sections — the last advisory-warn per `docs/reference/sdlc-conventions.md`). Read-only. Default exit-code: non-zero only on `fail`; `--strict` makes warn-or-fail non-zero. The CLI overlays `OPENRIG_FILES_ALLOWLIST` from the operator's shell env so doctor reflects the operator's intended allowlist even when the daemon's env is unchanged.
 
 Notes:
 - v0 surface was intentionally narrow (`validate` only); v0.3.2 added `doctor` as the operator-facing readiness diagnostic.
@@ -1150,7 +1218,7 @@ Two subcommand groups: `slice` and `mission`.
 `rig scope slice <subcommand>` — slice-tier commands:
 - `ls [--mission <name>] [--state <state>] [--json]` — list slices in a mission (or across all missions). `--state` filter: `active | closed | shipped | all` (default `active`).
 - `show <slice-path> [--mission <name>] [--json]` — inspect a single slice (frontmatter + README + children). `slice-path` is absolute, relative-to-substrate, or `NN-slug`; `--mission` hints the mission when path is just `NN-slug`.
-- `create <mission> <slug> [--template <kind>] [--title <text>] [--json]` — create a new slice in a mission. `--template` default `placeholder`. **v0.4.0 (slice 33)**: scaffolds a canonical `PROGRESS.md` (the structure the OpenRig PROGRESS UI page parses) plus a convention-correct README with proper frontmatter per `conventions/scope-and-versioning/README.md`, for EVERY template. Fixes the v0.3.x bug where newly-created slices were missing `PROGRESS.md` entirely.
+- `create <mission> <slug> [--template <kind>] [--title <text>] [--json]` — create a new slice in a mission. `--template` default `placeholder`. **v0.4.0 (slice 33)**: scaffolds a canonical `PROGRESS.md` (the structure the OpenRig PROGRESS UI page parses) plus a convention-correct README with proper frontmatter, for EVERY template. **v0.4.4 (slice 23)**: EVERY template kind additionally emits the SDLC convention sections (`## Intent` / `## Mini-requirements` / `## Proof contract`, kind-specific body below them), a `proof/` dir, `PROOF.md`, and an `IMPLEMENTATION-PRD.md` skeleton carrying the elastic-middle note — the shapes the Living Notes UI projects. Conventions SSOT: `docs/reference/sdlc-conventions.md`.
 - `progress <slice-path> [--mission <name>] [--status <state>] [--milestone <text>] [--owner <session>] [--note <text>] [--json]` — **v0.4.0 (slice 33)** new verb: append / set / update progress entries deterministically. Writes the canonical structure the OpenRig PROGRESS UI page reads. Replaces hand-editing `PROGRESS.md` with markdown.
 - `stage <slice-path> <new-stage> [--mission <name>] [--successor <id>] [--json]` — **v0.4.0 (slice 35)** new verb: set the slice's `stage` frontmatter (wip / provisional / established / canonical / superseded / retired) deterministically. `superseded` REQUIRES `--successor <id>` (rejected otherwise + records the successor); `retired` warns "do not use"; invalid stages rejected with the valid set named.
 - `verified <slice-path> --against "<source>" [--mission <name>] [--json]` — **v0.4.0 (slice 35)** new verb: stamp the slice's `verified` line with `verified: <today> against <source>`. `--against` is MANDATORY (bare timestamps rejected — the anti-stale keystone per `conventions/scope-and-versioning` §2). Overwrites the prior verified line.
@@ -1170,8 +1238,16 @@ Two subcommand groups: `slice` and `mission`.
 
 Convention compliance: `rig scope` together with slice 33 (`PROGRESS.md` + scaffolding) and slice 35 (`stage` / `verified` / `reconcile`) makes `rig scope` the **deterministic enforcer** of `conventions/scope-and-versioning` (§1 dot-IDs, §2 maturity vocabulary). Agents update the convention through commands rather than hand-editing markdown.
 
+### SDLC control plane verbs (v0.4.4)
+
+The conventions these verbs operate live in ONE shipped document: `docs/reference/sdlc-conventions.md` (copied into the assembled CLI package); the operating procedure is the packaged `mission-slice-sop` skill.
+
+- `rig scope slice|mission approve <target> [--scope spec|delivery] [--actor <session>] [--on-behalf-of <human>] [--json]` — **v0.4.4 (slice 19 FR-9)** the two staged-approval locks, one daemon-side write path (frontmatter stamp + append-only audit row land together; no half-stamp). `--scope spec` = the **plan-lock** ("the PRD matches my intent; this artifact set gets built"); `--scope delivery` (default) = the **proof-lock** (terminal sign-off; fires the freeze). Approval is freeze/sign-off — never proven-green (proven-green requires recorded C1 verdicts).
+- `rig proof add <slice-path> --artifact-type <guard|qa|rev1-r1|rev1-r2|adjudication> --verdict <CLEAR|BLOCKING|CONCERNING|PASS|NOT-CLEAR> --candidate-sha <sha> --money-evidence "<line>" [--file <path>|--body <text>] [--evidences <refs>] [--media <refs>] [--self-check <text>] [--json]` — **v0.4.4 (slice 19 FR-8; `--media` via the corrective §3.4)** drop a proof artifact into `<slice>/proof/` with the machine-readable C1 header, validated at drop time (closed sets above). `--evidences` (item text or 1-based index) joins the drop to the slice's `## Proof contract` items — the pairing the Living Notes DELIVERED section renders; `--media` (proof/-relative refs, containment-checked, never absolute) names the curated media the drop stands behind, projected into the DELIVERED items' proof set. Contract/self-check outputs are advisories (exit 0), never gates.
+- `rig scope audit <mission> [--json]` — extended **v0.4.4 (slice 19 FR-10 + slice 23)** with C1-header and IMPLEMENTATION-PRD backstops plus the convention-section advisories (missing `## Intent`, missing/malformed `## Mini-requirements`, missing/malformed `## Proof contract`, UI-slice-without-mockup — a mockup ref means a real image ref or plannedRef token, never bare prose). All advisory/fail-open: the exit code flips on HIGH findings only; the convention advisories are low/info by construction.
+
 Notes:
-- Surface source-verified against `packages/cli/src/commands/scope.ts` at `51554eee` (v0.4.0 post-slice-35).
+- Surface source-verified against `packages/cli/src/commands/scope.ts` at `51554eee` (v0.4.0 post-slice-35); SDLC control-plane verbs source-verified against `scope.ts` / `proof.ts` / `scope-audit.ts` in OPR.0.4.4.23.
 
 ## Skill Cascade Audit (v0.4.0)
 

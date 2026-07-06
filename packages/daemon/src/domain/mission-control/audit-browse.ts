@@ -26,6 +26,14 @@ export interface AuditQueryInput {
   limit?: number;
   /** Pagination cursor: returns rows whose action_id < beforeId. */
   beforeId?: string;
+  /** OPR.0.4.4.19 FR-9 — the scope-approval target filters (the pinned
+   *  audit_notes_json shape's read path). These make Packet 2's one-query
+   *  UNVERIFIED-stamp cross-check real: filter by the stable scope target
+   *  (tier + dot-ID + canonical path) and/or approval scope. */
+  scopeTier?: string;
+  scopeId?: string;
+  scopePath?: string;
+  approvalScope?: string;
 }
 
 export interface AuditQueryResult {
@@ -75,6 +83,25 @@ export class MissionControlAuditBrowse {
     if (input.actorSession) {
       where.push("actor_session = ?");
       params.push(input.actorSession);
+    }
+    // OPR.0.4.4.19 FR-9 — filter on the pinned audit_notes_json shape via
+    // SQLite JSON1 (ships with better-sqlite3). NULL audit_notes_json rows
+    // simply don't match.
+    if (input.scopeTier) {
+      where.push("json_extract(audit_notes_json, '$.scope_tier') = ?");
+      params.push(input.scopeTier);
+    }
+    if (input.scopeId) {
+      where.push("json_extract(audit_notes_json, '$.scope_id') = ?");
+      params.push(input.scopeId);
+    }
+    if (input.scopePath) {
+      where.push("json_extract(audit_notes_json, '$.scope_path') = ?");
+      params.push(input.scopePath);
+    }
+    if (input.approvalScope) {
+      where.push("json_extract(audit_notes_json, '$.approval_scope') = ?");
+      params.push(input.approvalScope);
     }
     if (input.since) {
       where.push("acted_at >= ?");

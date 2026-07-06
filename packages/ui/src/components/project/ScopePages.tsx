@@ -74,9 +74,11 @@ import {
 } from "./ProjectMetaPrimitives.js";
 import { SteeringTab } from "./SteeringTab.js";
 import { ArtifactsNavigator } from "./ArtifactsNavigator.js";
+import { SliceReviewTab } from "../review/SliceReviewTab.js";
+import { MissionReviewTab } from "../review/MissionReviewTab.js";
 import { WorkspacePortfolioPanel } from "./WorkspacePortfolioPanel.js";
 
-type SharedTab = "overview" | "story" | "progress" | "artifacts" | "proof" | "queue" | "topology" | "steering";
+type SharedTab = "overview" | "story" | "progress" | "artifacts" | "proof" | "queue" | "topology" | "steering" | "review";
 type SliceTab = SharedTab | "story" | "proof";
 
 const SHARED_TABS: { id: SharedTab; label: string }[] = [
@@ -94,6 +96,9 @@ const SHARED_TABS: { id: SharedTab; label: string }[] = [
 const MISSION_TABS: { id: SharedTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "steering", label: "Steering" },
+  // OPR.0.4.4.20 FR-7: board-first mission review BESIDE Steering — NOT the
+  // landing in v1 (Steering stays primary; the flip is an I5 founder decision).
+  { id: "review", label: "Review" },
   { id: "story", label: "Story" },
   { id: "progress", label: "Progress" },
   { id: "artifacts", label: "Artifacts" },
@@ -103,6 +108,9 @@ const MISSION_TABS: { id: SharedTab; label: string }[] = [
 ];
 
 const SLICE_TABS: { id: SliceTab; label: string }[] = [
+  // OPR.0.4.4.20 FR-4: the Review tab is the DEFAULT landing (additive —
+  // Overview stays; the default flip below is the one reversible line).
+  { id: "review", label: "Review" },
   { id: "story", label: "Story" },
   { id: "overview", label: "Overview" },
   { id: "progress", label: "Progress" },
@@ -747,6 +755,7 @@ export function MissionScopePage() {
       onSelect={(id) => setActive(id as SharedTab)}
     >
       {active === "steering" ? <SteeringTab missionId={missionId} /> : null}
+      {active === "review" ? <MissionReviewTab missionId={missionId} /> : null}
       {active === "overview" ? (
         <div data-testid="mission-overview-panel" className="space-y-6">
           {missionReadme.content && (
@@ -1089,10 +1098,10 @@ function SliceOverviewTab({ detail }: { detail: SliceDetail }) {
 
 export function SliceScopePage() {
   const { sliceId } = useParams({ from: "/project/slice/$sliceId" });
-  // V0.3.1 slice 12 walk-item 1 — default tab is Overview (README +
-  // current step + readiness) instead of Story; the first thing the
-  // operator should see on a slice is its README, not a metric grid.
-  const [active, setActive] = useState<SliceTab>("overview");
+  // OPR.0.4.4.20 FR-4: default tab is Review (the phase-aware compare +
+  // NEEDS YOU). One reversible line — flip back to "overview" to restore
+  // the v0.3.1 landing.
+  const [active, setActive] = useState<SliceTab>("review");
   const detailQuery = useSliceDetail(sliceId);
   const queueItems = useQueueItemMap(detailQuery.data?.qitemIds ?? []);
   const queueItemsById = useMemo(() => queueItems.itemsById, [queueItems.itemsById]);
@@ -1151,6 +1160,15 @@ export function SliceScopePage() {
       active={active}
       onSelect={(id) => setActive(id as SliceTab)}
     >
+      {active === "review" ? (
+        <SliceReviewTab
+          sliceName={detail.name}
+          slicePath={detail.slicePath}
+          anchorIdentity={typeof window !== "undefined" && window.location.hash.startsWith("#needs-you-")
+            ? window.location.hash.slice("#needs-you-".length)
+            : null}
+        />
+      ) : null}
       {active === "story" ? (
         <ScopeStoryRollup
           rows={[]}

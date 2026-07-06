@@ -84,7 +84,9 @@ describe("rig ps --host HTTP", () => {
       ]),
     };
     await captureLogs(async () => {
-      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--json"]);
+      // OPR.0.4.4.21 FR-2: remote --nodes requires an explicit target
+      // (implicit scope defaults don't cross host boundaries).
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--rig", "test-rig", "--json"]);
     });
     const nodesCalls = client._calls.filter((c) => c.path.includes("/nodes"));
     expect(nodesCalls.length).toBe(1);
@@ -195,7 +197,7 @@ describe("rig ps --host HTTP", () => {
       ]),
     };
     const { stdout } = await captureLogs(async () => {
-      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--json"]);
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "-A", "--json"]);
     });
     const parsed = JSON.parse(stdout.join(""));
     expect(Array.isArray(parsed)).toBe(true);
@@ -221,7 +223,7 @@ describe("rig ps --host HTTP", () => {
       ]),
     };
     const { stdout } = await captureLogs(async () => {
-      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--json", "--limit", "1", "--fields", "logicalId,rigName"]);
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--rig", "alpha", "--json", "--limit", "1", "--fields", "logicalId,rigName"]);
     });
     const parsed = JSON.parse(stdout.join(""));
     expect(parsed.entries).toBeDefined();
@@ -248,7 +250,7 @@ describe("rig ps --host HTTP", () => {
       ]),
     };
     const { stdout } = await captureLogs(async () => {
-      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--summary", "--limit", "1", "--json"]);
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--host", "host-b", "--nodes", "--rig", "alpha", "--summary", "--limit", "1", "--json"]);
     });
     const parsed = JSON.parse(stdout.join(""));
     expect(parsed.totalNodes).toBe(3);
@@ -308,12 +310,195 @@ describe("rig ps --all-hosts fan-out", () => {
     const { stdout } = await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "ps", "--hosts", "ssh-host", "--json"]);
     });
-    const output = stdout.join("");
-    if (output.includes("hosts")) {
-      const parsed = JSON.parse(output);
-      const sshEntry = parsed.hosts?.find((h: { host: string }) => h.host === "ssh-host");
-      expect(sshEntry).toBeDefined();
-      expect(sshEntry.ok).toBe(false);
-    }
+    // OPR.0.4.4.21 FR-5 — the shared P4 contract: an SSH-declared host is a
+    // STRUCTURED unsupported-transport status in hosts[], never silence.
+    const parsed = JSON.parse(stdout.join(""));
+    expect(Array.isArray(parsed.items)).toBe(true);
+    const sshEntry = parsed.hosts.find((h: { hostId: string }) => h.hostId === "ssh-host");
+    expect(sshEntry).toBeDefined();
+    expect(sshEntry.status).toBe("unsupported-transport");
+  });
+
+  // OPR.0.4.4.21 FR-5 — the intra-P4 shared payload contract
+  // (fanout-contract.ts): items stamped with origin hostId + the per-host
+  // structured status array covering EVERY targeted host.
+  it("fan-out --json emits AggregatedPayload: hostId-stamped items + closed-enum statuses", async () => {
+    vi.stubEnv("TOK_B", "secret-b");
+    delete process.env.TOK_C; // host-c bearer missing -> auth-failed
+    const client = mockClient({
+      "/api/ps": { status: 200, data: [{ rigId: "rig-1", name: "remote-rig", nodeCount: 2, runningCount: 2, status: "running" }] },
+    });
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+        { id: "host-c", transport: "http", url: "http://c", bearer_env: "TOK_C" },
+        { id: "ssh-d", transport: "ssh", target: "d.local" },
+      ]),
+    };
+    const { stdout } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--json"]);
+    });
+    const parsed = JSON.parse(stdout.join(""));
+    // items: only reachable hosts contribute rows; every row carries its origin
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0].hostId).toBe("host-b");
+    expect(parsed.items[0].name).toBe("remote-rig");
+    // hosts[]: every targeted host appears with a closed-enum status
+    const byId = Object.fromEntries(parsed.hosts.map((h: { hostId: string; status: string }) => [h.hostId, h.status]));
+    expect(byId["host-b"]).toBe("ok");
+    expect(byId["host-c"]).toBe("auth-failed");
+    expect(byId["ssh-d"]).toBe("unsupported-transport");
+    expect(parsed.hosts).toHaveLength(3);
+  });
+
+  // OPR.0.4.4.21 FR-5 — fan-out per-node requires the FULL explicit ladder
+  // (--nodes -A); anything less errors (never silent rig-tier data under a
+  // --nodes flag).
+  it("fan-out --nodes WITHOUT -A errors, teaching the full ladder", async () => {
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => mockClient({}),
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+      ]),
+    };
+    const { stderr } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--nodes", "--json"]);
+    });
+    const err = stderr.join("\n");
+    expect(err).toContain("FULL explicit ladder");
+    expect(err).toContain("--nodes -A");
+  });
+
+  // OPR.0.4.4.21 FR-5 — the PRD's full-ladder exception implemented:
+  // --all-hosts --nodes -A fans out per-node, PROJECTED rows stamped with
+  // their origin hostId; non-HTTP hosts still appear as
+  // unsupported-transport statuses.
+  it("fan-out --nodes -A returns AggregatedPayload of projected node rows (full ladder)", async () => {
+    vi.stubEnv("TOK_B", "secret-b");
+    const client = mockClient({
+      "/api/ps": { status: 200, data: [{ rigId: "rig-1", name: "remote-rig", rigName: "remote-rig" }] },
+      "/api/rigs/rig-1/nodes": { status: 200, data: [
+        { rigId: "rig-1", rigName: "remote-rig", logicalId: "dev.impl", sessionStatus: "running", resumeToken: "SECRET" },
+      ] },
+    });
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+        { id: "ssh-d", transport: "ssh", target: "d.local" },
+      ]),
+    };
+    const { stdout } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--nodes", "-A", "--json"]);
+    });
+    const parsed = JSON.parse(stdout.join(""));
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0].hostId).toBe("host-b");
+    expect(parsed.items[0].logicalId).toBe("dev.impl");
+    // projected rows: resumeTokenPresent boolean, never the token value
+    expect(parsed.items[0].resumeTokenPresent).toBe(true);
+    expect(JSON.stringify(parsed)).not.toContain("SECRET");
+    const byId = Object.fromEntries(parsed.hosts.map((h: { hostId: string; status: string }) => [h.hostId, h.status]));
+    expect(byId["host-b"]).toBe("ok");
+    expect(byId["ssh-d"]).toBe("unsupported-transport");
+  });
+
+  // OPR.0.4.4.21 rev1-r2 B1 — the SECURITY pin: explicit --fields on the
+  // full fan-out ladder projects ONLY the named fields (+ the hostId origin
+  // carriage) — resume material can never survive a projection.
+  it("fan-out --nodes -A --full --fields projects named fields only (no resume leakage)", async () => {
+    vi.stubEnv("TOK_B", "secret-b");
+    const client = mockClient({
+      "/api/ps": { status: 200, data: [{ rigId: "rig-1", name: "remote-rig", rigName: "remote-rig" }] },
+      "/api/rigs/rig-1/nodes": { status: 200, data: [
+        { rigId: "rig-1", rigName: "remote-rig", logicalId: "dev.impl", sessionStatus: "running",
+          resumeToken: "SECRET-TOKEN", resumeCommand: "claude --resume SECRET-TOKEN" },
+      ] },
+    });
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+      ]),
+    };
+    const { stdout } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--nodes", "-A", "--full", "--json", "--fields", "logicalId"]);
+    });
+    const raw = stdout.join("");
+    const parsed = JSON.parse(raw);
+    expect(parsed.items).toHaveLength(1);
+    expect(Object.keys(parsed.items[0]).sort()).toEqual(["hostId", "logicalId"]);
+    expect(parsed.items[0]).toEqual({ logicalId: "dev.impl", hostId: "host-b" });
+    expect(raw).not.toContain("SECRET-TOKEN");
+    expect(raw).not.toContain("resumeToken");
+    expect(raw).not.toContain("resumeCommand");
+  });
+
+  it("fan-out honors --limit and --filter on the merged items (shared composition)", async () => {
+    vi.stubEnv("TOK_B", "secret-b");
+    vi.stubEnv("TOK_C", "secret-c");
+    const client = mockClient({
+      "/api/ps": { status: 200, data: [
+        { rigId: "rig-1", name: "run-rig", rigName: "run-rig", status: "running" },
+        { rigId: "rig-2", name: "stop-rig", rigName: "stop-rig", status: "stopped" },
+      ] },
+    });
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+        { id: "host-c", transport: "http", url: "http://c", bearer_env: "TOK_C" },
+      ]),
+    };
+    // --filter status=running: 2 hosts × 1 matching rig each
+    const { stdout: filteredOut } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--json", "--filter", "status=running"]);
+    });
+    const filtered = JSON.parse(filteredOut.join(""));
+    expect(filtered.items).toHaveLength(2);
+    expect(filtered.items.every((i: { name: string }) => i.name === "run-rig")).toBe(true);
+    // --limit 1 applies to the MERGED list; hosts[] stays complete
+    const { stdout: limitedOut } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--json", "--limit", "1"]);
+    });
+    const limited = JSON.parse(limitedOut.join(""));
+    expect(limited.items).toHaveLength(1);
+    expect(limited.hosts).toHaveLength(2);
+  });
+
+  it("fan-out --summary errors honestly (no summary member in the shared contract)", async () => {
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => mockClient({}),
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+      ]),
+    };
+    const { stderr } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--summary", "--json"]);
+    });
+    expect(stderr.join("\n")).toContain("does not compose with the merged fan-out payload");
+  });
+
+  it("fan-out rejects bogus --fields BEFORE any HTTP call", async () => {
+    const client = mockClient({});
+    const deps: PsDeps = {
+      lifecycleDeps: {} as PsDeps["lifecycleDeps"],
+      clientFactory: () => client,
+      hostRegistryLoader: mockRegistry([
+        { id: "host-b", transport: "http", url: "http://b", bearer_env: "TOK_B" },
+      ]),
+    };
+    const { stderr } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "ps", "--all-hosts", "--json", "--fields", "bogus"]);
+    });
+    expect(stderr.join("\n")).toContain("bogus");
+    expect(client._calls).toHaveLength(0);
   });
 });

@@ -34,6 +34,24 @@ const VALID_MISSION_BRIEF = [
   "## Pointers",
 ].join("\n");
 
+function validSliceReadme(frontmatter: string, title = "slice"): string {
+  return `${frontmatter}
+# ${title}
+
+## Intent
+
+Prove the slice shape projects through the SDLC convention fields.
+
+## Mini-requirements
+
+1. The slice carries a proportional requirements list.
+
+## Proof contract
+
+- [ ] The proof artifact maps to the declared requirement.
+`;
+}
+
 let db: Database.Database;
 let cleanupRoot: string;
 let missionsRoot: string;
@@ -112,7 +130,7 @@ describe("GET /api/scope/audit", () => {
     fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
     const sliceDir = path.join(missionDir, "slices", "01-good");
     fs.mkdirSync(sliceDir, { recursive: true });
-    fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.99.0.2.1\n---\n# good\n", "utf8");
+    fs.writeFileSync(path.join(sliceDir, "README.md"), validSliceReadme("---\nid: OPR.99.0.2.1\n---", "good"), "utf8");
     fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
 
     const res = await app.request("/api/scope/audit?mission=clean-mission");
@@ -156,11 +174,11 @@ describe("GET /api/scope/audit", () => {
     fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
     const doneSlice = path.join(missionDir, "slices", "01-done");
     fs.mkdirSync(path.join(doneSlice, "proof"), { recursive: true });
-    fs.writeFileSync(path.join(doneSlice, "README.md"), "---\nid: OPR.99.0.4.1\nstatus: done\n---\n# done\n", "utf8");
+    fs.writeFileSync(path.join(doneSlice, "README.md"), validSliceReadme("---\nid: OPR.99.0.4.1\nstatus: done\n---", "done"), "utf8");
     fs.writeFileSync(path.join(doneSlice, "PROGRESS.md"), "# Progress\n", "utf8");
     const wipSlice = path.join(missionDir, "slices", "02-wip");
     fs.mkdirSync(wipSlice, { recursive: true });
-    fs.writeFileSync(path.join(wipSlice, "README.md"), "---\nid: OPR.99.0.4.2\nstatus: wip\n---\n# wip\n", "utf8");
+    fs.writeFileSync(path.join(wipSlice, "README.md"), validSliceReadme("---\nid: OPR.99.0.4.2\nstatus: wip\n---", "wip"), "utf8");
     fs.writeFileSync(path.join(wipSlice, "PROGRESS.md"), "# Progress\n", "utf8");
 
     const res = await app.request("/api/scope/audit?mission=proof-mission");
@@ -178,8 +196,9 @@ describe("GET /api/scope/audit", () => {
       path: path.join(doneSlice, "PROOF.md"),
     });
     expect(done?.findings.find((f) => f.kind === "missing_proof")?.remediation).toMatch(/proof\//);
+    expect(done?.findings.some((f) => f.kind === "missing_impl_prd")).toBe(true);
     expect(wip?.findings.some((f) => f.kind === "missing_proof")).toBe(false);
-    expect(body.totalFindings).toBe(1);
+    expect(body.totalFindings).toBe(2);
   });
 
   it("proof-packet-backed proven slice without root proof returns missing_proof", async () => {
@@ -196,7 +215,7 @@ describe("GET /api/scope/audit", () => {
     fs.writeFileSync(path.join(missionDir, "MISSION_NOTES.md"), "# Notes\n", "utf8");
     const sliceDir = path.join(missionDir, "slices", "03-proof-backed");
     fs.mkdirSync(sliceDir, { recursive: true });
-    fs.writeFileSync(path.join(sliceDir, "README.md"), "---\nid: OPR.99.0.5.3\nstatus: active\n---\n# proof backed\n", "utf8");
+    fs.writeFileSync(path.join(sliceDir, "README.md"), validSliceReadme("---\nid: OPR.99.0.5.3\nstatus: active\n---", "proof backed"), "utf8");
     fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
     const packetDir = path.join(dogfoodRoot, "03-proof-backed-20260625");
     fs.mkdirSync(packetDir, { recursive: true });

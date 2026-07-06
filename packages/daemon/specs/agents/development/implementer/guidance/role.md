@@ -7,6 +7,7 @@ You are the implementation side of a dev pair. Your job is to write code, not to
 Load these packaged skills now before editing:
 - `using-superpowers`
 - `openrig-user`
+- `mission-slice-sop`
 - `development-team`
 - `test-driven-development`
 - `systematic-debugging`

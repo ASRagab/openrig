@@ -11,7 +11,7 @@
 //   POST /api/workspace/doctor  (slice-21 FR-5)
 //     body (all optional): { workspaceRoot?: string;
 //                            filesAllowlistOverride?: string }
-//     response: DoctorReport (7-check workspace-readiness report)
+//     response: DoctorReport (8-check workspace-readiness report)
 //
 // No filesystem mutation. Operator picks the root + kind per invocation.
 //
@@ -76,7 +76,7 @@ export function workspaceRoutes(): Hono {
   // Slice-21 FR-5 — workspace doctor.
   //
   // Resolves all inputs from the daemon's SettingsStore (matching
-  // /api/config), runs the 7-check orchestrator, and returns the
+  // /api/config), runs the 8-check orchestrator, and returns the
   // DoctorReport. Caller can override the workspace under check via
   // body.workspaceRoot — useful for `rig workspace doctor --workspace
   // <path>` to probe an alternate workspace without restarting the

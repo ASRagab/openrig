@@ -4,7 +4,7 @@
 //   - my-queue            → queue_items where destination_session = operator
 //                            AND tier='human-gate'
 //   - human-gate          → queue_items where tier='human-gate'
-//   - fleet               → shell out to `rig ps --nodes --json` (graceful
+//   - fleet               → shell out to `rig ps --nodes -A --json` (graceful
 //                            degradation per 4-sub-clause spec)
 //   - active-work         → queue_items where state in (pending, in-progress,
 //                            blocked) sorted by priority

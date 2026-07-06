@@ -1,0 +1,148 @@
+// OPR.0.4.4.15 FR-4 — remote action forwarding on POST /api/mission-control/action.
+//
+// The load-bearing pins: hostId absent/local = the existing path
+// byte-for-byte (write contract invoked); remote = server-side forward with
+// the origin's structured response passed through VERBATIM (success AND
+// failure — the fake-success negative); NOTHING written to the local write
+// contract on the forwarded path (arch ruling 4 addition riding R15-3:
+// origin's audit row is THE record); only the one verb allowlist gates.
+
+import { describe, it, expect } from "vitest";
+import { Hono } from "hono";
+import { missionControlRoutes } from "../src/routes/mission-control.js";
+import type { HostRegistry } from "../src/domain/hosts/hosts-registry-reader.js";
+
+const REGISTRY: HostRegistry = {
+  hosts: [
+    { id: "vps-b", transport: "http", url: "http://vps-b:7433", bearer_env: "B" },
+    { id: "ssh-1", transport: "ssh", target: "x.local" },
+  ],
+};
+
+function makeApp(opts: { fetchImpl?: typeof fetch } = {}) {
+  const localActs: unknown[] = [];
+  const writeContract = {
+    act: async (req: unknown) => {
+      localActs.push(req);
+      return { ok: true, actionId: "local-act-1" };
+    },
+  };
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    const set = c.set.bind(c) as (key: string, value: unknown) => void;
+    set("missionControlWriteContract", writeContract);
+    set("hostRegistryLoader", () => ({ ok: true, registry: REGISTRY }));
+    if (opts.fetchImpl) set("remoteFetchImpl", opts.fetchImpl);
+    set("eventBus", { emit: () => {} });
+    await next();
+  });
+  app.route("/api/mission-control", missionControlRoutes({ bearerToken: null }));
+  return { app, localActs };
+}
+
+const BASE_BODY = { verb: "resolve", qitemId: "qitem-1", actorSession: "human@host" };
+
+function post(app: Hono, body: Record<string, unknown>) {
+  return app.request("/api/mission-control/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Bearer env for the forward legs.
+process.env["B"] = "remote-token";
+
+describe("POST /action — FR-4 remote forwarding", () => {
+  it("hostId ABSENT: the existing local write path runs byte-for-byte", async () => {
+    const { app, localActs } = makeApp();
+    const res = await post(app, BASE_BODY);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, actionId: "local-act-1" });
+    expect(localActs).toHaveLength(1);
+  });
+
+  it("hostId 'local': same local path (the contract's literal is not a remote)", async () => {
+    const { app, localActs } = makeApp();
+    const res = await post(app, { ...BASE_BODY, hostId: "local" });
+    expect(res.status).toBe(200);
+    expect(localActs).toHaveLength(1);
+  });
+
+  it("remote hostId: forwards the SAME body (minus hostId) with the bearer; origin's SUCCESS response passes through verbatim; LOCAL write contract untouched", async () => {
+    const capture: { url?: string; init?: RequestInit } = {};
+    const { app, localActs } = makeApp({
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        capture.url = String(url);
+        capture.init = init;
+        return new Response(JSON.stringify({ ok: true, actionId: "origin-act-9", audited: "on-origin" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch,
+    });
+    const res = await post(app, { ...BASE_BODY, hostId: "vps-b", annotation: "from the merged feed" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, actionId: "origin-act-9", audited: "on-origin" });
+    expect(capture.url).toBe("http://vps-b:7433/api/mission-control/action");
+    expect((capture.init?.headers as Record<string, string>)["Authorization"]).toBe("Bearer remote-token");
+    const forwarded = JSON.parse(String(capture.init?.body)) as Record<string, unknown>;
+    expect(forwarded).toEqual({ ...BASE_BODY, annotation: "from the merged feed" }); // hostId stripped, rest verbatim
+    expect(localActs).toEqual([]); // arch pin: local mission_control_actions CLEAN after forward
+  });
+
+  it("origin REFUSAL passes through as structured failure — no fake success, local contract untouched", async () => {
+    const { app, localActs } = makeApp({
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ error: "qitem qitem-1 not found on this host" }), { status: 404, headers: { "Content-Type": "application/json" } })) as typeof fetch,
+    });
+    const res = await post(app, { ...BASE_BODY, hostId: "vps-b" });
+    expect(res.status).toBe(502);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data).toMatchObject({ error: "remote_action_failed", hostId: "vps-b", failureClass: "remote-error", remoteStatus: 404 });
+    expect(String(data["detail"])).toContain("not found on this host");
+    expect(localActs).toEqual([]);
+  });
+
+  it("origin unreachable at action time: structured per-host error (never optimistic), never hangs (deadline through body)", async () => {
+    const { app, localActs } = makeApp({
+      fetchImpl: (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+    });
+    const res = await post(app, { ...BASE_BODY, hostId: "vps-b" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ error: "remote_action_failed", failureClass: "unreachable", detail: "ECONNREFUSED" });
+    expect(localActs).toEqual([]);
+  });
+
+  it("SSH-declared and unknown hosts fail structurally BEFORE any wire attempt", async () => {
+    let wireTouched = false;
+    const { app } = makeApp({
+      fetchImpl: (async () => {
+        wireTouched = true;
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    });
+    const ssh = await post(app, { ...BASE_BODY, hostId: "ssh-1" });
+    expect(ssh.status).toBe(502);
+    expect(await ssh.json()).toMatchObject({ failureClass: "unsupported-transport" });
+    const ghost = await post(app, { ...BASE_BODY, hostId: "ghost" });
+    expect(await ghost.json()).toMatchObject({ failureClass: "unknown-host" });
+    expect(wireTouched).toBe(false);
+  });
+
+  it("the verb allowlist gates BEFORE any forward (one allowlist, no duplicated validation)", async () => {
+    let wireTouched = false;
+    const { app } = makeApp({
+      fetchImpl: (async () => {
+        wireTouched = true;
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    });
+    const res = await post(app, { verb: "reboot-host", qitemId: "q", actorSession: "a", hostId: "vps-b" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "verb_unknown" });
+    expect(wireTouched).toBe(false);
+  });
+});

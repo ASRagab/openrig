@@ -66,7 +66,7 @@ export class WriteConflictError extends Error {
 
 export class FileWriteError extends Error {
   constructor(
-    public readonly code: "stat_failed" | "tmp_write_failed" | "rename_failed" | "audit_write_failed",
+    public readonly code: "stat_failed" | "tmp_write_failed" | "rename_failed" | "audit_write_failed" | "target_exists",
     message: string,
     public readonly details?: Record<string, unknown>,
   ) {
@@ -209,6 +209,83 @@ export class FileWriteService {
       newContentHash,
       byteCountDelta,
     };
+  }
+
+  /**
+   * Atomically CREATE a new allowlisted file (OPR.0.4.4.20 FR-6 — the frozen
+   * review export). Exclusive: throws `target_exists` when the file is
+   * already there (frozen exports are point-in-time snapshots, never
+   * rewritten; re-invoking the freeze for the same approval is an idempotent
+   * no-op at the caller). Same temp-write + fsync + audit-row machinery as
+   * writeAtomic — one writer family, no parallel write path.
+   */
+  createAtomic(req: Omit<FileWriteRequest, "expectedMtime" | "expectedContentHash">): FileWriteResult {
+    const target = resolveAllowedPath(this.allowlist, req.rootName, req.path);
+    if (fs.existsSync(target)) {
+      throw new FileWriteError("target_exists", `refusing to overwrite existing file '${target}'`, { target });
+    }
+
+    const tmpName = `.openrig-write-${process.pid}-${Math.random().toString(36).slice(2, 10)}-${path.basename(target)}`;
+    const tmpPath = path.join(path.dirname(target), tmpName);
+    let tmpFd: number | null = null;
+    try {
+      tmpFd = fs.openSync(tmpPath, "w");
+      fs.writeFileSync(tmpFd, req.content);
+      fs.fsyncSync(tmpFd);
+    } catch (err) {
+      try { if (tmpFd !== null) fs.closeSync(tmpFd); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw new FileWriteError(
+        "tmp_write_failed",
+        `failed to write+fsync temp file at '${tmpPath}': ${err instanceof Error ? err.message : String(err)}`,
+        { target, tmpPath },
+      );
+    } finally {
+      try { if (tmpFd !== null) fs.closeSync(tmpFd); } catch { /* ignore */ }
+    }
+
+    try {
+      // linkSync fails if the target appeared meanwhile — true exclusive create.
+      fs.linkSync(tmpPath, target);
+      fs.unlinkSync(tmpPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      const code = (err as NodeJS.ErrnoException).code === "EEXIST" ? "target_exists" : "rename_failed";
+      throw new FileWriteError(
+        code,
+        `failed to atomically create '${target}': ${err instanceof Error ? err.message : String(err)}`,
+        { target, tmpPath },
+      );
+    }
+
+    const newStat = fs.statSync(target);
+    const newContent = fs.readFileSync(target);
+    const newMtime = newStat.mtime.toISOString();
+    const newContentHash = sha256Hex(newContent);
+
+    const auditRow = {
+      ts: this.now().toISOString(),
+      actor: req.actor,
+      root: req.rootName,
+      path: req.path,
+      absolutePath: target,
+      prevMtime: null,
+      newMtime,
+      prevContentHash: null,
+      newContentHash,
+      byteCountDelta: newContent.byteLength,
+    };
+    try {
+      this.appendAuditRow(auditRow);
+    } catch (err) {
+      throw new FileWriteError(
+        "audit_write_failed",
+        `create succeeded but audit append failed: ${err instanceof Error ? err.message : String(err)}`,
+        { target, auditFilePath: this.auditFilePath, ...auditRow },
+      );
+    }
+
+    return { absolutePath: target, newMtime, newContentHash, byteCountDelta: newContent.byteLength };
   }
 
   private appendAuditRow(row: Record<string, unknown>): void {

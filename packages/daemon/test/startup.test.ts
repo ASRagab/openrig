@@ -124,6 +124,8 @@ describe("createDaemon startup composition", () => {
       destinationSession: "human-operator@kernel",
       body: "human gate smoke",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
       nudge: false,
     });
     const generic = await deps.queueRepo.create({
@@ -131,6 +133,8 @@ describe("createDaemon startup composition", () => {
       destinationSession: "human@host",
       body: "human host smoke",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
       nudge: false,
     });
 

@@ -153,9 +153,19 @@ interface FocusedTerminalProps {
    * keeps xterm's selection/click hit-testing native-correct (#6023).
    */
   fit?: "natural" | "width" | "contain";
+  /**
+   * OPR.0.4.4.20 delta-C (BR-12 — terminal, not chat): pre-populate the target
+   * pane with EXACTLY ONE text frame on the first successful connect. Rides the
+   * existing text seam (broker sendText → tmux `send-keys -l --`, no `C-m`), so
+   * nothing submits — the cursor sits at the end and the human's own Enter
+   * submits preamble + message together. Sent once per mount (a reconnect never
+   * re-sends). This prop is the ONE net-new terminal wiring item; there is no
+   * chat panel, thread, bubble, or compose box anywhere in this family.
+   */
+  initialText?: string;
 }
 
-export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural" }: FocusedTerminalProps) {
+export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
   // containerRef holds the natural-sized xterm. We measure the wrapper (available)
@@ -167,6 +177,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural" }:
   fitRef.current = fit;
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // OPR.0.4.4.20 delta-C: once-per-mount guard for the initial-text frame —
+  // a WS reconnect must never re-send the preamble into the pane.
+  const initialTextSentRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
@@ -248,6 +261,11 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural" }:
       promptScrollUntilRef.current = Date.now() + 2500;
       const term = termRef.current as { scrollToBottom(): void } | null;
       scrollLiveTerminalToPrompt(term);
+      // OPR.0.4.4.20 delta-C: one text frame, once per mount, no Enter frame.
+      if (initialText && !initialTextSentRef.current) {
+        initialTextSentRef.current = true;
+        ws.send(JSON.stringify({ type: "text", text: initialText }));
+      }
     };
 
     ws.onmessage = (evt) => {

@@ -8,6 +8,7 @@ import { streamItemsSchema } from "../src/db/migrations/023_stream_items.js";
 import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
 import { viewsCustomSchema } from "../src/db/migrations/030_views_custom.js";
+import { rigArchiveSchema } from "../src/db/migrations/042_rig_archive.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { StreamStore } from "../src/domain/stream-store.js";
@@ -32,7 +33,7 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
     db = createDb();
     migrate(db, [
       coreSchema, eventsSchema, streamItemsSchema,
-      queueItemsSchema, queueTransitionsSchema, viewsCustomSchema,
+      queueItemsSchema, queueTransitionsSchema, viewsCustomSchema, rigArchiveSchema,
     ]);
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     bus = new EventBus(db);
@@ -76,6 +77,8 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
       destinationSession: "human-operator@kernel",
       body: "needs human approval",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await queueRepo.create({
       sourceSession: "src@rig",
@@ -117,6 +120,8 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
       destinationSession: "human-operator@kernel",
       body: "for the operator",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await queueRepo.create({
       sourceSession: "src@rig",
@@ -126,6 +131,8 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
     await queueRepo.create({
       sourceSession: "src@rig",
       destinationSession: "human-operator@kernel",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
       body: "non-human-gate from operator",
     });
     const result = await readLayer.readView("my-queue");
@@ -139,6 +146,8 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
       destinationSession: "human-operator@kernel",
       body: "Approve the release candidate after checking the phone notification path.",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
 
     const result = await readLayer.readView("my-queue");

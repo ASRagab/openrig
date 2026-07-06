@@ -24,6 +24,10 @@ export interface MissionControlActionInput {
   reason?: string;
   notify?: boolean;
   auditNotes?: Record<string, unknown>;
+  /** OPR.0.4.4.15 FR-4 — origin host for remote items: the daemon forwards
+   *  the verb server-side to that host's write path (absent/'local' =
+   *  today's local path byte-for-byte). */
+  hostId?: string;
 }
 
 export interface MissionControlActionResult {

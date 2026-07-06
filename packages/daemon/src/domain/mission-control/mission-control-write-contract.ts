@@ -48,6 +48,7 @@ import {
   MissionControlActionLogError,
   type MissionControlVerb,
 } from "./mission-control-action-log.js";
+import { isHumanSeatSession } from "../human-route-enforcer.js";
 
 export class MissionControlWriteContractError extends Error {
   constructor(
@@ -72,6 +73,9 @@ export interface MissionControlActionInput {
   annotation?: string;
   /** Required for `hold` and `drop`; optional advisory text otherwise. */
   reason?: string;
+  /** OPR.0.4.4.19 FR-7 — required for `resolve`: the human's non-empty
+   *  decision text. Lands durably in queue_transitions.transition_note. */
+  decision?: string;
   /** Operator-supplied audit context. */
   auditNotes?: Record<string, unknown>;
   /**
@@ -125,6 +129,9 @@ export class MissionControlWriteContract {
     if (input.verb === "annotate") {
       return this.annotateOnly(input);
     }
+    if (input.verb === "resolve") {
+      return this.resolveParked(input);
+    }
 
     const source = this.requireMutableQitem(input.qitemId);
 
@@ -167,6 +174,8 @@ export class MissionControlWriteContract {
           body: input.body ?? source.body,
           priority: source.priority,
           tier: source.tier ?? undefined,
+          summary: source.summary,
+          evidenceRef: source.evidenceRef,
           tags: source.tags
             ? [...source.tags, `mission-control:${input.verb}`]
             : [`mission-control:${input.verb}`],
@@ -304,6 +313,146 @@ export class MissionControlWriteContract {
     };
   }
 
+  /**
+   * OPR.0.4.4.19 FR-7 — resolve + unpark (all six arch rails encoded):
+   *
+   *   1. A verb in the mission-control family (this method), NOT an overload
+   *      of annotate/route.
+   *   2. The decision text lands durably + queryably in
+   *      queue_transitions.transition_note with actor_session = the
+   *      resolving session (the composer reads it there forever).
+   *   3. Unpark = blocked → in-progress via the Phase-A enum-validated
+   *      update (no state-machine change) + the existing nudge machinery.
+   *   4. Resolution routes BACK to the parked owner — the qitem keeps its
+   *      destination; no new potato owner is ever created here.
+   *   5. Enforcement symmetry: park required summary + evidence_ref;
+   *      resolve requires NON-EMPTY decision text, daemon-enforced.
+   *   6. The human acts on the surface/feed card; this is the ONE write
+   *      path (POST /api/mission-control/action verb=resolve) — the CLI
+   *      wrapper is a thin client of the same endpoint.
+   *
+   * NON-CLOSURE by contract: verbToClosure has NO resolve mapping — a
+   * resolved qitem is state=in-progress with closure_reason still null.
+   * One transaction: transition + decision note + audit row + events.
+   * The owner nudge (carrying the decision text) is post-commit
+   * best-effort — the unpark is never lost to a transport failure (BR-8).
+   */
+  private async resolveParked(input: MissionControlActionInput): Promise<MissionControlActionResult> {
+    const decision = input.decision?.trim();
+    if (!decision) {
+      throw new MissionControlWriteContractError(
+        "decision_required",
+        "verb=resolve requires non-empty decision text — a park without a recorded decision is exactly what this primitive exists to kill",
+        { verb: input.verb },
+      );
+    }
+    const source = this.queueRepo.getById(input.qitemId);
+    if (!source) {
+      throw new MissionControlWriteContractError(
+        "qitem_not_found",
+        `qitem ${input.qitemId} not found`,
+        { qitemId: input.qitemId },
+      );
+    }
+    if (source.state !== "blocked" || !isHumanSeatSession(source.blockedOn)) {
+      throw new MissionControlWriteContractError(
+        "qitem_not_leg1_parked",
+        `verb=resolve requires a leg-1 parked qitem (state=blocked with a human-seat blocked_on); ` +
+          `qitem ${input.qitemId} is state=${source.state}, blocked_on=${source.blockedOn ?? "null"}. ` +
+          `Re-resolving an already-resolved item is a no-op error, not a double transition.`,
+        { qitemId: input.qitemId, state: source.state, blockedOn: source.blockedOn },
+      );
+    }
+
+    const evaluatedAt = this.now().toISOString();
+    const beforeSnapshot = snapshotQitem(source);
+    let actionEntry: ReturnType<MissionControlActionLog["record"]> | null = null;
+    const persistedEvents: PersistedEvent[] = [];
+
+    const txn = this.db.transaction(() => {
+      // Rail 2+3: blocked → in-progress; decision text = transition_note;
+      // actor_session = the resolving human/relay session. Emits
+      // queue.updated (the P2 refresh-after-action contract). blocked_on is
+      // deliberately retained as provenance of whom it was parked on — the
+      // attention query keys on state='blocked', so the resolved item drops
+      // out of attention regardless.
+      const updateResult = this.queueRepo.updateWithinTransaction({
+        qitemId: input.qitemId,
+        actorSession: input.actorSession,
+        state: "in-progress",
+        transitionNote: decision,
+      });
+      persistedEvents.push(updateResult.persistedEvent);
+
+      const resolvedQitem = this.queueRepo.getById(input.qitemId);
+      actionEntry = this.actionLog.record({
+        actionVerb: "resolve",
+        qitemId: input.qitemId,
+        actorSession: input.actorSession,
+        actedAt: evaluatedAt,
+        beforeState: beforeSnapshot,
+        afterState: resolvedQitem ? snapshotQitem(resolvedQitem) : null,
+        reason: decision,
+        auditNotes: input.auditNotes ?? null,
+      });
+
+      persistedEvents.push(
+        this.eventBus.persistWithinTransaction({
+          type: "mission_control.action_executed",
+          actionId: actionEntry.actionId,
+          actionVerb: "resolve",
+          qitemId: input.qitemId,
+          actorSession: input.actorSession,
+        }),
+      );
+    });
+
+    try {
+      txn();
+    } catch (err) {
+      if (err instanceof MissionControlActionLogError) {
+        throw new MissionControlWriteContractError(err.code, err.message, err.details);
+      }
+      throw err;
+    }
+
+    for (const e of persistedEvents) this.eventBus.notifySubscribers(e);
+
+    // Rail 3 + BR-8: best-effort nudge to the PARKED OWNER carrying the
+    // decision text, after the commit — nudge outcome recorded via the
+    // existing last_nudge_* mechanics; a failed nudge never unwinds the
+    // unpark.
+    let notifyAttempted = false;
+    let notifyResult: string | null = null;
+    if (input.notify !== false) {
+      try {
+        await this.queueRepo.maybeNudge(
+          input.qitemId,
+          source.destinationSession,
+          input.notify,
+          input.actorSession,
+          `Decision resolved on ${input.qitemId}: ${decision} — unparked (blocked → in-progress); you still own it. Check your queue.`,
+        );
+        notifyAttempted = true;
+        notifyResult = "attempted-best-effort";
+      } catch (err) {
+        notifyAttempted = true;
+        notifyResult = `failed:${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    return {
+      actionId: actionEntry!.actionId,
+      verb: "resolve",
+      qitemId: input.qitemId,
+      closedQitem: this.queueRepo.getById(input.qitemId),
+      createdQitemId: null,
+      notifyAttempted,
+      notifyResult,
+      auditedAt: evaluatedAt,
+    };
+  }
+
   private requireMutableQitem(qitemId: string): QueueItem {
     const source = this.queueRepo.getById(qitemId);
     if (!source) {
@@ -378,6 +527,14 @@ function verbToClosure(input: MissionControlActionInput): ClosureMapping {
       throw new MissionControlWriteContractError(
         "internal_invariant",
         "annotate verb should have been routed to annotateOnly",
+      );
+    case "resolve":
+      // OPR.0.4.4.19 FR-7 — resolve deliberately has NO closure mapping
+      // (a resolved qitem is state=in-progress, closure_reason null).
+      // Handled by resolveParked(); reaching here is a contract violation.
+      throw new MissionControlWriteContractError(
+        "internal_invariant",
+        "resolve verb is non-closure and should have been routed to resolveParked",
       );
   }
 }

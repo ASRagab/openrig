@@ -32,7 +32,8 @@ fi
 # Show node status
 echo ""
 echo "Node status:"
-rig ps --nodes
+# OPR.0.4.4.21: --nodes requires an explicit target outside a managed session.
+rig ps --nodes --rig "$RIG_ID"
 
 # Establish a restore-safe baseline for the demo rig.
 echo ""
@@ -55,6 +56,6 @@ echo "=== Demo topology is running ==="
 echo "Dashboard: http://localhost:5173"
 echo ""
 echo "Next steps:"
-echo "  rig ps --nodes          # Check node status"
+echo "  rig ps --nodes --rig '$RIG_ID'   # Check node status"
 echo "  rig down $RIG_ID        # Tear down (auto-snapshots)"
 echo "  rig restore <snapshotId> --rig $RIG_ID   # Restore the exact snapshot you just created"

@@ -13,7 +13,18 @@ export type FindingKind =
   | "malformed_mission_brief"
   | "missing_mission_notes"
   | "missing_proof"
-  | "progress_not_updated_on_commit";
+  | "progress_not_updated_on_commit"
+  // OPR.0.4.4.19 FR-10 — the belt-and-suspenders BACKSTOPS (never the
+  // primary enforcement; the primary is the drop path / write path):
+  | "proof_artifact_c1_invalid"
+  | "missing_impl_prd"
+  // OPR.0.4.4.23 — SDLC convention-section advisories (fail-open by
+  // construction: low/info severities never flip the audit exit code;
+  // conventions SSOT: docs/reference/sdlc-conventions.md):
+  | "missing_intent_section"
+  | "mini_requirements_missing_or_malformed"
+  | "proof_contract_missing_or_malformed"
+  | "ui_slice_missing_mockup";
 
 export interface AuditFinding {
   kind: FindingKind;
@@ -52,6 +63,21 @@ export interface ScopeAuditInput {
   // is unavailable the CLI leaves them undefined: no false-green, no false-positive.
   sliceTouchedByRecentCommit?: boolean;
   progressTouchedByRecentCommit?: boolean;
+  // OPR.0.4.4.19 FR-10 (C1 backstop) — the slice's proof/ dir markdown
+  // artifacts with their raw frontmatter, caller-listed. Undefined = the
+  // caller has no proof-dir context; the check is inert (no false findings).
+  // Media files (video/screenshot) are exempt by construction — callers list
+  // .md artifacts only.
+  proofArtifacts?: Array<{ path: string; frontmatterRaw: string | null }>;
+  // OPR.0.4.4.19 FR-10 (C7 backstop) — whether IMPLEMENTATION-PRD.md exists
+  // at the slice root. Undefined = inert (caller has no fs context).
+  implementationPrdExists?: boolean;
+  // OPR.0.4.4.23 — convention-section advisory inputs: full file contents,
+  // caller-read. Undefined = the caller has no content context and every
+  // section check is inert (no false findings). null = the file does not
+  // exist (the proof-contract check falls back to the README on a null PRD).
+  readmeContent?: string | null;
+  implementationPrdContent?: string | null;
 }
 
 export interface ScopeAuditResult {
@@ -60,7 +86,11 @@ export interface ScopeAuditResult {
   frontmatterError: string | null;
 }
 
-const MISSION_BRIEF_HEADERS = ["What & why", "Building", "Progress", "Proven", "Needs you", "Pointers"];
+// OPR.0.4.4.20 FR-8: exported so the review brief-spine writer conforms to
+// the SAME pinned exact-order schema this audit enforces (parity by
+// construction — the generated output can never trip malformed_mission_brief
+// without this file changing too).
+export const MISSION_BRIEF_HEADERS = ["What & why", "Building", "Progress", "Proven", "Needs you", "Pointers"];
 
 function childPath(parent: string, child: string): string {
   return parent.endsWith("/") ? `${parent}${child}` : `${parent}/${child}`;
@@ -103,6 +133,72 @@ function statusRequiresProof(status: string | null | undefined): boolean {
     || normalized.includes("close")
     || normalized.includes("proven")
     || normalized.includes("promoted");
+}
+
+// OPR.0.4.4.19 FR-10 (C7) — the statusRequiresProof pattern applied one
+// phase earlier: a slice whose status implies SPECCED/BUILDING (or later)
+// must carry IMPLEMENTATION-PRD.md at its root ("no build without a
+// specifying doc"). Shaping / pre-spec statuses are NOT violations.
+function statusRequiresSpec(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const normalized = status.toLowerCase().trim();
+  return normalized.includes("build")
+    || normalized.includes("implement")
+    || normalized.includes("in-progress")
+    || normalized.includes("review")
+    || normalized.includes("qa")
+    || statusRequiresProof(normalized);
+}
+
+// OPR.0.4.4.19 FR-10 (C1) — the ratified closed sets (BR-4; source of truth
+// for the drop path lives in the CLI proof command; this mirrored file
+// carries its own copy because both scope-audit copies must stay
+// self-contained + byte-identical. Extending the sets is a pm-lead
+// convention change, made in BOTH places).
+const C1_REQUIRED_FIELDS = ["slice", "candidate_sha", "artifact_type", "verdict", "money_evidence"] as const;
+const C1_ARTIFACT_TYPES = ["guard", "qa", "rev1-r1", "rev1-r2", "adjudication"] as const;
+const C1_VERDICTS = ["CLEAR", "BLOCKING", "CONCERNING", "PASS", "NOT-CLEAR"] as const;
+
+/** Validate one proof artifact's raw frontmatter against the C1 contract.
+ *  Returns null when valid; else the human-readable problem list. */
+function c1ArtifactProblems(frontmatterRaw: string | null): string[] | null {
+  if (frontmatterRaw === null) {
+    return [`no frontmatter header at all (required C1 fields: ${C1_REQUIRED_FIELDS.join(", ")})`];
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = YAML.parse(frontmatterRaw);
+  } catch (err) {
+    return [`frontmatter fails to parse: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  const fm = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+  const problems: string[] = [];
+  const missing = C1_REQUIRED_FIELDS.filter((f) => typeof fm[f] !== "string" || (fm[f] as string).trim().length === 0);
+  if (missing.length > 0) problems.push(`missing field(s): ${missing.join(", ")}`);
+  if (typeof fm.artifact_type === "string" && !(C1_ARTIFACT_TYPES as readonly string[]).includes(fm.artifact_type)) {
+    problems.push(`artifact_type '${fm.artifact_type}' not in closed set (${C1_ARTIFACT_TYPES.join(" | ")})`);
+  }
+  if (typeof fm.verdict === "string" && !(C1_VERDICTS as readonly string[]).includes(fm.verdict)) {
+    problems.push(`verdict '${fm.verdict}' not in closed set (${C1_VERDICTS.join(" | ")})`);
+  }
+  return problems.length > 0 ? problems : null;
+}
+
+// OPR.0.4.4.23 — markdown H2-section helpers for the convention-section
+// advisories. Headings are literals owned by this file ("Intent",
+// "Proof contract", "Intent visual") — no user input reaches the regex.
+function hasH2(content: string, heading: string): boolean {
+  return new RegExp(`^##\\s+${heading}\\s*$`, "m").test(content);
+}
+
+function h2Body(content: string, heading: string): string | null {
+  const match = new RegExp(`^##\\s+${heading}\\s*$`, "m").exec(content);
+  if (!match) return null;
+  const rest = content.slice(match.index + match[0].length);
+  const next = rest.search(/^##\s+/m);
+  return next === -1 ? rest : rest.slice(0, next);
 }
 
 // A mission is ACTIVE unless its status names a terminal / archived state.
@@ -262,6 +358,115 @@ export function classifyScopeItem(input: ScopeAuditInput): ScopeAuditResult {
         message: "Slice is done/proven but does not have complete root PROOF.md plus populated proof/ artifacts.",
         remediation: "Add PROOF.md at the slice root and put verification artifacts under proof/ per the slice-closeout SOP.",
       });
+    }
+
+    // OPR.0.4.4.19 FR-10 (C1 backstop) — flag proof/ artifacts missing the
+    // C1 header or carrying out-of-set values. The backstop catches what
+    // bypassed the drop path (raw file writes are never gated at write
+    // time; this is where they surface).
+    for (const artifact of input.proofArtifacts ?? []) {
+      const problems = c1ArtifactProblems(artifact.frontmatterRaw);
+      if (problems) {
+        findings.push({
+          kind: "proof_artifact_c1_invalid",
+          severity: "medium",
+          path: artifact.path,
+          message: `Proof artifact violates the C1 header contract: ${problems.join("; ")}.`,
+          remediation: `Re-drop via: rig proof add <slice> --artifact-type <${C1_ARTIFACT_TYPES.join("|")}> --verdict <${C1_VERDICTS.join("|")}> --candidate-sha <sha> --money-evidence "<line>" — or add the missing frontmatter fields in place.`,
+        });
+      }
+    }
+
+    // OPR.0.4.4.19 FR-10 (C7 backstop) — a specced/building-or-later slice
+    // must carry IMPLEMENTATION-PRD.md (the pinned expected filename) at its
+    // root. Status-gated: shaping is not a violation. Inert when the caller
+    // provided no fs context (implementationPrdExists undefined).
+    if (input.implementationPrdExists === false && statusRequiresSpec(status)) {
+      findings.push({
+        kind: "missing_impl_prd",
+        severity: "medium",
+        path: childPath(input.path, "IMPLEMENTATION-PRD.md"),
+        message: `Slice status "${status}" implies specced/building but there is no IMPLEMENTATION-PRD.md at the slice root (C7: no build without a specifying doc).`,
+        remediation: "Author (or relocate) the slice's IMPLEMENTATION-PRD.md at the slice root — the pinned C7 filename — before building continues.",
+      });
+    }
+
+    // OPR.0.4.4.23 — SDLC convention-section advisories (SSOT:
+    // docs/reference/sdlc-conventions.md). Structurally fail-open: the
+    // audit command flips its exit code on HIGH findings only, and these
+    // are low/info by construction — they record and advise, never gate.
+    // Inert when the caller provided no content context (undefined inputs).
+    if (typeof input.readmeContent === "string" && !hasH2(input.readmeContent, "Intent")) {
+      findings.push({
+        kind: "missing_intent_section",
+        severity: "low",
+        path: childPath(input.path, "README.md"),
+        message: "Slice README has no `## Intent` section, so the Living Notes UI cannot project its INTENT section.",
+        remediation: "Add `## Intent` carrying the recorded intent verbatim (conventions SSOT: docs/reference/sdlc-conventions.md; `rig scope slice create` scaffolds it).",
+      });
+    }
+
+    const contractSource = typeof input.implementationPrdContent === "string"
+      ? { content: input.implementationPrdContent, path: childPath(input.path, "IMPLEMENTATION-PRD.md") }
+      : typeof input.readmeContent === "string"
+        ? { content: input.readmeContent, path: childPath(input.path, "README.md") }
+        : null;
+    if (contractSource) {
+      // OPR.0.4.4.23 rev1-r2 B1 (PRD L34 guard F-3): well-formed
+      // `## Mini-requirements` — the PLAN leg of the Living Notes
+      // projection. Same source-selection policy as the proof contract
+      // (PRD preferred, README fallback). Well-formed = the heading plus
+      // at least one numbered list item; a heading over prose-only is
+      // malformed (no usable requirements projection).
+      const miniBody = h2Body(contractSource.content, "Mini-requirements");
+      const hasNumberedItem = miniBody !== null && /^\s*\d+\.\s+\S/m.test(miniBody);
+      if (!hasNumberedItem) {
+        findings.push({
+          kind: "mini_requirements_missing_or_malformed",
+          severity: "low",
+          path: contractSource.path,
+          message: miniBody === null
+            ? "No `## Mini-requirements` section — the Living Notes PLAN section has no concise requirements tier to project."
+            : "`## Mini-requirements` carries no numbered items (`1. …`) — the one-glance requirement tier is where approval starts.",
+          remediation: "Add `## Mini-requirements` with a numbered list of observable outcomes (conventions SSOT: docs/reference/sdlc-conventions.md; for a small slice this may BE the whole PRD).",
+        });
+      }
+
+      const contractBody = h2Body(contractSource.content, "Proof contract");
+      const hasCheckboxItem = contractBody !== null && /^\s*-\s*\[[ xX]\]/m.test(contractBody);
+      if (!hasCheckboxItem) {
+        findings.push({
+          kind: "proof_contract_missing_or_malformed",
+          severity: "low",
+          path: contractSource.path,
+          message: contractBody === null
+            ? "No `## Proof contract` section — the DELIVERED pairing has no promised-deliverables source to join proof against."
+            : "`## Proof contract` carries no checkbox deliverables (`- [ ] …`) — the DELIVERED pairing joins proof against those items.",
+          remediation: "Add `## Proof contract` with one checkbox line per promised deliverable, written as an observable outcome (conventions SSOT: docs/reference/sdlc-conventions.md).",
+        });
+      }
+
+      if (typeof input.readmeContent === "string") {
+        const visualBody = h2Body(input.readmeContent, "Intent visual");
+        const isUiSlice = visualBody !== null && !/\bN\/A\b/i.test(visualBody);
+        // rev1-r2 B2: a mockup is PRESENT only via a real markdown
+        // image/media ref in `## Intent visual` or an explicit plannedRef
+        // token in the proof contract. Generic prose containing the word
+        // "mockup" (the scaffold placeholder says "name their planned
+        // mockup") is NOT a reference and must not suppress the advisory.
+        const hasMockupRef = /!\[/.test(visualBody ?? "")
+          || /plannedRef/i.test(contractBody ?? "")
+          || /!\[/.test(contractBody ?? "");
+        if (isUiSlice && !hasMockupRef) {
+          findings.push({
+            kind: "ui_slice_missing_mockup",
+            severity: "info",
+            path: childPath(input.path, "README.md"),
+            message: "Slice declares an Intent visual (UI slice) but no mockup reference is present — a UI slice with no mockup in its locked set is an incomplete plan.",
+            remediation: "Attach the planned mockup: an image ref in `## Intent visual` or a plannedRef on the proof-contract deliverable (conventions SSOT: docs/reference/sdlc-conventions.md §3).",
+          });
+        }
+      }
     }
 
     // committed-without-PROGRESS. Fires only on POSITIVE evidence: the most

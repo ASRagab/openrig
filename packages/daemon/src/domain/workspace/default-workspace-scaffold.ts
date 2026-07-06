@@ -70,7 +70,10 @@ export function workspaceScaffoldDirs(): string[] {
     ...DEFAULT_MISSIONS.flatMap((mission) => [
       `missions/${mission.id}`,
       `missions/${mission.id}/slices`,
-      ...mission.slices.map((slice) => `missions/${mission.id}/slices/${slice.id}`),
+      ...mission.slices.flatMap((slice) => [
+        `missions/${mission.id}/slices/${slice.id}`,
+        `missions/${mission.id}/slices/${slice.id}/proof`,
+      ]),
     ]),
   ];
 }
@@ -196,7 +199,17 @@ slice: ${slice.id}
 
 # ${slice.title}
 
+## Intent
+
 ${slice.objective}
+
+## Mini-requirements
+
+1. The work is visible in the Project slice and its queue items link back to \`${slice.id}\`.
+
+## Proof contract
+
+- [ ] The work is visible in the Project slice — captured (see IMPLEMENTATION-PRD.md).
 
 ## Queue Mapping
 
@@ -241,6 +254,33 @@ slice: ${slice.id}
 `;
 }
 
+function sliceProof(slice: DefaultSlice): string {
+  return `# PROOF — ${slice.dotId} ${slice.title}
+
+> **WHO/WHEN:** the impl/QA pair that worked the slice, at slice-close — a slice is NOT done until this file exists and every proof-contract item has evidence (mapped 1:1, artifacts under \`proof/\`). See the \`mission-slice-sop\` skill + the conventions SSOT (\`docs/reference/sdlc-conventions.md\`).
+>
+> **HOW (the drop verb, not hand-placement):** put media files under \`proof/\`, then ATTACH them with \`rig proof add ${slice.dotId} --artifact-type qa --verdict PASS --candidate-sha <tip> --money-evidence "<one line>" --evidences "1" --media "screenshot-01.png"\` — the drop writes the C1 header the Living Notes DELIVERED pairing joins on. Hand-placing files without a drop leaves the deliverable unpaired and \`unverified\`.
+
+Closed by: <seat>   Date: <date>   Verdict: <pass | pass-with-residue | ...>
+
+## What this proves
+
+<1-3 sentences: the claim the slice made, now demonstrated>
+
+## Artifacts (media in proof/)
+
+Dropped via \`rig proof add … --evidences … --media …\` (one drop per verdict; media attached, never only hand-listed):
+
+- proof/screenshot-01.png — <what it shows>
+- proof/capture-behavior.gif — <what it shows>
+- proof/command-output.txt — <what it proves>
+
+## Residue / caveats (if any)
+
+<documented residue: what's not covered + where it's tracked>
+`;
+}
+
 function slicePrd(mission: DefaultMission, slice: DefaultSlice): string {
   return `---
 title: ${slice.title} Implementation Notes
@@ -252,15 +292,21 @@ slice: ${slice.id}
 
 # ${slice.title} Implementation Notes
 
-## Goal
+## Intent
 
 ${slice.objective}
 
-## Acceptance
+## Mini-requirements
 
-- [ ] The work is visible in the Project slice.
+1. The work is visible in the Project slice and its queue items link back to \`${slice.id}\`.
+
+## Proof contract
+
+- [ ] The work is visible in the Project slice — captured.
 - [ ] Queue items include enough body or tag context to link back to \`${slice.id}\`.
-- [ ] Any proof artifacts are referenced from the slice before closure.
+- [ ] Proof artifacts are referenced from the slice before closure (drop via \`rig proof add\`).
+
+> Conventions SSOT: \`docs/reference/sdlc-conventions.md\` — section names, proof-contract format, the two locks, C1 headers. For a small slice the mini-requirements may BE the whole PRD.
 `;
 }
 
@@ -463,6 +509,7 @@ export function workspaceScaffoldFiles(): Array<{ relPath: string; content: stri
       files.push(
         { relPath: `missions/${mission.id}/slices/${slice.id}/README.md`, content: sliceReadme(mission, slice) },
         { relPath: `missions/${mission.id}/slices/${slice.id}/PROGRESS.md`, content: sliceProgress(mission, slice) },
+        { relPath: `missions/${mission.id}/slices/${slice.id}/PROOF.md`, content: sliceProof(slice) },
         { relPath: `missions/${mission.id}/slices/${slice.id}/IMPLEMENTATION-PRD.md`, content: slicePrd(mission, slice) },
       );
       // V0.3.1 slice 21: getting-started slices ship a timeline.md

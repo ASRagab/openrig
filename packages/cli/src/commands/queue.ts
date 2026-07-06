@@ -214,6 +214,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--id <qitemId>", "Idempotent qitem_id (skip if not provided)")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
     .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary of the work (feeds the Story node label; the agent-speak --body stays the source of truth). Warned-if-missing; pre-18 qitems exempt.")
+    .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--no-nudge", "Suppress the default destination nudge (cold-queue)")
     .option("--json", "JSON output for agents")
     .action(async (opts: {
@@ -231,6 +232,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       id?: string;
       targetRepo?: string;
       summary?: string;
+      evidenceRef?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
@@ -277,6 +279,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           destinationSession: opts.destination,
           body: resolvedBody,
           summary: opts.summary,
+          evidenceRef: opts.evidenceRef,
           priority: opts.priority,
           tier: opts.tier,
           tags,
@@ -331,6 +334,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .requiredOption("--state <state>", "New state: pending | in-progress | done | blocked | failed | denied | canceled | handed-off")
     .option("--closure-reason <reason>", "Required for state=done")
     .option("--closure-target <target>", "Required for handed_off_to, blocked_on, escalation")
+    .option("--blocked-on <blocker>", "For state=blocked: the blocker (a qitem id, or a human seat for the OPR.0.4.4.19 FR-6 park — human parks require summary + evidence_ref on the item)")
+    .option("--summary <text>", "OPR.0.4.4.19 FR-6: park-time summary persisted onto the item (human-seat parks only)")
+    .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-6: park-time durable-artifact pointer persisted onto the item (human-seat parks only)")
     .option("--note <text>", "Transition note for the audit log")
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
@@ -338,6 +344,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       state: string;
       closureReason?: string;
       closureTarget?: string;
+      blockedOn?: string;
+      summary?: string;
+      evidenceRef?: string;
       note?: string;
       json?: boolean;
     }) => {
@@ -350,8 +359,92 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           state: opts.state,
           closureReason: opts.closureReason,
           closureTarget: opts.closureTarget,
+          blockedOn: opts.blockedOn,
+          summary: opts.summary,
+          evidenceRef: opts.evidenceRef,
           transitionNote: opts.note,
         });
+        printResult(opts.json ?? false, res.data, res.status);
+      });
+    });
+
+  // OPR.0.4.4.19 FR-6 — the first-class park affordance (C5 leg 1). One verb,
+  // both blocker kinds: --on takes a qitem id (today's shipped blocked-on
+  // usage, nothing new required) or a human-seat session (the leg-1 park —
+  // summary + evidence_ref enforced by the daemon validator). A THIN client
+  // of the same update write path — enforcement lives in the daemon domain
+  // layer, never verb-only. The park is NON-TERMINAL: the owner keeps the
+  // potato and no closure_reason is involved.
+  cmd
+    .command("block <qitemId>")
+    .description("Park a qitem as state=blocked on a blocker (qitem id, or a human seat for a needs-human park). Non-terminal: the owner keeps the item; resolution returns to it (rig queue resolve).")
+    .requiredOption("--on <blocker>", "The blocker: a qitem id, or a human-seat session (e.g. human-review@kernel) for the needs-human park")
+    .option("--actor <session>", "Acting session (defaults to OPENRIG_SESSION_NAME)")
+    .option("--summary <text>", "Plain-language summary of the decision owed (required for human-seat parks unless already on the item)")
+    .option("--evidence-ref <path>", "Durable artifact the human judges (required for human-seat parks unless already on the item)")
+    .option("--note <text>", "Transition note for the audit log")
+    .option("--json", "JSON output for agents")
+    .action(async (qitemId: string, opts: {
+      on: string;
+      actor?: string;
+      summary?: string;
+      evidenceRef?: string;
+      note?: string;
+      json?: boolean;
+    }) => {
+      const actor = resolveCurrentSession(opts.actor, "actor");
+      if (!actor) return;
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/update`, {
+          actorSession: actor,
+          state: "blocked",
+          blockedOn: opts.on,
+          summary: opts.summary,
+          evidenceRef: opts.evidenceRef,
+          transitionNote: opts.note ?? `parked on ${opts.on}`,
+        });
+        printResult(opts.json ?? false, res.data, res.status);
+      });
+    });
+
+  // OPR.0.4.4.19 FR-7 — the resolve verb's CLI wrapper: a THIN client of the
+  // ONE write path (POST /api/mission-control/action, verb=resolve). Exists
+  // so proof walks and the relay session are scriptable before the Packet-2
+  // surface ships; the founder's path is the surface/feed card invoking the
+  // same endpoint. Resolution returns to the PARKED OWNER (blocked →
+  // in-progress on the SAME item) — never a closure, never a new owner.
+  cmd
+    .command("resolve <qitemId>")
+    .description("Resolve a leg-1 parked qitem (state=blocked on a human seat): records the decision text durably in queue_transitions, unparks blocked -> in-progress, and nudges the owner. Non-closure.")
+    .requiredOption("--decision <text>", "The human's decision text (non-empty; lands in transition_note + the audit row)")
+    .option("--actor <session>", "Resolving session (defaults to OPENRIG_SESSION_NAME)")
+    .option("--bearer <token>", "Operator bearer token for the mission-control write gate (or set OPENRIG_AUTH_BEARER_TOKEN; loopback daemons without a configured bearer need none)")
+    .option("--no-notify", "Skip the best-effort owner nudge (the unpark still commits)")
+    .option("--json", "JSON output for agents")
+    .action(async (qitemId: string, opts: {
+      decision: string;
+      actor?: string;
+      bearer?: string;
+      notify?: boolean;
+      json?: boolean;
+    }) => {
+      const actor = resolveCurrentSession(opts.actor, "actor");
+      if (!actor) return;
+      const deps = getDeps();
+      const bearer = opts.bearer ?? process.env.OPENRIG_AUTH_BEARER_TOKEN;
+      await withClient(deps, async (client) => {
+        const res = await client.post<unknown>(
+          "/api/mission-control/action",
+          {
+            verb: "resolve",
+            qitemId,
+            actorSession: actor,
+            decision: opts.decision,
+            notify: opts.notify,
+          },
+          bearer ? { headers: { Authorization: `Bearer ${bearer}` } } : undefined,
+        );
         printResult(opts.json ?? false, res.data, res.status);
       });
     });
@@ -369,6 +462,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--gate <role>", "OPR.0.4.3.16: mark the new qitem as gate work; translated to a gate:<role> tag (e.g. guard | spec-review). The idle-gate watchdog reads this predicate. Composes with --tags.")
     .option("--target-repo <name>", "PL-007: typed repo scope for the new qitem")
     .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary for the new qitem (feeds the Story node; --body stays source of truth). Warned-if-missing.")
+    .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: durable-artifact pointer for the new qitem. Required by the daemon when the new qitem is human-routed; optional otherwise.")
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
@@ -382,6 +476,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       gate?: string;
       targetRepo?: string;
       summary?: string;
+      evidenceRef?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
@@ -410,6 +505,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           toSession: opts.to,
           body: opts.body,
           summary: opts.summary,
+          evidenceRef: opts.evidenceRef,
           transitionNote: opts.note,
           priority: opts.priority,
           tier: opts.tier,
@@ -436,6 +532,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--gate <role>", "OPR.0.4.3.16: mark the new qitem as gate work; translated to a gate:<role> tag (e.g. guard | spec-review). The idle-gate watchdog reads this predicate. Composes with --tags.")
     .option("--target-repo <name>", "PL-007: typed repo scope for the new qitem")
     .option("--summary <text>", "OPR.0.4.1.18: short human-readable 1-2 sentence summary for the new qitem (feeds the Story node; --body stays source of truth). Warned-if-missing.")
+    .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: durable-artifact pointer for the new qitem. Required by the daemon when the new qitem is human-routed; optional otherwise.")
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
@@ -449,6 +546,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       gate?: string;
       targetRepo?: string;
       summary?: string;
+      evidenceRef?: string;
       nudge?: boolean;
       json?: boolean;
     }) => {
@@ -477,6 +575,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           toSession: opts.to,
           body: opts.body,
           summary: opts.summary,
+          evidenceRef: opts.evidenceRef,
           transitionNote: opts.note,
           priority: opts.priority,
           tier: opts.tier,

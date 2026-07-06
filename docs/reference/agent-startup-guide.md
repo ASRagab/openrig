@@ -311,7 +311,7 @@ This prompts the agent to actually invoke the skills, not just have them as pass
 ## System Check
 
 After identity recovery, verify:
-1. `rig ps --nodes` shows your rig running
+1. `rig ps --nodes` shows your rig running (scoped to your session's rig by default; outside a managed session name it explicitly: `rig ps --nodes --rig <name>`)
 2. `rig env status` shows services healthy (if applicable)
 3. Your working directory is correct
 4. Required tools are available (node, npm, git, etc.)

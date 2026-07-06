@@ -237,9 +237,9 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
     expect(img.getAttribute("src")).toContain("/api/slices/idea-ledger-triage-ideas-cycle-4/proof-asset/");
   });
 
-  it("renders approve, deny, and route actions for actionable human queue cards", async () => {
+  it("renders bare APPROVE + CHAT for actionable human queue cards (corrective \u00a77.1)", async () => {
     const card = makeCard();
-    const { findAllByText, findByTestId, findByText, queryByTestId } = renderWithRouterAndQuery(
+    const { findAllByText, findByTestId, queryByText, queryByTestId } = renderWithRouterAndQuery(
       <FeedCard
         card={card}
         queueItem={{
@@ -257,12 +257,18 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
       />,
     );
 
+    // CORRECTIVE §7.1 (founder N-1, 2026-07-05 + guard fixback 2026-07-06):
+    // the actionable card renders bare APPROVE + CHAT only. "Your turn" and
+    // "Choose response" chrome are GONE; deny/route are retired from the
+    // surface; the kind tag is the status label "Action required".
     expect(await findByTestId(`feed-card-actions-${card.id}`)).toBeTruthy();
-    expect((await findAllByText("Your turn")).length).toBeGreaterThanOrEqual(2);
-    expect(await findByText("Choose response")).toBeTruthy();
+    expect((await findAllByText("Action required")).length).toBeGreaterThanOrEqual(1);
+    expect(queryByText("Your turn")).toBeNull();
+    expect(queryByText("Choose response")).toBeNull();
     expect(await findByTestId("mc-verb-approve")).toBeTruthy();
-    expect(await findByTestId("mc-verb-deny")).toBeTruthy();
-    expect(await findByTestId("mc-verb-route")).toBeTruthy();
+    expect(await findByTestId(`feed-card-chat-${card.id}`)).toBeTruthy();
+    expect(queryByTestId("mc-verb-deny")).toBeNull();
+    expect(queryByTestId("mc-verb-route")).toBeNull();
     expect(queryByTestId("mc-verb-handoff")).toBeNull();
   });
 

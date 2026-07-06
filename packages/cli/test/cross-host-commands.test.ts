@@ -327,11 +327,11 @@ describe("ps --host (cross-host short-circuit)", () => {
       },
     }));
     await cmd.parseAsync([
-      "--host", "vm-a", "--nodes", "--full", "--limit", "20",
-      "--fields", "rigName,status", "--summary", "--filter", "status=running", "--json",
+      "--host", "vm-a", "--nodes", "-A", "--full", "--limit", "20",
+      "--fields", "rigName,sessionStatus", "--summary", "--filter", "status=running", "--json",
     ], { from: "user" });
     expect(captureCalls.argv).toEqual([
-      "rig", "ps", "--nodes", "--full", "--limit", "20", "--fields", "rigName,status",
+      "rig", "ps", "--nodes", "--full", "--all-rigs", "--limit", "20", "--fields", "rigName,sessionStatus",
       "--summary", "--filter", "status=running", "--json",
     ]);
   });

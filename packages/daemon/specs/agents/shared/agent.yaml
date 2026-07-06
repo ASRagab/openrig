@@ -26,6 +26,8 @@ resources:
       path: skills/core/openrig-architect
     - id: rig-lifecycle
       path: skills/core/rig-lifecycle
+    - id: mission-slice-sop
+      path: skills/core/mission-slice-sop
     - id: systematic-debugging
       path: skills/process/systematic-debugging
     - id: test-driven-development

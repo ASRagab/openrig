@@ -13,6 +13,9 @@ function constantTimeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+const MAX_EARLY_TERMINAL_FRAMES = 32;
+const MAX_EARLY_TERMINAL_FRAME_BYTES = 256 * 1024;
+
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: Parameters<typeof import("@hono/node-ws").createNodeWebSocket>[0] extends { app: infer _A } ? never : never,
@@ -76,6 +79,33 @@ export function registerTerminalWs(
       // and skip detach, leaving a phantom subscriber + a leaked pipe once attach
       // finally resolves. The flag lets onOpen re-detach after the fact.
       let closed = false;
+      // A client is allowed to send the moment its ws.onopen fires (the CHAT
+      // initialText frame does exactly that — OPR.0.4.4.20 delta-C), which can
+      // land here while onOpen is still awaiting attach. Buffer those frames and
+      // drain them once the broker resolves; dropping them loses the one
+      // pre-populated CHAT frame every time attach is slower than the client.
+      const earlyFrames: string[] = [];
+      let earlyFrameBytes = 0;
+
+      const handleFrame = async (data: string): Promise<void> => {
+        if (!broker) return;
+        try {
+          const msg = JSON.parse(data) as Record<string, unknown>;
+          if (msg.type === "keys" && Array.isArray(msg.keys)) {
+            await broker.input({ type: "keys", keys: msg.keys as string[] });
+          } else if (msg.type === "text" && typeof msg.text === "string") {
+            await broker.input({ type: "text", text: msg.text });
+          } else if (msg.type === "scroll" && typeof msg.offset === "number") {
+            // OPR.0.4.0.39: per-subscriber scroll-back (tmux capture-pane window).
+            // offset = lines above the live bottom; 0 = live. Per-connection so each
+            // viewer scrolls independently (read-only on the shared pane).
+            if (subscriber) await broker.scroll(subscriber, msg.offset);
+          }
+          // FR-7: there is intentionally NO resize branch. The broker owns the
+          // fixed canonical geometry; a client-driven resize is ignored so
+          // multiple viewers cannot shrink the shared pane.
+        } catch { /* ignore malformed frames */ }
+      };
 
       return {
         async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
@@ -92,29 +122,34 @@ export function registerTerminalWs(
           broker = b;
           // If the socket closed while attach was in flight, detach now so the
           // broker does not retain a dead subscriber (detach is idempotent).
-          if (closed) b.detach(sub);
+          if (closed) { b.detach(sub); return; }
+          // Drain any frames that arrived while attach was in flight, in order.
+          while (earlyFrames.length > 0 && !closed) {
+            const next = earlyFrames.shift()!;
+            earlyFrameBytes -= Buffer.byteLength(next, "utf8");
+            await handleFrame(next);
+          }
         },
 
-        async onMessage(evt: { data: unknown }, _ws: unknown) {
-          if (!broker || closed) return;
+        async onMessage(evt: { data: unknown }, ws: { close(code: number, reason: string): void }) {
+          if (closed) return;
           const data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
-          try {
-            const msg = JSON.parse(data) as Record<string, unknown>;
-            if (msg.type === "keys" && Array.isArray(msg.keys)) {
-              await broker.input({ type: "keys", keys: msg.keys as string[] });
-            } else if (msg.type === "text" && typeof msg.text === "string") {
-              await broker.input({ type: "text", text: msg.text });
-            } else if (msg.type === "scroll" && typeof msg.offset === "number") {
-              // OPR.0.4.0.39: per-subscriber scroll-back (tmux capture-pane window).
-              // offset = lines above the live bottom; 0 = live. Per-connection so each
-              // viewer scrolls independently (read-only on the shared pane).
-              if (subscriber) await broker.scroll(subscriber, msg.offset);
+          if (!broker) {
+            const bytes = Buffer.byteLength(data, "utf8");
+            if (
+              earlyFrames.length >= MAX_EARLY_TERMINAL_FRAMES
+              || earlyFrameBytes + bytes > MAX_EARLY_TERMINAL_FRAME_BYTES
+            ) {
+              closed = true;
+              try { ws.close(1009, "terminal input before ready exceeded buffer limit"); } catch { /* already closed */ }
+              return;
             }
-            // FR-7: there is intentionally NO resize branch. The broker owns the
-            // fixed canonical geometry; a client-driven resize is ignored so
-            // multiple viewers cannot shrink the shared pane.
-          } catch { /* ignore malformed frames */ }
+            earlyFrames.push(data);
+            earlyFrameBytes += bytes;
+            return;
+          }
+          await handleFrame(data);
         },
 
         async onClose() {

@@ -155,20 +155,20 @@ describe("SliceScopePage P5-2 tab content piping", () => {
     expect(await findByTestId("slice-scope-error")).toBeTruthy();
   });
 
-  it("default landing tab is 'overview' (slice 12 walk-item 1: README before metric grid); story tab still mounts TimelineTab when activated", async () => {
+  it("default landing tab is 'review' for P2 needs-you review; story tab still mounts TimelineTab when activated", async () => {
     const { container, findByTestId } = renderSliceScope({
       sliceId: "idea-ledger",
       detail: makeDetail(),
     });
     // ScopeShell mounts; project-tab-nav rendered.
     await findByTestId("project-tab-nav");
-    // V0.3.1 slice 12 walk-item 1 — default tab was changed from
-    // 'story' to 'overview' so the first thing the operator sees on
-    // a slice is its README (current step + readiness), not a metric
-    // grid. Test now reflects the deliberate landing-tab choice.
+    // OPR.0.4.4.20 FR-4 — P2 lands slices on Review first so NEEDS YOU
+    // and the phase-aware compare are the first visible surface.
+    const reviewTab = container.querySelector("[data-testid='project-tab-review']");
     const overviewTab = container.querySelector("[data-testid='project-tab-overview']");
     const storyTabBefore = container.querySelector("[data-testid='project-tab-story']");
-    expect(overviewTab?.getAttribute("data-active")).toBe("true");
+    expect(reviewTab?.getAttribute("data-active")).toBe("true");
+    expect(overviewTab?.getAttribute("data-active")).toBe("false");
     expect(storyTabBefore?.getAttribute("data-active")).toBe("false");
     // Clicking the story tab still activates the TimelineTab panel.
     fireEvent.click(storyTabBefore!);

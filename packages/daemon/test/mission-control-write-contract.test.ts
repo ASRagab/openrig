@@ -7,6 +7,8 @@ import { eventsSchema } from "../src/db/migrations/003_events.js";
 import { queueItemsSchema } from "../src/db/migrations/024_queue_items.js";
 import { queueTransitionsSchema } from "../src/db/migrations/025_queue_transitions.js";
 import { missionControlActionsSchema } from "../src/db/migrations/037_mission_control_actions.js";
+import { queueItemSummarySchema } from "../src/db/migrations/044_queue_item_summary.js";
+import { queueItemEvidenceRefSchema } from "../src/db/migrations/048_queue_item_evidence_ref.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
@@ -24,7 +26,15 @@ describe("MissionControlWriteContract (PL-005 Phase A; atomic 7-verb)", () => {
 
   beforeEach(() => {
     db = createDb();
-    migrate(db, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema, missionControlActionsSchema]);
+    migrate(db, [
+      coreSchema,
+      eventsSchema,
+      queueItemsSchema,
+      queueTransitionsSchema,
+      missionControlActionsSchema,
+      queueItemSummarySchema,
+      queueItemEvidenceRefSchema,
+    ]);
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     bus = new EventBus(db);
     queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
@@ -40,6 +50,8 @@ describe("MissionControlWriteContract (PL-005 Phase A; atomic 7-verb)", () => {
       destinationSession: "dst@rig",
       body: "test work",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     return created.qitemId;
   }
@@ -235,5 +247,153 @@ describe("MissionControlWriteContract (PL-005 Phase A; atomic 7-verb)", () => {
     expect(actionLog.countAll()).toBe(auditCountBefore);
     const queueCountAfter = db.prepare(`SELECT COUNT(*) AS n FROM queue_items`).get() as { n: number };
     expect(queueCountAfter.n).toBe(queueCountBefore.n);
+  });
+});
+
+// OPR.0.4.4.19 FR-7 — resolve + unpark (the packet's one genuine design cell).
+describe("resolve verb (OPR.0.4.4.19 FR-7)", () => {
+  let db: Database.Database;
+  let bus: EventBus;
+  let queueRepo: QueueRepository;
+  let actionLog: MissionControlActionLog;
+  let writeContract: MissionControlWriteContract;
+  let sentNudges: Array<{ session: string; text: string }>;
+  let failTransport: boolean;
+
+  beforeEach(() => {
+    db = createDb();
+    migrate(db, [coreSchema, eventsSchema, queueItemsSchema, queueTransitionsSchema, missionControlActionsSchema]);
+    db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
+    bus = new EventBus(db);
+    sentNudges = [];
+    failTransport = false;
+    queueRepo = new QueueRepository(db, bus, {
+      validateRig: () => true,
+      transport: {
+        send: async (session: string, text: string) => {
+          if (failTransport) throw new Error("transport down");
+          sentNudges.push({ session, text });
+          return { ok: true, verified: true };
+        },
+      },
+    });
+    actionLog = new MissionControlActionLog(db);
+    writeContract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo, actionLog });
+  });
+
+  afterEach(() => db.close());
+
+  async function parkedQitem(): Promise<string> {
+    const created = await queueRepo.create({
+      sourceSession: "orch@rig",
+      destinationSession: "driver@rig",
+      body: "build the thing",
+      nudge: false,
+    });
+    queueRepo.claim({ qitemId: created.qitemId, destinationSession: "driver@rig" });
+    queueRepo.update({
+      qitemId: created.qitemId,
+      actorSession: "driver@rig",
+      state: "blocked",
+      blockedOn: "human-review@kernel",
+      summary: "Which timing rule ships?",
+      evidenceRef: "missions/x/OPTIONS.md",
+    });
+    return created.qitemId;
+  }
+
+  it("happy path: one transaction — blocked->in-progress, decision in transition_note + actor, audit row, events, owner nudge with decision text; NON-CLOSURE", async () => {
+    const events: Array<{ type: string }> = [];
+    bus.subscribe((e) => events.push(e));
+    const qitemId = await parkedQitem();
+    const decision = "Ship it with the 2-regime rule; timing per option B";
+
+    const result = await writeContract.act({
+      verb: "resolve",
+      qitemId,
+      actorSession: "human-review@kernel",
+      decision,
+    });
+
+    const item = queueRepo.getById(qitemId)!;
+    // Rail 4: back to the parked owner; no ownership change, no closure.
+    expect(item.state).toBe("in-progress");
+    expect(item.destinationSession).toBe("driver@rig");
+    expect(item.closureReason).toBeNull();
+    // Rail 2: decision text queryable forever in the transition log.
+    const transitions = queueRepo.transitionLog.listForQitem(qitemId);
+    const resolveTransition = transitions.find((t) => t.transitionNote === decision);
+    expect(resolveTransition).toBeDefined();
+    expect(resolveTransition!.actorSession).toBe("human-review@kernel");
+    // Audit row (append-only) records the resolve.
+    const audits = actionLog.listForQitem(qitemId);
+    expect(audits.some((a) => a.actionVerb === "resolve" && a.reason === decision)).toBe(true);
+    // F-pre/P2 refresh contract: queue.updated emitted for the unpark.
+    expect(events.some((e) => e.type === "queue.updated")).toBe(true);
+    expect(events.some((e) => e.type === "mission_control.action_executed")).toBe(true);
+    // Owner nudge carries the decision text.
+    expect(sentNudges).toHaveLength(1);
+    expect(sentNudges[0]!.session).toBe("driver@rig");
+    expect(sentNudges[0]!.text).toContain(decision);
+    expect(result.createdQitemId).toBeNull(); // never a new potato
+  });
+
+  it("empty/whitespace decision text is rejected (enforcement symmetry)", async () => {
+    const qitemId = await parkedQitem();
+    await expect(
+      writeContract.act({ verb: "resolve", qitemId, actorSession: "human@kernel", decision: "   " })
+    ).rejects.toMatchObject({ code: "decision_required" });
+    await expect(
+      writeContract.act({ verb: "resolve", qitemId, actorSession: "human@kernel" })
+    ).rejects.toMatchObject({ code: "decision_required" });
+  });
+
+  it("resolve against a non-parked qitem is rejected naming the expected park shape", async () => {
+    const created = await queueRepo.create({
+      sourceSession: "a@rig", destinationSession: "b@rig", body: "x", nudge: false,
+    });
+    await expect(
+      writeContract.act({ verb: "resolve", qitemId: created.qitemId, actorSession: "human@kernel", decision: "d" })
+    ).rejects.toMatchObject({ code: "qitem_not_leg1_parked" });
+  });
+
+  it("resolve against a qitem blocked on ANOTHER QITEM is rejected (leg-1 shape only)", async () => {
+    const blocker = await queueRepo.create({ sourceSession: "a@rig", destinationSession: "b@rig", body: "blocker", nudge: false });
+    const item = await queueRepo.create({ sourceSession: "a@rig", destinationSession: "b@rig", body: "x", nudge: false });
+    queueRepo.update({ qitemId: item.qitemId, actorSession: "b@rig", state: "blocked", blockedOn: blocker.qitemId });
+    await expect(
+      writeContract.act({ verb: "resolve", qitemId: item.qitemId, actorSession: "human@kernel", decision: "d" })
+    ).rejects.toMatchObject({ code: "qitem_not_leg1_parked" });
+  });
+
+  it("idempotence: re-resolving an already-resolved item is a no-op error, not a double transition", async () => {
+    const qitemId = await parkedQitem();
+    await writeContract.act({ verb: "resolve", qitemId, actorSession: "human@kernel", decision: "first" });
+    const transitionsAfterFirst = queueRepo.transitionLog.listForQitem(qitemId).length;
+    await expect(
+      writeContract.act({ verb: "resolve", qitemId, actorSession: "human@kernel", decision: "second" })
+    ).rejects.toMatchObject({ code: "qitem_not_leg1_parked" });
+    expect(queueRepo.transitionLog.listForQitem(qitemId)).toHaveLength(transitionsAfterFirst);
+  });
+
+  it("BR-8: the resolve commits even when the owner nudge transport fails", async () => {
+    const qitemId = await parkedQitem();
+    failTransport = true;
+    const result = await writeContract.act({
+      verb: "resolve", qitemId, actorSession: "human@kernel", decision: "commit anyway",
+    });
+    expect(queueRepo.getById(qitemId)!.state).toBe("in-progress");
+    // Nudge outcome recorded via the existing last_nudge_* mechanics.
+    expect(queueRepo.getById(qitemId)!.lastNudgeResult).toMatch(/^failed:/);
+    expect(result.notifyAttempted).toBe(true);
+  });
+
+  it("the write contract has NO closure mapping for resolve: closure_reason stays null after resolve", async () => {
+    const qitemId = await parkedQitem();
+    await writeContract.act({ verb: "resolve", qitemId, actorSession: "human@kernel", decision: "d" });
+    const item = queueRepo.getById(qitemId)!;
+    expect(item.state).toBe("in-progress");
+    expect(item.closureReason).toBeNull();
+    expect(item.closureTarget).toBeNull();
   });
 });

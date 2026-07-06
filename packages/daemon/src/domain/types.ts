@@ -202,10 +202,13 @@ export type RigEvent =
   // Host-scoped; rigId is left null because items reference seats by string
   // (`<member>@<rig>`) and can cross rigs.
   | { type: "stream.emitted"; streamItemId: string; sourceSession: string; hintDestination: string | null; hintType: string | null; hintUrgency: string | null; interrupt: boolean }
-  | { type: "queue.created"; qitemId: string; sourceSession: string; destinationSession: string; priority: string; tier: string | null }
-  | { type: "queue.handed_off"; qitemId: string; fromSession: string; toSession: string; closureReason: "handed_off_to" }
-  | { type: "queue.claimed"; qitemId: string; destinationSession: string; claimedAt: string; closureRequiredAt: string | null }
-  | { type: "queue.unclaimed"; qitemId: string; destinationSession: string; reason: string }
+  // OPR.0.4.4.19 FR-1: every queue.* payload carries the qitem's summary
+  // (null for legacy/omitted — always present, never absent, so consumers
+  // can title feed cards without a second fetch).
+  | { type: "queue.created"; qitemId: string; sourceSession: string; destinationSession: string; priority: string; tier: string | null; summary: string | null }
+  | { type: "queue.handed_off"; qitemId: string; fromSession: string; toSession: string; closureReason: "handed_off_to"; summary: string | null }
+  | { type: "queue.claimed"; qitemId: string; destinationSession: string; claimedAt: string; closureRequiredAt: string | null; summary: string | null }
+  | { type: "queue.unclaimed"; qitemId: string; destinationSession: string; reason: string; summary: string | null }
   | { type: "qitem.fallback_routed"; qitemId: string; originalDestination: string; rerouteDestination: string; reason: string }
   | { type: "qitem.closure_overdue"; qitemId: string; destinationSession: string; closureRequiredAt: string; overdueSince: string }
   | { type: "inbox.absorbed"; inboxId: string; destinationSession: string; senderSession: string; promotedQitemId: string }
@@ -215,7 +218,7 @@ export type RigEvent =
   // closure transitions, etc.). Lets the view-event-bridge wake SSE
   // consumers on /api/views/:name/sse when ANY queue state mutation
   // changes a view result-set, not just create/handoff/claim/unclaim.
-  | { type: "queue.updated"; qitemId: string; fromState: string; toState: string; closureReason: string | null; closureTarget: string | null; actorSession: string }
+  | { type: "queue.updated"; qitemId: string; fromState: string; toState: string; closureReason: string | null; closureTarget: string | null; actorSession: string; summary: string | null }
   // Coordination primitive (PL-004 Phase B) — project (classifier) / view.
   // project.classified: emitted when a stream item is successfully projected.
   // classifier.lease_*: lifecycle of the daemon-enforced single-writer lease.

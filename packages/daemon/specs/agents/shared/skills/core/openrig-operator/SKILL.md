@@ -14,7 +14,7 @@ Use it when the problem may be the daemon, the shell/runtime surface, or stale h
 
 Use this skill when you see:
 - `rig whoami --json` returning partial identity
-- `rig ps --nodes --json` failing while some other `rig` commands still work
+- `rig ps --nodes -A --json` failing while some other `rig` commands still work
 - `Sent to ...` plus `Verified: no`
 - repeated unified-exec-process warnings
 - suspicion that stale helper processes are accumulating
@@ -28,13 +28,13 @@ Start with the minimum truthful operator read:
 ```bash
 rig whoami --json
 rig daemon status
-rig ps --nodes --json
+rig ps --nodes -A --json
 ```
 
 Interpret them together, not in isolation:
 - partial `whoami` can mean identity is inferable while daemon-backed surfaces are degraded
 - `daemon status` tells you whether the host daemon is up, not whether every seat can reach it cleanly
-- `ps --nodes --json` is the best machine-readable topology check when it works
+- `ps --nodes -A --json` is the best machine-readable fleet topology check when it works (v0.4.4: `--nodes` needs an explicit scope outside a managed session — `-A` for fleet, `--rig <name>` for one rig; the bare `rig ps` map is the cheap first glance)
 
 ## Verification Drift Vs Send Failure
 
@@ -104,7 +104,7 @@ If the warning or failure remains after stale-wrapper cleanup, re-check:
 
 ```bash
 rig daemon status
-rig ps --nodes --json
+rig ps --nodes -A --json
 ```
 
 If those remain healthy, the residual issue may still be in the host/tool/session layer rather than in OpenRig topology state.

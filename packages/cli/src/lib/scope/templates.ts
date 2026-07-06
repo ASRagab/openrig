@@ -72,6 +72,16 @@ export function renderSliceTemplate(kind: SliceTemplateKind, opts: RenderOpts): 
   return applyPlaceholders(raw, opts);
 }
 
+// OPR.0.4.4.23 — every scaffolded slice also gets an IMPLEMENTATION-PRD.md
+// skeleton (the convention sections + the elastic-middle header note), so a
+// fresh install authors what the Living Notes UI projects. One skeleton for
+// all SliceTemplateKind values; proportionality lives in the note, not in
+// kind-specific PRD shapes. Conventions SSOT: docs/reference/sdlc-conventions.md.
+export function renderImplementationPrdTemplate(opts: RenderOpts): string {
+  const raw = fs.readFileSync(resolveTemplate("implementation-prd.md"), "utf8");
+  return applyPlaceholders(raw, opts);
+}
+
 export function renderMissionTemplate(kind: MissionTemplateKind, opts: RenderOpts): string {
   const filename = kind === "release" ? "mission-release.md" : "mission-placeholder.md";
   const raw = fs.readFileSync(resolveTemplate(filename), "utf8");

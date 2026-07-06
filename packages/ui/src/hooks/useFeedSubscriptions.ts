@@ -54,6 +54,13 @@ function readBool(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+/** OPR.0.4.4.15 — a per-host consolidated-feed subscription (the G15-P1
+ *  dynamic key class, enumerated additively by the daemon config list). */
+export interface HostSubscription {
+  hostId: string;
+  enabled: boolean;
+}
+
 export interface UseFeedSubscriptionsResult {
   state: FeedSubscriptionState;
   /** Toggle a non-forced subscription. action_required is forced ON and
@@ -64,6 +71,13 @@ export interface UseFeedSubscriptionsResult {
    *  level's preset, writing ONLY the keys that change. action_required is
    *  floored ON and is never written. Presentation over the existing model. */
   setLevel: (level: FeedLevel) => void;
+  /** OPR.0.4.4.15 — persisted per-host consolidated-feed subscriptions. */
+  hostSubscriptions: HostSubscription[];
+  /** True when ≥1 remote host subscription is enabled (the aggregated-
+   *  polling switch — false = zero-config, today's wire untouched). */
+  anyRemoteEnabled: boolean;
+  /** Write one per-host subscription key (the dynamic class). */
+  setHostSubscription: (hostId: string, enabled: boolean) => void;
   /** True when the underlying setSetting mutation is in flight. */
   isMutating: boolean;
   /** True when the daemon does not expose /api/config (legacy v0.2.0). */
@@ -111,6 +125,18 @@ export function useFeedSubscriptions(): UseFeedSubscriptionsResult {
     });
   };
 
+  // OPR.0.4.4.15 — per-host consolidated-feed subscriptions (the dynamic
+  // key class). Enumerated additively by the daemon; absent/legacy daemons
+  // degrade to an empty list (zero-config = today's behavior exactly).
+  const hostSubscriptions: HostSubscription[] = data?.feedHostSubscriptions ?? [];
+  const anyRemoteEnabled = hostSubscriptions.some((h) => h.enabled);
+  const setHostSubscription = (hostId: string, enabled: boolean) => {
+    setSetting.mutate({
+      key: `feed.subscriptions.${hostId}.enabled` as Parameters<typeof setSetting.mutate>[0]["key"],
+      value: enabled ? "true" : "false",
+    });
+  };
+
   const setLevel = (level: FeedLevel) => {
     const target = levelToToggles(level);
     (Object.keys(TOGGLE_KEY_TO_CONFIG_KEY) as FeedSubscriptionToggleKey[]).forEach((key) => {
@@ -128,6 +154,9 @@ export function useFeedSubscriptions(): UseFeedSubscriptionsResult {
     state,
     toggle,
     setLevel,
+    hostSubscriptions,
+    anyRemoteEnabled,
+    setHostSubscription,
     isMutating: setSetting.isPending,
     unavailable,
   };

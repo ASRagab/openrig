@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
-import type { NodeLifecycleState, RigLifecycleState } from "./types.js";
+import type { AgentActivity, NodeInventoryEntry, NodeLifecycleState, RigLifecycleState } from "./types.js";
 import { getNodeInventory } from "./node-inventory.js";
 import { archiveWhereClause, type RigArchiveFilter } from "./rig-repository.js";
 import type { SeatActivityService } from "./seat-activity-service.js";
+import type { AgentActivityStore } from "./agent-activity-store.js";
 
 export interface PsEntry {
   rigId: string;
@@ -49,6 +50,35 @@ export interface PsEntry {
   periodicSnapshotIntervalSeconds: number;
   /** OPR.0.3.4.9 — count of auto-periodic snapshots for this rig. */
   autoPeriodicSnapshotCount: number;
+  /**
+   * OPR.0.4.4.21 — count of seats needing attention (additive field; the
+   * consolidated default's ATTENTION flag and the host rollup's "K need
+   * attention" both read it). A seat counts ONCE when ANY signal in
+   * `seatNeedsAttention` fires. Folded inside the same per-rig inventory
+   * pass as `lifecycleState` — no extra probes.
+   */
+  attentionCount: number;
+}
+
+/**
+ * OPR.0.4.4.21 — THE rig-rollup attention predicate (one predicate, one
+ * count; mirrors + extends the CLI's per-node `needsAttention`). A seat
+ * needs attention iff ANY of:
+ *   - lifecycle `attention_required`
+ *   - startup `attention_required`/`failed` — counted DIRECTLY from
+ *     startupStatus; `latestError` may legitimately be null here
+ *   - a live runtime hook reporting `needs_input` (stale hooks arrive as
+ *     `unknown` from the store and contribute nothing — never guessed)
+ *   - a held seat (`heldReason` present)
+ *   - a recorded startup error (`latestError` present)
+ */
+export function seatNeedsAttention(entry: NodeInventoryEntry, activity: AgentActivity | null): boolean {
+  return entry.lifecycleState === "attention_required"
+    || entry.startupStatus === "attention_required"
+    || entry.startupStatus === "failed"
+    || activity?.state === "needs_input"
+    || entry.heldReason != null
+    || entry.latestError != null;
 }
 
 /**
@@ -89,12 +119,17 @@ export function deriveRigLifecycleState(nodeStates: NodeLifecycleState[]): RigLi
 export class PsProjectionService {
   readonly db: Database.Database;
   private readonly seatActivity: SeatActivityService | null;
+  /** OPR.0.4.4.21 — synchronous hook-activity lookup for the attention
+   *  predicate's `needs_input` signal. Optional: absent → the signal
+   *  contributes false (honest degrade), never a guess. */
+  private readonly agentActivity: AgentActivityStore | null;
   private periodicSnapshotActive = false;
   private periodicSnapshotIntervalSeconds = 0;
 
-  constructor(deps: { db: Database.Database; seatActivity?: SeatActivityService }) {
+  constructor(deps: { db: Database.Database; seatActivity?: SeatActivityService; agentActivity?: AgentActivityStore }) {
     this.db = deps.db;
     this.seatActivity = deps.seatActivity ?? null;
+    this.agentActivity = deps.agentActivity ?? null;
   }
 
   setPeriodicSnapshotState(active: boolean, intervalSeconds: number): void {
@@ -171,6 +206,19 @@ export class PsProjectionService {
       // projection; never from tmux output.
       const hasWorkCount = countNodesWithPendingWork(this.db, r.rig_id);
 
+      // OPR.0.4.4.21 — attention fold, same inventory pass. Hook activity
+      // is a synchronous events lookup by session name (NodeInventoryEntry
+      // carries canonicalSessionName, not nodeId); `now` makes staleness
+      // honest (stale hooks come back `unknown` and contribute nothing).
+      let attentionCount = 0;
+      const nowDate = new Date(now);
+      for (const node of inventory) {
+        const activity = this.agentActivity && node.canonicalSessionName
+          ? this.agentActivity.getLatestForNode({ sessionName: node.canonicalSessionName, now: nowDate })
+          : null;
+        if (seatNeedsAttention(node, activity)) attentionCount++;
+      }
+
       return {
         rigId: r.rig_id,
         name: r.name,
@@ -188,6 +236,7 @@ export class PsProjectionService {
         periodicSnapshotActive: this.periodicSnapshotActive,
         periodicSnapshotIntervalSeconds: this.periodicSnapshotIntervalSeconds,
         autoPeriodicSnapshotCount: r.auto_periodic_count,
+        attentionCount,
       };
     });
   }

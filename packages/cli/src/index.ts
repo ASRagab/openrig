@@ -18,11 +18,13 @@ import { bindCommand } from "./commands/bind.js";
 import { adoptCommand, type AdoptDeps } from "./commands/adopt.js";
 import { bundleCommand } from "./commands/bundle.js";
 import { scopeCommand } from "./commands/scope.js";
+import { proofCommand } from "./commands/proof.js";
 import { upCommand } from "./commands/up.js";
 import { downCommand } from "./commands/down.js";
 import { archiveCommand } from "./commands/archive.js";
 import { unarchiveCommand } from "./commands/unarchive.js";
 import { psCommand } from "./commands/ps.js";
+import { hostCommand } from "./commands/host.js";
 import { mcpCommand } from "./commands/mcp.js";
 import { agentCommand, type AgentDeps } from "./commands/agent.js";
 import { rigCommand, type RigDeps } from "./commands/rig.js";
@@ -38,6 +40,7 @@ import { startCommand, type StartDeps } from "./commands/start.js";
 import { captureCommand } from "./commands/capture.js";
 import { broadcastCommand } from "./commands/broadcast.js";
 import { configCommand } from "./commands/config.js";
+import { fileCommand } from "./commands/file.js";
 import { preflightCommand } from "./commands/preflight.js";
 import { authCommand } from "./commands/auth.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -168,6 +171,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   // OPR.0.3.3.19 - rig archive affordance (soft, reversible; NOT a delete).
   program.addCommand(archiveCommand(depsOverride?.archiveDeps));
   program.addCommand(unarchiveCommand(depsOverride?.unarchiveDeps));
+  program.addCommand(hostCommand());
   program.addCommand(psCommand(depsOverride?.psDeps));
   program.addCommand(mcpCommand(depsOverride?.mcpDeps));
   program.addCommand(agentCommand(depsOverride?.agentDeps));
@@ -194,6 +198,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(rigPolicyCommand(depsOverride?.rigPolicyDeps));
   program.addCommand(whoamiCommand(depsOverride?.whoamiDeps));
   program.addCommand(configCommand(depsOverride?.configPath));
+  program.addCommand(fileCommand());
   program.addCommand(preflightCommand());
   program.addCommand(authCommand());
   program.addCommand(doctorCommand());
@@ -219,6 +224,8 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(startupProofCommand(depsOverride?.startupProofDeps));
   // release-0.3.2 slice 12 — rig scope CLI primitive.
   program.addCommand(scopeCommand());
+  // OPR.0.4.4.19 FR-8 — rig proof: the C1 proof-drop write path.
+  program.addCommand(proofCommand());
 
   return program;
 }

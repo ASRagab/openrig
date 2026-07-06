@@ -35,7 +35,8 @@ echo ""
 
 # 2. Node status
 echo "Step 2: Node status after boot..."
-rig ps --nodes 2>&1 | tee "$PROOF_DIR/ps-nodes.txt"
+# OPR.0.4.4.21: --nodes requires an explicit target outside a managed session.
+rig ps --nodes --rig "$RIG_ID" 2>&1 | tee "$PROOF_DIR/ps-nodes.txt"
 echo ""
 
 # 3. Health check after boot
@@ -95,7 +96,7 @@ echo ""
 
 # 10. Node status after restore
 echo "Step 10: Node status after restore..."
-rig ps --nodes 2>&1 | tee "$PROOF_DIR/ps-restored.txt"
+rig ps --nodes --rig "$RIG_ID" 2>&1 | tee "$PROOF_DIR/ps-restored.txt"
 echo ""
 
 echo "=== Automated proof artifacts produced ==="

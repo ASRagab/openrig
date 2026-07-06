@@ -10,6 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { Command } from "commander";
+import { DaemonClient } from "../client.js";
+import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
+import { realDeps } from "./daemon.js";
 
 import {
   CLOSE_REASONS,
@@ -49,6 +52,7 @@ import {
   updateFrontmatter,
 } from "../lib/scope/scope-fs.js";
 import {
+  renderImplementationPrdTemplate,
   renderMissionBriefTemplate,
   renderMissionNotesTemplate,
   renderMissionProgressTemplate,
@@ -255,7 +259,7 @@ function buildSliceShowCommand(): Command {
 
 function buildSliceCreateCommand(): Command {
   return new Command("create")
-    .description("Create a new slice in a mission")
+    .description("Create a new slice in a mission. Scaffolds the SDLC convention sections (## Intent / ## Mini-requirements / ## Proof contract) + proof/ + PROOF.md + IMPLEMENTATION-PRD.md for EVERY template kind — the shapes the Living Notes UI projects. Conventions SSOT: docs/reference/sdlc-conventions.md.")
     .argument("<mission>", "Mission name")
     .argument("<slug>", "Short slug (becomes the folder name's suffix)")
     .option("--template <kind>", `Template: ${SLICE_TEMPLATE_KINDS.join(" | ")}`, "placeholder")
@@ -311,6 +315,18 @@ function buildSliceCreateCommand(): Command {
           created_date: createdDate,
         });
         const proofBody = renderSliceProofTemplate({ id, title });
+        // OPR.0.4.4.23 — every template kind also scaffolds the
+        // IMPLEMENTATION-PRD skeleton (convention sections + elastic-middle
+        // note): the PRD is what the Living Notes UI's proof-contract join
+        // reads, so a slice without one doesn't project its DELIVERED pairing.
+        const prdBody = renderImplementationPrdTemplate({
+          id,
+          slice_number: pad2(nn),
+          slug,
+          mission: mission.name,
+          title,
+          created_date: createdDate,
+        });
         fs.mkdirSync(sliceAbs, { recursive: true });
         fs.mkdirSync(path.join(sliceAbs, "proof"), { recursive: true });
         const readmePath = path.join(sliceAbs, "README.md");
@@ -327,6 +343,7 @@ function buildSliceCreateCommand(): Command {
           fs.writeFileSync(progressPath, renderSliceProgressTemplate(title), "utf8");
         }
         fs.writeFileSync(path.join(sliceAbs, "PROOF.md"), proofBody, "utf8");
+        fs.writeFileSync(path.join(sliceAbs, "IMPLEMENTATION-PRD.md"), prdBody, "utf8");
         const payload = {
           ok: true,
           slice: {
@@ -883,7 +900,8 @@ function buildAuditCommand(): Command {
               continue;
             }
 
-            const sliceFm = extractFrontmatterRaw(fs.readFileSync(sliceReadme, "utf-8"));
+            const sliceReadmeContent = fs.readFileSync(sliceReadme, "utf-8");
+            const sliceFm = extractFrontmatterRaw(sliceReadmeContent);
             const readmeOnlyMarker = sliceFm !== null && /^progress_rail\s*:\s*readme-only/m.test(sliceFm);
 
             // committed-without-PROGRESS inputs (CLI-only; inert when git is
@@ -919,6 +937,14 @@ function buildAuditCommand(): Command {
               hasProofPacket: hasProofPacketForSlice(dogfoodEvidenceRoot, entry),
               sliceTouchedByRecentCommit,
               progressTouchedByRecentCommit,
+              // OPR.0.4.4.19 FR-10 backstop inputs.
+              proofArtifacts: listProofArtifactsForAudit(proofDir),
+              implementationPrdExists: fs.existsSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md")),
+              // OPR.0.4.4.23 convention-section advisory inputs.
+              readmeContent: sliceReadmeContent,
+              implementationPrdContent: fs.existsSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md"))
+                ? fs.readFileSync(path.join(sliceDir, "IMPLEMENTATION-PRD.md"), "utf-8")
+                : null,
             });
 
             if (!/^\d{2}-/.test(entry)) {
@@ -996,6 +1022,23 @@ function directoryHasEntries(dir: string): boolean {
 
 function defaultDogfoodEvidenceRoot(missionsRoot: string): string {
   return path.join(path.dirname(missionsRoot), "dogfood-evidence");
+}
+
+// OPR.0.4.4.19 FR-10 (C1 backstop input) — list the slice's proof/ markdown
+// artifacts with raw frontmatter. Media files are exempt by construction.
+// Undefined when the dir is absent/unreadable so the classifier stays inert.
+function listProofArtifactsForAudit(proofDir: string): Array<{ path: string; frontmatterRaw: string | null }> | undefined {
+  if (!fs.existsSync(proofDir)) return undefined;
+  try {
+    return fs.readdirSync(proofDir)
+      .filter((f) => f.toLowerCase().endsWith(".md"))
+      .map((f) => {
+        const artifactPath = path.join(proofDir, f);
+        return { path: artifactPath, frontmatterRaw: extractFrontmatterRaw(fs.readFileSync(artifactPath, "utf-8")) };
+      });
+  } catch {
+    return undefined;
+  }
 }
 
 function hasProofPacketForSlice(dogfoodEvidenceRoot: string, sliceName: string): boolean {
@@ -1538,6 +1581,107 @@ function buildMissionRepairCommand(): Command {
 }
 
 // ---------------------------------------------------------------------
+// Approve (OPR.0.4.4.19 FR-9)
+// ---------------------------------------------------------------------
+
+// `rig scope slice|mission approve` — a THIN client of the daemon's ONE
+// write path (POST /api/scope/approve): frontmatter stamp + append-only
+// audit row land together daemon-side (no half-stamp by construction).
+// STAGED: --scope spec ("the PRD matches my intent") | delivery (the
+// terminal sign-off + future freeze trigger); omitted = delivery.
+// DELEGATED: --on-behalf-of records whose decision this is in the audit
+// notes; the actor stays the REAL invoking session (honest provenance).
+// Two-regime rule (BR-6): approval is freeze/sign-off — NEVER proven-green.
+function buildApproveCommand(tier: "slice" | "mission"): Command {
+  return new Command("approve")
+    .description(
+      tier === "slice"
+        ? "Approve a slice: writes the frontmatter stamp + an append-only audit row (daemon-side, one operation). --scope spec = the PLAN-LOCK (PRD-matches-intent; this artifact set gets built); delivery (default) = the PROOF-LOCK (terminal sign-off). Approval is freeze/sign-off, never proven-green. Conventions SSOT: docs/reference/sdlc-conventions.md."
+        : "Approve a mission: same staged/delegated semantics as slice approve, at mission tier."
+    )
+    .argument(tier === "slice" ? "<slice-path>" : "<mission>", tier === "slice" ? "Slice path (absolute, relative, or NN-slug)" : "Mission name")
+    .option("--mission <name>", tier === "slice" ? "Hint mission when slice-path is just NN-slug" : "(unused at mission tier)")
+    .option("--scope <scope>", "Approval scope: spec | delivery (default delivery)")
+    .option("--actor <session>", "Approving session (defaults to OPENRIG_SESSION_NAME)")
+    .option("--on-behalf-of <human>", "Record the delegation: whose decision this stamp records (actor stays the real invoking session)")
+    .option("--json", "Machine-readable output")
+    .action(async (target: string, opts: {
+      mission?: string;
+      scope?: string;
+      actor?: string;
+      onBehalfOf?: string;
+      json?: boolean;
+    }, command: Command) => {
+      const out = makeStdout();
+      const json = Boolean(opts.json);
+      try {
+        if (opts.scope !== undefined && opts.scope !== "spec" && opts.scope !== "delivery") {
+          throw new ScopeCliError({
+            fact: `Unknown --scope value "${opts.scope}".`,
+            consequence: "Command did not run.",
+            action: "Pick one of: spec, delivery (omit for delivery).",
+          });
+        }
+        const actor = opts.actor ?? process.env.OPENRIG_SESSION_NAME;
+        if (!actor) {
+          throw new ScopeCliError({
+            fact: "No acting session: --actor not passed and OPENRIG_SESSION_NAME is unset.",
+            consequence: "The approval stamp requires honest actor provenance.",
+            action: "Pass --actor <session> or run from a managed seat.",
+          });
+        }
+        // Resolve the scope target LOCALLY (rich NN-slug resolution), then
+        // send the canonical missions-root-relative path to the daemon.
+        const missionsRoot = resolveMissionsRoot({ override: getOpts(command).workspace });
+        let scopeAbsPath: string;
+        if (tier === "slice") {
+          const slice = findSlice(missionsRoot, target, opts.mission ?? null);
+          scopeAbsPath = slice.absPath;
+        } else {
+          const mission = findMission(missionsRoot, target);
+          scopeAbsPath = mission.absPath;
+        }
+        const scopePath = path.relative(missionsRoot, scopeAbsPath).split(path.sep).join("/");
+
+        const lifecycleDeps = realDeps();
+        const status = await getDaemonStatus(lifecycleDeps);
+        if (status.state !== "running" || status.healthy === false) {
+          throw new ScopeCliError({
+            fact: "Daemon not running.",
+            consequence: "scope approve writes the stamp + audit row through the daemon (one operation).",
+            action: "Start it with: rig daemon start",
+          });
+        }
+        const client = new DaemonClient(getDaemonUrl(status));
+        const res = await client.post<Record<string, unknown>>("/api/scope/approve", {
+          scopeTier: tier,
+          scopePath,
+          approvalScope: opts.scope,
+          actorSession: actor,
+          onBehalfOf: opts.onBehalfOf ?? null,
+        });
+        if (res.status >= 400) {
+          const err = res.data as { error?: string; message?: string };
+          throw new ScopeCliError({
+            fact: `Approve failed (${err.error ?? res.status}): ${err.message ?? "unknown error"}.`,
+            consequence: "No stamp and no audit row were left behind (no half-stamp).",
+            action: err.error === "already_approved"
+              ? "The scope already carries this stamp; un-approve/re-approve is out of scope v1."
+              : "Fix the named issue and re-run.",
+          });
+        }
+        const data = res.data;
+        emit(out, { ok: true, ...data }, json, [
+          `Approved (${String(data.approvalScope)}) ${tier} ${String(data.scopeId)} — ${String(data.approvedBy)} at ${String(data.approvedAt)}${data.onBehalfOf ? ` on behalf of ${String(data.onBehalfOf)}` : ""}`,
+          `Audit action: ${String(data.actionId)} (scope_path=${String(data.scopePath)})`,
+        ]);
+      } catch (err) {
+        fail(err, json, out);
+      }
+    });
+}
+
+// ---------------------------------------------------------------------
 // Aggregate
 // ---------------------------------------------------------------------
 
@@ -1557,6 +1701,7 @@ export function scopeCommand(): Command {
   slice.addCommand(buildSliceRepairCommand());
   slice.addCommand(buildSliceStageCommand());
   slice.addCommand(buildSliceVerifiedCommand());
+  slice.addCommand(buildApproveCommand("slice"));
   cmd.addCommand(slice);
 
   const mission = new Command("mission").description("Mission-tier commands");
@@ -1567,6 +1712,7 @@ export function scopeCommand(): Command {
   mission.addCommand(buildMissionRepairCommand());
   mission.addCommand(buildMissionStageCommand());
   mission.addCommand(buildMissionVerifiedCommand());
+  mission.addCommand(buildApproveCommand("mission"));
   cmd.addCommand(mission);
   cmd.addCommand(buildAuditCommand());
 

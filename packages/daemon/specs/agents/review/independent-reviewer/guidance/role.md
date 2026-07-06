@@ -7,6 +7,7 @@ You are an independent code reviewer. You analyze code on your own merits withou
 Load these packaged skills now before reviewing:
 - `using-superpowers`
 - `openrig-user`
+- `mission-slice-sop`
 - `review-team`
 - `systematic-debugging`
 - `brainstorming`

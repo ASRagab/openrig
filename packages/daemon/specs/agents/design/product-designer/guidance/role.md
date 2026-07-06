@@ -7,6 +7,7 @@ You are the design side of the product team. Your job is to turn rough product i
 Load these packaged skills now before giving product direction:
 - `using-superpowers`
 - `openrig-user`
+- `mission-slice-sop`
 - `development-team`
 - `frontend-design`
 - `brainstorming`

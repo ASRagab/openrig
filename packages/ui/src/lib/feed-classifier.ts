@@ -24,6 +24,17 @@ export interface FeedCard {
   createdAt: string;
   // Original event for click-through to scope.
   source: ActivityEvent;
+  /** OPR.0.4.4.20 FR-9 win #2: the evidence_ref judge-this link, visible on
+   *  the card itself (rendering only; carried from the attention read path). */
+  evidenceRef?: string | null;
+  /** OPR.0.4.4.20 FR-9 win #1: living-notes deep link — the slice Review tab
+   *  anchored at this card's NEEDS-YOU item. Absent on non-living-notes cards
+   *  (their existing drill behavior is unchanged — additive routing). */
+  reviewSlice?: string | null;
+  reviewAnchor?: string | null;
+  /** OPR.0.4.4.15: origin host id on aggregated multi-host items ('local'
+   *  or a registered host id). Absent = local (zero-config unchanged). */
+  hostId?: string;
 }
 
 function asString(v: unknown): string | undefined {
@@ -90,14 +101,21 @@ function isQueueVisibilityEvent(type: string): boolean {
   );
 }
 
-function queueKind(type: string, state: string | undefined): FeedCardKind {
+function queueKind(type: string, state: string | undefined, tier: string | undefined): FeedCardKind {
   if (type.startsWith("queue.") && type.endsWith(".closed")) {
     return "shipped";
   }
   if (type === "qitem.closure_overdue" || type === "inbox.denied") {
     return "action-required";
   }
-  if (state === "human-gate" || state === "pending-approval") {
+  // OPR.0.4.4.19 FR-3: human-gate is a TIER value, never a state — the prior
+  // `state === "human-gate"` branch was dead (the state enum never contains
+  // it). The fixed branch classifies on tier, as an approval card (mirrors
+  // attention-feed.ts attentionKindFor + the mission-control read layer).
+  if (tier === "human-gate") {
+    return "approval";
+  }
+  if (state === "pending-approval") {
     return "action-required";
   }
   if (state === "closeout-pending-ratify") {
@@ -138,7 +156,9 @@ function queueBody(payload: Record<string, unknown>): string | undefined {
     .join("\n") || undefined;
 }
 
-function isHumanSeat(session: string | undefined): boolean {
+// OPR.0.4.4.19 FR-3: exported so Feed.tsx's card-kind hydration uses the same
+// strict human-seat predicate instead of a prefix guess.
+export function isHumanSeat(session: string | undefined): boolean {
   return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(session ?? "");
 }
 
@@ -180,7 +200,8 @@ function classifyEvent(evt: ActivityEvent): FeedCard | null {
       "destination",
     );
     const state = pickString(payload, "state", "toState");
-    const classifiedKind = queueKind(evt.type, state);
+    const tier = pickString(payload, "tier");
+    const classifiedKind = queueKind(evt.type, state, tier);
     const kind =
       classifiedKind === "approval"
         ? "approval"

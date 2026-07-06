@@ -375,6 +375,41 @@ function isValidKey(key: string): key is ValidKey {
   return (VALID_KEYS as readonly string[]).includes(key);
 }
 
+// ── OPR.0.4.4.15 (G15-P1) — TWIN of the daemon settings-store's ONE
+// registered dynamic key class: `feed.subscriptions.<hostId>.enabled`
+// (boolean; v1 per-host key set CLOSED to {enabled}; no env mapping).
+// Kept in lockstep with packages/daemon/src/domain/user-settings/
+// settings-store.ts — the parity test pins both twins (host-registry twin
+// discipline). Reserved segments cover key-level snake_case AND FILE-level
+// camelCase toggle names so no host id shadows a flat toggle at either
+// layer. Every other unknown key keeps the reject-loud behavior.
+const FEED_HOST_KEY_RE = /^feed\.subscriptions\.([A-Za-z0-9_-]+)\.enabled$/;
+export const FEED_HOST_RESERVED_SEGMENTS = new Set([
+  "action_required",
+  "actionRequired",
+  "approvals",
+  "shipped",
+  "progress",
+  "audit_log",
+  "auditLog",
+  "enabled",
+]);
+
+export function parseFeedHostSubscriptionKey(key: string): { hostId: string } | null {
+  const m = key.match(FEED_HOST_KEY_RE);
+  if (!m) return null;
+  const hostId = m[1]!;
+  if (FEED_HOST_RESERVED_SEGMENTS.has(hostId)) return null;
+  return { hostId };
+}
+
+function coerceFeedHostSubscriptionValue(key: string, raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  throw new Error(`Invalid value for ${key}: expected "true" or "false", got "${raw}"`);
+}
+
 function getNestedValue(obj: Record<string, unknown>, parts: string[]): unknown {
   let current: unknown = obj;
   for (const part of parts) {
@@ -657,6 +692,14 @@ export class ConfigStore {
    * default).
    */
   resolveWithSource(key: string): ResolvedSetting {
+    // OPR.0.4.4.15: dynamic class resolves file-or-default (no env in v1).
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (feedHost) {
+      const fcDyn = this.readConfigFile();
+      const fileVal = getNestedValue(fcDyn, ["feed", "subscriptions", feedHost.hostId, "enabled"]);
+      if (typeof fileVal === "boolean") return { value: fileVal, source: "file", defaultValue: false };
+      return { value: false, source: "default", defaultValue: false };
+    }
     if (!isValidKey(key)) {
       throw new Error(`Unknown config key "${key}". Valid keys: ${VALID_KEYS.join(", ")}`);
     }
@@ -722,6 +765,17 @@ export class ConfigStore {
   }
 
   set(key: string, value: string): void {
+    // OPR.0.4.4.15: the registered dynamic class is accepted; every other
+    // unknown key keeps the reject-loud behavior below byte-for-byte.
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (feedHost) {
+      const coercedDyn = coerceFeedHostSubscriptionValue(key, value);
+      const fcDyn = this.readConfigFile();
+      setNestedValue(fcDyn, ["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
+      mkdirSync(dirname(this.configPath), { recursive: true });
+      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
+      return;
+    }
     if (!isValidKey(key)) {
       throw new Error(`Unknown config key "${key}". Valid keys: ${VALID_KEYS.join(", ")}`);
     }
@@ -743,6 +797,16 @@ export class ConfigStore {
   reset(key?: string): void {
     if (key === undefined) {
       try { unlinkSync(this.configPath); } catch { /* missing is fine */ }
+      return;
+    }
+    // OPR.0.4.4.15: dynamic-class reset removes the whole host node.
+    const feedHost = parseFeedHostSubscriptionKey(key);
+    if (feedHost) {
+      if (!existsSync(this.configPath)) return;
+      const fcDyn = this.readConfigFile();
+      const subsParent = getNestedValue(fcDyn, ["feed", "subscriptions"]) as Record<string, unknown> | undefined;
+      if (subsParent && feedHost.hostId in subsParent) delete subsParent[feedHost.hostId];
+      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
       return;
     }
     if (!isValidKey(key)) {

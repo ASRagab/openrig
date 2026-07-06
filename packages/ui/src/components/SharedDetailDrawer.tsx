@@ -88,6 +88,9 @@ export function SharedDetailDrawer({
   return (
     <div
       data-testid="shared-detail-drawer-layer"
+      // CORRECTIVE §7.2 — the LEFT reinvention is REVERTED (founder 2026-07-05):
+      // back to the app-wide RIGHT edge, and the FR-11.1 z-bump comes out with
+      // it (the right edge never contended with the sidebar's opaque z-40).
       className="fixed top-14 right-0 bottom-0 left-0 z-30 pointer-events-none"
     >
       <button
@@ -98,6 +101,8 @@ export function SharedDetailDrawer({
         onPointerDown={onClose}
       />
       <VellumSheet
+        // CORRECTIVE §7.2 — the shared drawer is the app-wide RIGHT-edge sheet
+        // again (edge prop = border side; the anchor class below positions).
         edge="right"
         width="wide"
         onClose={onClose}

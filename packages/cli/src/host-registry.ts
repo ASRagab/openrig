@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { parse as parseYaml } from "yaml";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { getDefaultOpenRigPath } from "./openrig-compat.js";
 import type { FailedStep } from "./cross-host-types.js";
 
@@ -225,4 +226,50 @@ export function resolveHost(registry: HostRegistry, id: string): HostResolution 
     ok: false,
     error: `unknown host id '${id}'.${idsHint}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// OPR.0.4.4.13 FR-1 — the registry WRITE path (rig host add).
+//
+// ONE validation source: the candidate registry (existing entries + the new
+// raw entry) is validated by the SAME validateHostRegistry the loader uses —
+// add-time errors are load-time errors, verbatim (incl. duplicate ids,
+// transport-appropriate fields, exactly-one-bearer). The standard path never
+// hand-edits YAML; note: add REWRITES the file canonically (hand-authored
+// comments are not preserved — hand-editing remains the path for exotica).
+// ---------------------------------------------------------------------------
+
+export type AddHostResult =
+  | { ok: true; path: string; entry: HostEntry }
+  | { ok: false; error: string };
+
+export function addHostEntry(rawEntry: Record<string, unknown>, path: string = defaultHostRegistryPath()): AddHostResult {
+  // Load what exists; a MISSING file is a valid starting point for `add`
+  // (the verb exists so operators never hand-create the YAML), but a present-
+  // but-invalid file is a loud error — never silently clobber operator state.
+  let existing: HostEntry[] = [];
+  if (existsSync(path)) {
+    const loaded = loadHostRegistry(path);
+    if (!loaded.ok) {
+      return { ok: false, error: `refusing to modify an invalid registry: ${loaded.error}` };
+    }
+    existing = loaded.registry.hosts;
+  }
+
+  const candidate = { hosts: [...existing, rawEntry] };
+  const validated = validateHostRegistry(candidate, path);
+  if (!validated.ok) {
+    return { ok: false, error: validated.error };
+  }
+  const entry = validated.registry.hosts[validated.registry.hosts.length - 1]!;
+
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = join(dirname(path), `.hosts.yaml.tmp-${process.pid}`);
+    writeFileSync(tmp, stringifyYaml({ hosts: validated.registry.hosts }), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    return { ok: false, error: `failed to write host registry at ${path}: ${(err as Error).message}` };
+  }
+  return { ok: true, path, entry };
 }

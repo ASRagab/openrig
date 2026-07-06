@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { PsProjectionService, deriveRigLifecycleState } from "../src/domain/ps-projection.js";
+import { PsProjectionService, deriveRigLifecycleState, seatNeedsAttention } from "../src/domain/ps-projection.js";
+import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import { EventBus } from "../src/domain/event-bus.js";
+import type { AgentActivity, NodeInventoryEntry } from "../src/domain/types.js";
 
 describe("PsProjectionService", () => {
   let db: Database.Database;
@@ -444,6 +447,112 @@ describe("PsProjectionService", () => {
 
       const entries = ps.getEntries();
       expect(entries[0]!.hasWorkCount).toBe(1); // only the pending one counts
+    });
+  });
+
+  // OPR.0.4.4.21 — the rig-rollup attention predicate + fold (FR-1).
+  describe("OPR.0.4.4.21 — attentionCount (one predicate, one count per seat)", () => {
+    const baseEntry = (over: Partial<NodeInventoryEntry> = {}): NodeInventoryEntry => ({
+      rigId: "r", rigName: "r", nodeId: "n", logicalId: "dev",
+      canonicalSessionName: "dev@r",
+      sessionStatus: "running",
+      startupStatus: "ready",
+      lifecycleState: "running",
+      latestError: null,
+      heldReason: null,
+      ...over,
+    } as NodeInventoryEntry);
+
+    const idleActivity = (state: AgentActivity["state"]): AgentActivity => ({
+      state, reason: "test", evidenceSource: "runtime_hook",
+      sampledAt: new Date().toISOString(), fallback: false, stale: false,
+    } as AgentActivity);
+
+    it("counts each signal alone: lifecycle attention", () => {
+      expect(seatNeedsAttention(baseEntry({ lifecycleState: "attention_required" }), null)).toBe(true);
+    });
+    it("counts startup attention_required DIRECTLY from startupStatus", () => {
+      expect(seatNeedsAttention(baseEntry({ startupStatus: "attention_required" }), null)).toBe(true);
+    });
+    it("counts startup failed even when latestError is NULL (never a prerequisite)", () => {
+      expect(seatNeedsAttention(baseEntry({ startupStatus: "failed", latestError: null }), null)).toBe(true);
+    });
+    it("counts a live needs_input hook", () => {
+      expect(seatNeedsAttention(baseEntry(), idleActivity("needs_input"))).toBe(true);
+    });
+    it("counts a held seat", () => {
+      expect(seatNeedsAttention(baseEntry({ heldReason: "held: staged launch" }), null)).toBe(true);
+    });
+    it("counts a recorded startup error as an ADDITIONAL signal", () => {
+      expect(seatNeedsAttention(baseEntry({ latestError: "boom" }), null)).toBe(true);
+    });
+    it("healthy seat with running/idle/unknown activity does NOT count (unknown is not attention)", () => {
+      expect(seatNeedsAttention(baseEntry(), null)).toBe(false);
+      expect(seatNeedsAttention(baseEntry(), idleActivity("running"))).toBe(false);
+      expect(seatNeedsAttention(baseEntry(), idleActivity("idle"))).toBe(false);
+      expect(seatNeedsAttention(baseEntry(), idleActivity("unknown"))).toBe(false);
+    });
+
+    it("getEntries: multi-signal seat counts ONCE; healthy peers count zero", () => {
+      const rigId = seedRig("attn-once");
+      const bad = seedNode(rigId, "bad");
+      const ok = seedNode(rigId, "ok");
+      // bad: failed startup AND a startup error AND held (three signals, one seat)
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+        .run("s-bad", bad, "bad@attn-once", "exited", "failed");
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload, created_at) VALUES (?, ?, 'node.startup_failed', ?, datetime('now'))")
+        .run(rigId, bad, JSON.stringify({ error: "launch exploded" }));
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload, created_at) VALUES (?, ?, 'node.held', ?, datetime('now'))")
+        .run(rigId, bad, JSON.stringify({ reason: "held" }));
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+        .run("s-ok", ok, "ok@attn-once", "running", "ready");
+
+      const entries = ps.getEntries();
+      expect(entries.find((e) => e.rigId === rigId)!.attentionCount).toBe(1);
+    });
+
+    it("getEntries: fresh needs_input hook counts via the store; stale hook degrades to unknown and does NOT", () => {
+      const rigId = seedRig("attn-hook");
+      const n = seedNode(rigId, "dev");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+        .run("s-hook", n, "dev@attn-hook", "running", "ready");
+      const eventBus = new EventBus(db);
+      const store = new AgentActivityStore({ db, eventBus });
+      const emit = (eventAt: string) => eventBus.emit({
+        type: "agent.activity", rigId, nodeId: n, sessionName: "dev@attn-hook", runtime: "claude-code",
+        activity: { state: "needs_input", reason: "permission_prompt", evidenceSource: "runtime_hook",
+          sampledAt: eventAt, eventAt, evidence: "permission_prompt", fallback: false, stale: false },
+      } as never);
+
+      emit(new Date().toISOString()); // fresh
+      const withStore = new PsProjectionService({ db, agentActivity: store });
+      expect(withStore.getEntries().find((e) => e.rigId === rigId)!.attentionCount).toBe(1);
+
+      emit(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()); // stale (latest row now old)
+      expect(withStore.getEntries().find((e) => e.rigId === rigId)!.attentionCount).toBe(0);
+    });
+
+    it("getEntries: store absent -> needs_input contributes false (honest degrade), other signals still count", () => {
+      const rigId = seedRig("attn-nostore");
+      const n = seedNode(rigId, "dev");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+        .run("s-ns", n, "dev@attn-nostore", "exited", "failed");
+      const entries = ps.getEntries(); // `ps` has no agentActivity store
+      expect(entries.find((e) => e.rigId === rigId)!.attentionCount).toBe(1);
+    });
+
+    it("attentionCount is ADDITIVE: every pre-existing PsEntry key is preserved (RPS-2)", () => {
+      const rigId = seedRig("attn-keys");
+      const n = seedNode(rigId, "dev");
+      seedSession(n, "running");
+      const entry = ps.getEntries().find((e) => e.rigId === rigId)!;
+      for (const key of ["rigId", "name", "rigName", "nodeCount", "runningCount", "activeCount", "hasWorkCount",
+        "status", "lifecycleState", "uptime", "latestSnapshot", "archivedAt", "isArchived",
+        "periodicSnapshotActive", "periodicSnapshotIntervalSeconds", "autoPeriodicSnapshotCount"]) {
+        expect(Object.prototype.hasOwnProperty.call(entry, key), key).toBe(true);
+      }
+      expect(typeof entry.attentionCount).toBe("number");
+      expect(JSON.stringify(entry)).not.toContain("resumeToken");
     });
   });
 });

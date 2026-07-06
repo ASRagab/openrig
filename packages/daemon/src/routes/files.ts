@@ -166,12 +166,57 @@ export function filesRoutes(): Hono {
     if (!rootName || !relativePath) return c.json({ error: "root_and_path_required" }, 400);
     try {
       const resolved = resolveAllowedFile(deps.allowlist, rootName, relativePath);
+      const size = fs.statSync(resolved).size;
+      let contentType = inferContentType(resolved);
+      // OPR.0.4.4.20 FR-11: .html renders as text/html ONLY under the explicit
+      // ?render=1 opt-in (text/plain stays the default for every other read).
+      // First-party operator mockups open in a new tab; CSP here is a
+      // documented advisory posture, deliberately NOT a deny-by-default gate.
+      if (c.req.query("render") === "1" && path.extname(resolved).toLowerCase() === ".html") {
+        contentType = "text/html; charset=utf-8";
+      }
+
+      // OPR.0.4.4.20 FR-5: byte-range support on THIS route only (iOS Safari
+      // requires 206 + Accept-Ranges for media playback; 200-with-whole-file
+      // is the documented iOS failure mode). Single-range form only.
+      const rangeHeader = c.req.header("Range");
+      if (rangeHeader) {
+        const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+        const start = m && m[1] !== "" ? Number(m[1]) : m && m[2] !== "" ? size - Number(m[2]) : NaN;
+        const end = m && m[1] !== "" && m[2] !== "" ? Number(m[2]) : size - 1;
+        if (!m || Number.isNaN(start) || start < 0 || start >= size || end < start) {
+          return new Response(null, {
+            status: 416,
+            headers: { "Content-Range": `bytes */${size}`, "Accept-Ranges": "bytes" },
+          });
+        }
+        const boundedEnd = Math.min(end, size - 1);
+        const length = boundedEnd - start + 1;
+        const fd = fs.openSync(resolved, "r");
+        try {
+          const buf = Buffer.alloc(length);
+          fs.readSync(fd, buf, 0, length, start);
+          return new Response(new Uint8Array(buf), {
+            status: 206,
+            headers: {
+              "Content-Type": contentType,
+              "Content-Range": `bytes ${start}-${boundedEnd}/${size}`,
+              "Content-Length": String(length),
+              "Accept-Ranges": "bytes",
+              "Cache-Control": "public, max-age=300",
+            },
+          });
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+
       const data = fs.readFileSync(resolved);
-      const contentType = inferContentType(resolved);
       return new Response(new Uint8Array(data), {
         status: 200,
         headers: {
           "Content-Type": contentType,
+          "Accept-Ranges": "bytes",
           "Cache-Control": "public, max-age=300",
         },
       });

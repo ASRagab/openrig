@@ -19,7 +19,7 @@ export function buildSetupPrompt(input: SetupPromptInput): string {
     "",
     "Steps:",
     `1. Run: rig up ${input.name}`,
-    "2. Monitor: rig ps --nodes",
+    `2. Monitor: rig ps --nodes --rig ${input.name}`,
     "3. Check env: rig env status <rig-name>",
   );
 

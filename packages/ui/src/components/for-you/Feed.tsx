@@ -19,6 +19,7 @@ import { useActivityFeed } from "../../hooks/useActivityFeed.js";
 import { useAttentionItems } from "../../hooks/useAttentionItems.js";
 import {
   classifyFeed,
+  isHumanSeat,
   sortFeedByDecisionBand,
   type FeedCard as FeedCardModel,
   type FeedCardKind,
@@ -74,7 +75,10 @@ const EMPTY_COPY: Record<FeedCardKind | "all", { label: string; description: str
   },
   "action-required": {
     label: "No actions waiting",
-    description: "When a queue item needs your response, it will appear here with approve, deny, and route controls.",
+    // CORRECTIVE §7.1 rev1-r2 fixback (B1, 2026-07-06): the empty-state copy
+    // must not leak the retired deny/route schema — the surface is one-tap
+    // APPROVE + CHAT only (founder N-1).
+    description: "When a queue item needs your response, it will appear here with one-tap approve and chat with the owning agent.",
   },
   approval: {
     label: "No approvals waiting",
@@ -158,7 +162,9 @@ function queueTags(card: FeedCardModel, item: QueueItemDetail | undefined): stri
   ];
 }
 
-function hydratedCardKind(
+// Exported for tests (OPR.0.4.4.19 FR-3 — the structured-signal contract is
+// pinned by unit tests; the component render path is unchanged).
+export function hydratedCardKind(
   card: FeedCardModel,
   item: QueueItemDetail | undefined,
   outcome: FeedActionOutcome | undefined,
@@ -167,20 +173,15 @@ function hydratedCardKind(
     return "approval";
   }
   if (!item) return card.kind;
-  const tags = queueTags(card, item).join(" ").toLowerCase();
+  // OPR.0.4.4.19 FR-3: card-kind promotion reads STRUCTURED signals only —
+  // the human-gate tier (C6) and the strict human-seat destination predicate.
+  // The prior body-text ("approval requested") / tag-guess ("approval",
+  // "ratify") / state-substring sniffing is retired, a deletion: once the
+  // signals are enforced at the write path, guessing is worse than reading.
+  if (item.tier === "human-gate") return "approval";
   const state = item.state.toLowerCase();
-  const destination = item.destinationSession.toLowerCase();
-  const body = item.body.toLowerCase();
-  if (
-    tags.includes("approval") ||
-    tags.includes("ratify") ||
-    state.includes("approval") ||
-    body.includes("approval requested")
-  ) {
-    return "approval";
-  }
   if (state === "done" || state === "closed" || state === "completed") return "shipped";
-  if (destination === "human@host" || destination.startsWith("human-")) return "action-required";
+  if (isHumanSeat(item.destinationSession)) return "action-required";
   return card.kind;
 }
 
@@ -247,9 +248,16 @@ export function Feed() {
   // SUPERSEDE event-derived cards with the same qitemId. Other
   // kinds (shipped/progress/observation) stay event-derived
   // (HG-6 no regression).
-  const attentionQuery = useAttentionItems();
+  // OPR.0.4.4.15 — consolidated multi-host feed: with ≥1 enabled remote
+  // host subscription the attention poll switches to the aggregated
+  // endpoint (daemon-side fan-out; the browser still only talks to the
+  // local daemon). Zero-config keeps today's endpoint + rendering exactly.
+  const remoteFeedActive = subs.anyRemoteEnabled;
+  const [hostFilter, setHostFilter] = useState<string | null>(null);
+  const attentionQuery = useAttentionItems(50, remoteFeedActive);
+  const hostStatuses = useMemo(() => attentionQuery.data?.hosts ?? [], [attentionQuery.data]);
   const queueDerivedAttention = useMemo<FeedCardModel[]>(
-    () => (attentionQuery.data ?? []).map(attentionItemToFeedCard),
+    () => (attentionQuery.data?.items ?? []).map(attentionItemToFeedCard),
     [attentionQuery.data],
   );
   const needsInputQuery = useNeedsInputSeats();
@@ -338,11 +346,14 @@ export function Feed() {
       isCardKindSubscribed(c.kind, subs.state),
     );
     const lensFiltered = lens === "all" ? subscribed : subscribed.filter((c) => c.kind === lens);
-    return lensFiltered.filter((c) => {
+    // OPR.0.4.4.15 — per-host filter (cards without a hostId are local by
+    // definition: event-derived + needs-input cards never leave this host).
+    const hostFiltered = hostFilter === null ? lensFiltered : lensFiltered.filter((c) => (c.hostId ?? "local") === hostFilter);
+    return hostFiltered.filter((c) => {
       if (isSyntheticFeedCard(c)) return !dismissedIds.has(c.id);
       return !dismissedSeqs.has(c.source.seq);
     });
-  }, [rawCards, lens, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds]);
+  }, [rawCards, lens, hostFilter, queueItems.itemsById, actionOutcomes, subs.state, dismissedSeqs, dismissedIds]);
   const slicesQuery = useSlices("all");
   const sliceRows = useMemo(() => {
     if (!slicesQuery.data || "unavailable" in slicesQuery.data) return [];
@@ -411,6 +422,67 @@ export function Feed() {
           </button>
         ))}
       </div>
+
+      {/* OPR.0.4.4.15 — host chips + per-host status rows, rendered ONLY
+          when aggregation is active (hostStatuses is empty on the legacy
+          path — zero-config DOM is byte-identical to today). Same
+          lens-chip visual pattern; failed hosts render muted + a status
+          row (never a silently thinner feed). */}
+      {hostStatuses.length > 0 && (
+        <div
+          data-testid="feed-host-chips"
+          role="toolbar"
+          aria-label="Host filter"
+          className="flex flex-wrap gap-1 mb-2"
+        >
+          <button
+            type="button"
+            data-testid="feed-host-all"
+            data-active={hostFilter === null}
+            onClick={() => setHostFilter(null)}
+            className={cn(
+              "px-2 py-1 border font-mono text-[9px] uppercase tracking-wide",
+              hostFilter === null
+                ? "border-on-surface bg-inverse-surface text-background"
+                : "border-outline-variant text-on-surface-variant hover:bg-surface-low",
+            )}
+          >
+            ALL HOSTS
+          </button>
+          {hostStatuses.map((h) => (
+            <button
+              key={h.hostId}
+              type="button"
+              data-testid={`feed-host-${h.hostId}`}
+              data-active={hostFilter === h.hostId}
+              data-host-status={h.status}
+              onClick={() => setHostFilter(hostFilter === h.hostId ? null : h.hostId)}
+              className={cn(
+                "px-2 py-1 border font-mono text-[9px] uppercase tracking-wide",
+                hostFilter === h.hostId
+                  ? "border-on-surface bg-inverse-surface text-background"
+                  : "border-outline-variant text-on-surface-variant hover:bg-surface-low",
+                h.status !== "ok" && "opacity-60",
+              )}
+            >
+              {h.hostId}
+              {h.status !== "ok" ? ` · ${h.status}` : ""}
+            </button>
+          ))}
+        </div>
+      )}
+      {hostStatuses
+        .filter((h) => h.status !== "ok")
+        .map((h) => (
+          <div
+            key={`status-${h.hostId}`}
+            data-testid={`feed-host-status-${h.hostId}`}
+            className="mb-2 border border-outline-variant px-2 py-1 font-mono text-[9px] text-on-surface-variant"
+          >
+            {h.hostId}: {h.status}
+            {h.error ? ` — ${h.error}` : ""} (other hosts&apos; items unaffected)
+          </div>
+        ))}
 
       {cards.length === 0 ? (
         <EmptyState

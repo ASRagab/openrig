@@ -57,8 +57,9 @@ function healthyReport(workspaceRoot = "/ws"): DoctorReportFixture {
       { check: "daemon_reload_needed", status: "ok", message: "config file mtime is older than daemon start" },
       { check: "optional_slice_docs", status: "ok", message: "every slice has a README" },
       { check: "mission_notes_presence", status: "ok", message: "every mission has MISSION_NOTES.md" },
+      { check: "sdlc_convention_sections", status: "ok", message: "every slice README carries the SDLC convention sections" },
     ],
-    summary: { ok: 7, warn: 0, fail: 0 },
+    summary: { ok: 8, warn: 0, fail: 0 },
     daemonResolvedAt: "2026-06-01T12:00:00.000Z",
   };
 }
@@ -223,8 +224,8 @@ describe("rig workspace doctor — output formatters", () => {
     }
     expect(out.logs).toHaveLength(1);
     const parsed = JSON.parse(out.logs[0]!) as DoctorReportFixture;
-    expect(parsed.summary).toEqual({ ok: 7, warn: 0, fail: 0 });
-    expect(parsed.checks).toHaveLength(7);
+    expect(parsed.summary).toEqual({ ok: 8, warn: 0, fail: 0 });
+    expect(parsed.checks).toHaveLength(8);
   });
 
   it("default human output groups checks under workspace / missions / daemon categories", async () => {
@@ -237,7 +238,7 @@ describe("rig workspace doctor — output formatters", () => {
     }
     const joined = out.logs.join("\n");
     expect(joined).toContain("workspace doctor — /ws");
-    expect(joined).toContain("summary: 7 ok, 0 warn, 0 fail");
+    expect(joined).toContain("summary: 8 ok, 0 warn, 0 fail");
     expect(joined).toContain("workspace:");
     expect(joined).toContain("missions:");
     expect(joined).toContain("daemon:");

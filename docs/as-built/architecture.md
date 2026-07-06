@@ -32,7 +32,8 @@ resolve.
 
 ## Where the major content went
 
-The architecture content is now the **13 modules under `architecture/`**:
+The architecture content is now the **14 modules under `architecture/`**
+(13 from the slice-08 reorg + `living-notes-review.md`, added v0.4.4):
 
 | Module | What moved here |
 |---|---|
@@ -49,6 +50,7 @@ The architecture content is now the **13 modules under `architecture/`**:
 | [`architecture/plugin-agent-image-context-pack.md`](architecture/plugin-agent-image-context-pack.md) | Plugin discovery, agent images, context packs, the Claude auto-compaction enforcer. |
 | [`architecture/packaging-bootstrap-bundles.md`](architecture/packaging-bootstrap-bundles.md) | Bundle assembly (schema-v2 + legacy v1), bundle create/inspect/install + `/api/up`, the staged BootstrapOrchestrator, legacy install seams. |
 | [`architecture/architecture-rules-and-event-system.md`](architecture/architecture-rules-and-event-system.md) | The cross-cutting invariants — the 25 architecture rules (incl. **rule 15**, restore honesty), the RigEvent union + SSE delivery, intentional compatibility limits. |
+| [`architecture/living-notes-review.md`](architecture/living-notes-review.md) | **Added v0.4.4** (not part of the original monolith): the Living Notes review surface — the one intent→plan→delivered projection, staged-approval locks, proof artifacts, freeze export, ranged media serving. |
 
 The UI half of the old `### UI architecture` section is now the **4 modules
 under `ui/`** (see [`ui.md`](ui.md), also a redirect stub, and the `ui/` index

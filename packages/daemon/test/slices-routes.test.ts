@@ -250,6 +250,28 @@ describe("PL-slice-story-view-v0 slices routes", () => {
       const res = await app.request("/api/slices/video-slice/proof-asset/videos/demo.mp4");
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("video/mp4");
+      expect(res.headers.get("accept-ranges")).toBe("bytes");
+    });
+
+    it("serves 206 + Accept-Ranges + exactly 100 bytes for proof video assets", async () => {
+      writeSlice(slicesRoot, "range-video-slice", { "README.md": "---\n---\n" });
+      const dir = path.join(dogfoodRoot, "range-video-slice-20260504");
+      fs.mkdirSync(path.join(dir, "videos"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "videos", "demo.mp4"), Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 251)));
+
+      const res = await app.request("/api/slices/range-video-slice/proof-asset/videos/demo.mp4", {
+        headers: { Range: "bytes=0-99" },
+      });
+      expect(res.status).toBe(206);
+      expect(res.headers.get("accept-ranges")).toBe("bytes");
+      expect(res.headers.get("content-range")).toBe("bytes 0-99/1000");
+      expect(res.headers.get("content-length")).toBe("100");
+      expect(res.headers.get("content-type")).toBe("video/mp4");
+
+      const body = new Uint8Array(await res.arrayBuffer());
+      expect(body.length).toBe(100);
+      expect(body[0]).toBe(0);
+      expect(body[99]).toBe(99);
     });
 
     it("rejects path-traversal attempts with 400", async () => {

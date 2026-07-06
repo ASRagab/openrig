@@ -94,9 +94,11 @@ describe("Drawer viewers (P4-1) render with canonical props", () => {
     expect(getByTestId("file-viewer").getAttribute("data-file-kind")).toBe("yaml");
   });
 
-  it("FileViewer empty-state when no content/imageUrl and not binary", () => {
+  it("FileViewer honest NOT-RESOLVABLE state when no content/imageUrl and no readable target", () => {
+    // Retro-demo fixback: no content AND no root/absolutePath can never load —
+    // the viewer now says so instead of the old eternal empty/Loading state.
     const { getByTestId } = render(<FileViewer path="missing.md" kind="markdown" />);
-    expect(getByTestId("file-viewer-empty")).toBeTruthy();
+    expect(getByTestId("file-viewer-unresolvable")).toBeTruthy();
   });
 
   it("FileViewer reads drawer content from an explicit /api/files root + path", async () => {
@@ -311,6 +313,26 @@ describe("SharedDetailDrawer (Phase 4) routes selection.type to the correct view
 
     fireEvent.pointerDown(getByTestId("shared-detail-drawer-outside"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // CORRECTIVE §7.2 (founder 2026-07-05) — the LEFT reinvention is reverted
+  // at its three tokens: edge prop RIGHT (border side), right-0 anchor class
+  // (the positioner), and the FR-11.1 z-50 bump comes OUT (the right edge
+  // never contended with the sidebar's z-40).
+  it("the shared drawer anchors to the RIGHT edge with the pre-flip z (three-token revert)", () => {
+    const selection: DrawerSelection = {
+      type: "file",
+      data: { path: "x.md", kind: "markdown", content: "# h" },
+    };
+    const { getByTestId } = render(
+      <SharedDetailDrawer selection={selection} onClose={() => {}} {...NOOP_PROPS} />,
+    );
+    const layer = getByTestId("shared-detail-drawer-layer");
+    expect(layer.className).toContain("z-30");
+    expect(layer.className).not.toContain("z-50");
+    const sheet = getByTestId("shared-detail-drawer");
+    expect(sheet.className).toContain("right-0");
+    expect(sheet.className).not.toContain("left-0");
   });
 
   // V1 polish slice Phase 5.1 P5.1-D2: 'seat-detail' kind RETIRED from

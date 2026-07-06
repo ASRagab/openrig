@@ -140,6 +140,7 @@ import { queueItemSummarySchema } from "./db/migrations/044_queue_item_summary.j
 import { resumeVerificationSchema } from "./db/migrations/045_resume_verification.js";
 import { seatIdentityVerdictsSchema } from "./db/migrations/046_seat_identity_verdicts.js";
 import { eventsNodeTypeIndexSchema } from "./db/migrations/047_events_node_type_index.js";
+import { queueItemEvidenceRefSchema } from "./db/migrations/048_queue_item_evidence_ref.js";
 import { RigPolicyStore } from "./domain/rig-policy/rig-policy-store.js";
 import { MissionControlActionLog } from "./domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "./domain/mission-control/mission-control-write-contract.js";
@@ -226,7 +227,7 @@ export function collectAllowlistedProviderAuthEnv(
 export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> {
   const dbPath = opts?.dbPath ?? ":memory:";
   const db = createDb(dbPath);
-  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema, inboxEntriesSchema, outboxEntriesSchema, projectClassificationsSchema, classifierLeasesSchema, viewsCustomSchema, watchdogJobsSchema, watchdogHistorySchema, workflowSpecsSchema, workflowInstancesSchema, workflowStepTrailsSchema, watchdogPolicyEnumExtensionSchema, missionControlActionsSchema, workspacePrimitiveSchema, queueTargetRepoSchema, workflowSpecsDiagnosticSchema, rigPolicySchema, rigArchiveSchema, resumeProvenanceSchema, queueItemSummarySchema, resumeVerificationSchema, seatIdentityVerdictsSchema, eventsNodeTypeIndexSchema]);
+  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, snapshotsSchema, checkpointsSchema, resumeMetadataSchema, nodeSpecFieldsSchema, packagesSchema, installJournalSchema, journalSeqSchema, bootstrapSchema, discoverySchema, discoveryFkFix, agentspecRebootSchema, startupContextSchema, chatMessagesSchema, podNamespaceSchema, contextUsageSchema, externalCliAttachmentSchema, rigServicesSchema, seatHandoverObservabilitySchema, nodeCodexConfigProfileSchema, streamItemsSchema, queueItemsSchema, queueTransitionsSchema, inboxEntriesSchema, outboxEntriesSchema, projectClassificationsSchema, classifierLeasesSchema, viewsCustomSchema, watchdogJobsSchema, watchdogHistorySchema, workflowSpecsSchema, workflowInstancesSchema, workflowStepTrailsSchema, watchdogPolicyEnumExtensionSchema, missionControlActionsSchema, workspacePrimitiveSchema, queueTargetRepoSchema, workflowSpecsDiagnosticSchema, rigPolicySchema, rigArchiveSchema, resumeProvenanceSchema, queueItemSummarySchema, resumeVerificationSchema, seatIdentityVerdictsSchema, eventsNodeTypeIndexSchema, queueItemEvidenceRefSchema]);
 
   const rigRepo = new RigRepository(db);
   const sessionRegistry = new SessionRegistry(db);
@@ -782,7 +783,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // queue/assignment state (non-inference contract; see slice 15 IMPL-PRD §2.3).
     seatActivityService,
     seatIdentityReconciler,
-    psProjectionService: new PsProjectionService({ db, seatActivity: seatActivityService }),
+    // OPR.0.4.4.21 — agentActivity feeds the rig-rollup attention
+    // predicate's needs_input signal (synchronous events lookup only).
+    psProjectionService: new PsProjectionService({ db, seatActivity: seatActivityService, agentActivity: agentActivityStore }),
     upRouter: new UpCommandRouter({
       fsOps: {
         exists: (p: string) => fs.existsSync(p),
@@ -833,7 +836,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     watchdogJobsRepo: watchdogJobsRepoInstance,
     watchdogHistoryLog: watchdogHistoryLogInstance,
     askService: (() => {
-      const psProjectionService = new PsProjectionService({ db });
+      const psProjectionService = new PsProjectionService({ db, agentActivity: agentActivityStore });
       const execDep = (cmd: string, args: string[]): Promise<{ stdout: string; exitCode: number }> =>
         new Promise((resolve) => {
           execFile(cmd, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
@@ -1225,6 +1228,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     deps.sliceIndexer = sliceIndexer;
     deps.sliceDetailProjector = sliceDetailProjector;
+    // Living Notes Packet 2 (OPR.0.4.4.20): the composed-review gatherer.
+    // Git lineage facts come from OPENRIG_REVIEW_GIT_REPO when set; else
+    // lineage degrades honestly to unknown.
+    const { ReviewGatherer } = await import("./domain/review/gather.js");
+    deps.reviewGatherer = new ReviewGatherer({
+      db,
+      indexer: sliceIndexer,
+      gitRepoPath: process.env["OPENRIG_REVIEW_GIT_REPO"] ?? null,
+      // OPR.0.4.4.22 FR-2: the agent state glyph reads recorded hook
+      // activity (honest-unknown when absent) - synchronous, never polls.
+      activityStore: agentActivityStore,
+    });
   }
 
   // UI Enhancement Pack v0:

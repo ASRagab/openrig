@@ -58,6 +58,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human-operator@kernel",
       body: "needs human approval",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     // Yield event loop so dispatcher's async handler completes.
     await new Promise((r) => setTimeout(r, 10));
@@ -81,6 +83,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human-operator@kernel",
       body: "needs human approval",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
 
@@ -105,6 +109,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human@rig",
       body: "x",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
     adapter.calls.length = 0;
@@ -129,6 +135,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human@rig",
       body: "x",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
     adapter.calls.length = 0;
@@ -149,6 +157,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human@rig",
       body: "x",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
     expect(events.find((e) => e.type === "mission_control.notification_sent")).toBeDefined();
@@ -163,6 +173,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human@rig",
       body: "x",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
     expect(events.find((e) => e.type === "mission_control.notification_failed")).toBeDefined();
@@ -176,6 +188,8 @@ describe("MissionControlNotificationDispatcher (PL-005 Phase B)", () => {
       destinationSession: "human@rig",
       body: "x",
       tier: "human-gate",
+      summary: "test summary (FR-4 human-routed fixture)",
+      evidenceRef: "proof/test-evidence.md",
     });
     await new Promise((r) => setTimeout(r, 10));
     // Re-emit a synthetic queue.created event for same qitem (defensive dedup).

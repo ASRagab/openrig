@@ -66,6 +66,7 @@ One row per module. "Reach for this when…" mirrors each module's actual
 | `plugin-agent-image-context-pack.md` | Four filesystem-canonical content primitives the daemon discovers and serves. | You need how OpenRig discovers plugins, captures/forks agent images, assembles/sends context packs, or how the Claude auto-compaction enforcer decides to send `/compact`. |
 | `packaging-bootstrap-bundles.md` | How a topology is packaged into a shareable bundle and reconstituted elsewhere. | You need how rig/pod bundles are assembled (schema-v2 vs legacy v1), how bundle create/inspect/install + `/api/up` route across source kinds, the staged BootstrapOrchestrator flow, or which legacy install-engine seams still ship. |
 | `architecture-rules-and-event-system.md` | The cross-cutting invariants that belong to no single subsystem. | You need the 25 architecture rules + startup/import constraints, the shape of the RigEvent union and its SSE delivery, or the intentional compatibility limits that still describe the shipped system. |
+| `living-notes-review.md` | **v0.4.4** — the one intent→plan→delivered review projection over on-disk SDLC markdown. | You need the `ComposedSliceReview` contract, the `/api/review/*` routes, staged-approval locks (`--scope spec|delivery`), the `## Proof contract` ↔ proof-artifact join and C1-bound `verified`, the freeze export, or ranged media serving for review evidence. |
 
 ### ui/
 
@@ -150,6 +151,7 @@ Reading-order rule: open a module's `prerequisite-reads` first
 | rig send/capture/broadcast, transcripts, durable chat, `rig ask`, MCP-name vs tmux-key | `architecture/transport-and-transcripts.md` |
 | The workspace primitive (root/repos), `target_repo` scope gating, missions/slices indexing | `architecture/workspace-primitive.md` |
 | The file browser path safety, atomic writes + edit audit, PROGRESS tree, Steering composer | `architecture/content-surfaces.md` |
+| The composed slice/mission review (`/api/review/*`), staged-approval locks, proof artifacts + `verified`, freeze export, ranged media | `architecture/living-notes-review.md` |
 | Plugin discovery / agent images / context packs / Claude auto-compaction enforcer | `architecture/plugin-agent-image-context-pack.md` |
 | Bundle assembly, bundle install / `/api/up`, BootstrapOrchestrator, legacy install seams | `architecture/packaging-bootstrap-bundles.md` |
 | The 25 architecture rules / RigEvent union / SSE delivery / compatibility limits | `architecture/architecture-rules-and-event-system.md` |
@@ -180,6 +182,7 @@ Source-grounding for each claim lives inside the module with file:line cites.
 | `architecture/transport-and-transcripts.md` | `packages/daemon/src/domain/{session-transport,transcript-store,history-query,ask-service,chat-repository}.ts`, `packages/daemon/src/routes/{transport,transcripts,ask,chat}.ts`, `packages/cli/src/mcp-server.ts` |
 | `architecture/workspace-primitive.md` | `packages/daemon/src/domain/workspace/`, `packages/cli/src/commands/config-init-workspace.ts`, `packages/daemon/src/db/migrations/{038,039}*`, `packages/ui/src/routes.tsx` |
 | `architecture/content-surfaces.md` | `packages/daemon/src/domain/{files,progress,steering}*`, `packages/daemon/src/routes/{files,progress,steering}.ts`, `packages/ui/src/routes.tsx` |
+| `architecture/living-notes-review.md` | `packages/daemon/src/domain/review/{types,compose,gather,freeze,brief-spine}.ts`, `packages/daemon/src/routes/{review,files,slices}.ts`, `packages/cli/src/commands/{scope,proof}.ts`, `packages/ui/src/components/review/` |
 | `architecture/plugin-agent-image-context-pack.md` | `packages/daemon/src/domain/plugin-discovery-service.ts`, `packages/daemon/src/domain/{agent-images,context-packs}/`, `packages/daemon/src/domain/claude-compaction-enforcer.ts` |
 | `architecture/packaging-bootstrap-bundles.md` | `packages/daemon/src/domain/{pod-bundle-assembler,bootstrap-orchestrator,bundle-*,package-*,install-*}.ts`, `packages/daemon/src/routes/{bundles,up}.ts` |
 | `architecture/architecture-rules-and-event-system.md` | `packages/daemon/src/domain/types.ts` (RigEvent union), `packages/daemon/src/routes/{stream,queue}.ts` (SSE watch), `packages/daemon/src/server.ts` (`/api/events`) |

@@ -167,7 +167,10 @@ const PERMISSION_GATE_PATTERNS = [
   /no mutual signature algorithm/i,
 ];
 
-function looksLikePermissionGate(stderr: string): boolean {
+// OPR.0.4.4.18: exported so `rig file` classifies rsync stderr with the SAME
+// signature (single-source classification per arch ruling — never a second
+// pattern copy). Behavior unchanged.
+export function looksLikePermissionGate(stderr: string): boolean {
   return PERMISSION_GATE_PATTERNS.some((re) => re.test(stderr));
 }
 

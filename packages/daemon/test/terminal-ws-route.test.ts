@@ -370,3 +370,76 @@ describe("terminal WebSocket detach-during-attach race", () => {
     }, { timeout: 2000 });
   }, 10000);
 });
+
+// OPR.0.4.4.20 delta-C — the send-at-open race (found by the slice-20 P2 VM
+// proof walk): the CHAT initialText frame is sent in the CLIENT's ws.onopen,
+// which lands while the server's onOpen is still awaiting the async broker
+// attach. Pre-fix, onMessage saw broker===null and silently dropped it — the
+// one pre-populated CHAT frame was lost every time attach was slower than the
+// client. The route must buffer early frames and drain them post-attach.
+describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
+  const EARLY_PORT = 19881;
+  const EARLY_TOKEN = "early-frame-test-token";
+  let earlyServer: ServerType;
+  const sentTexts: string[] = [];
+
+  beforeAll(async () => {
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("tmuxAdapter" as never, {
+        hasSession: async () => true,
+        setWindowOption: async () => ({ ok: true }),
+        resizeWindow: async () => ({ ok: true }),
+        // Slow pipe-start widens the attach window so the client's at-open text
+        // frame reliably arrives while attach is still pending.
+        startPipePane: async () => {
+          await new Promise((r) => setTimeout(r, 120));
+          return { ok: true };
+        },
+        stopPipePane: async () => ({ ok: true }),
+        sendKeys: async () => ({ ok: true }),
+        sendText: async (_name: string, text: string) => { sentTexts.push(text); return { ok: true }; },
+        capturePaneScreen: async () => null,
+        getPaneCursorPosition: async () => null,
+      });
+      await next();
+    });
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: EARLY_TOKEN });
+    earlyServer = serve({ fetch: app.fetch, port: EARLY_PORT, hostname: "127.0.0.1" });
+    injectWebSocket(earlyServer);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  });
+
+  afterAll(() => {
+    earlyServer?.close();
+  });
+
+  it("a text frame sent at ws-open (attach in flight) is buffered and delivered, not dropped", async () => {
+    sentTexts.length = 0;
+    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-session?token=${EARLY_TOKEN}`);
+    const preamble = "[review fixture] Standing contract … user message begins here: ";
+    ws.onopen = () => {
+      // Exactly what FocusedTerminal does: one text frame, immediately at open.
+      ws.send(JSON.stringify({ type: "text", text: preamble }));
+    };
+    await vi.waitFor(() => {
+      expect(sentTexts).toEqual([preamble]);
+    }, { timeout: 2000 });
+    ws.close();
+  }, 10000);
+
+  it("caps pre-attach buffering instead of accepting unbounded early frames", async () => {
+    sentTexts.length = 0;
+    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-overflow?token=${EARLY_TOKEN}`);
+    const closed = new Promise<{ code: number }>((resolve) => { ws.onclose = (evt) => resolve({ code: evt.code }); });
+    ws.onopen = () => {
+      for (let i = 0; i < 40; i++) {
+        ws.send(JSON.stringify({ type: "text", text: `early-${i}` }));
+      }
+    };
+    const evt = await closed;
+    expect(evt.code).toBe(1009);
+    expect(sentTexts).toEqual([]);
+  }, 10000);
+});

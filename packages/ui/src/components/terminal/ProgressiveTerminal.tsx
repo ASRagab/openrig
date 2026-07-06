@@ -37,6 +37,9 @@ interface ProgressiveTerminalProps {
    *  never upscales (grid/graph/table cells). "contain" fills a big dedicated
    *  container on both axes (capped upscale, centered) - the node-detail panel. */
   fit?: "width" | "contain";
+  /** OPR.0.4.4.20 delta-C: forwarded to FocusedTerminal when this terminal goes
+   *  live — one pre-populated text frame, no Enter (see FocusedTerminal). */
+  initialText?: string;
 }
 
 export function ProgressiveTerminal({
@@ -48,6 +51,7 @@ export function ProgressiveTerminal({
   className,
   onLiveChange,
   fit = "width",
+  initialText,
 }: ProgressiveTerminalProps) {
   const [mode, setMode] = useState<"static" | "live">("static");
   const live = useLiveTerminal();
@@ -93,7 +97,7 @@ export function ProgressiveTerminal({
         data-testid={`${testIdPrefix}-live`}
         className={[fit === "contain" ? "h-full w-full" : "w-full", className].filter(Boolean).join(" ")}
       >
-        <FocusedTerminal sessionName={sessionName} fit={fit} />
+        <FocusedTerminal sessionName={sessionName} fit={fit} initialText={initialText} />
       </div>
     );
   }

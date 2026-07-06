@@ -7,6 +7,7 @@ reviewer can inspect.
 ## Skills Loaded
 
 - `openrig-user`
+- `mission-slice-sop`
 - `development-team`
 - `test-driven-development`
 - `systematic-debugging`

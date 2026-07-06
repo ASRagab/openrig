@@ -7,9 +7,14 @@ import type {
   QueueState,
 } from "../domain/queue-repository.js";
 import { QueueRepositoryError } from "../domain/queue-repository.js";
+import { isHumanSeatSession } from "../domain/human-route-enforcer.js";
 import type { InboxHandler } from "../domain/inbox-handler.js";
 import { InboxHandlerError } from "../domain/inbox-handler.js";
 import type { OutboxHandler } from "../domain/outbox-handler.js";
+import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
+import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
+import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
+import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 
 /**
  * Coordination L3 — Queue HTTP routes (PL-004 Phase A).
@@ -26,16 +31,21 @@ import type { OutboxHandler } from "../domain/outbox-handler.js";
  * single-pane view:
  *
  *   - approval class  → tier === "human-gate"
- *   - action-required → destinationSession matches
- *                       /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/
+ *   - action-required → destinationSession is a human seat
+ *   - parked-on-human → state === "blocked" AND blockedOn is a human
+ *                       seat (OPR.0.4.4.19 FR-6, C5 leg 1 — the owner
+ *                       keeps the potato; the human owes the decision)
  *
+ * Human-seat matching delegates to the single-source
+ * human-route-enforcer predicate (no drift with the SQL function).
  * Exported so the predicate is a discrete, testable surface. The route
  * layer composes this with the open-state default so only unresolved
  * items appear — closed/done attention items are not surfaced.
  */
-export function isAttentionItem(q: { tier: string | null; destinationSession: string }): boolean {
+export function isAttentionItem(q: { tier: string | null; destinationSession: string; state?: string; blockedOn?: string | null }): boolean {
   if (q.tier === "human-gate") return true;
-  return /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/.test(q.destinationSession ?? "");
+  if (isHumanSeatSession(q.destinationSession)) return true;
+  return q.state === "blocked" && isHumanSeatSession(q.blockedOn ?? null);
 }
 
 
@@ -99,6 +109,7 @@ export function queueRoutes(): Hono {
         : err.code === "qitem_not_in_progress" ? 409
         : err.code === "qitem_already_terminal" ? 409
         : err.code === "unknown_destination_rig" ? 400
+        : err.code === "human_route_fields_required" ? 400
         : 500;
       return c.json({ error: err.code, message: err.message, ...(err.meta ?? {}) }, status as 200);
     }
@@ -130,6 +141,7 @@ export function queueRoutes(): Hono {
       chainOfRecord?: string[];
       targetRepo?: string;
       summary?: string | null;
+      evidenceRef?: string | null;
     }>().catch(() => ({} as never));
 
     if (!body.sourceSession) return c.json({ error: "sourceSession is required" }, 400);
@@ -155,6 +167,7 @@ export function queueRoutes(): Hono {
         chainOfRecord: body.chainOfRecord,
         targetRepo: body.targetRepo,
         summary: body.summary,
+        evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
       });
       return c.json(item, 201);
@@ -220,6 +233,9 @@ export function queueRoutes(): Hono {
       transitionNote?: string;
       closureReason?: string;
       closureTarget?: string;
+      blockedOn?: string;
+      summary?: string | null;
+      evidenceRef?: string | null;
     }>().catch(() => ({} as never));
     if (!body.actorSession) return c.json({ error: "actorSession is required" }, 400);
     if (!body.state) return c.json({ error: "state is required" }, 400);
@@ -232,6 +248,11 @@ export function queueRoutes(): Hono {
         transitionNote: body.transitionNote,
         closureReason: body.closureReason,
         closureTarget: body.closureTarget,
+        // OPR.0.4.4.19 FR-6 — the leg-1 park surface: blockedOn plus the
+        // park-time summary/evidence_ref persist inputs.
+        blockedOn: body.blockedOn,
+        summary: body.summary,
+        evidenceRef: body.evidenceRef,
       });
       return c.json(item);
     } catch (err) {
@@ -252,6 +273,7 @@ export function queueRoutes(): Hono {
       tags?: string[];
       targetRepo?: string;
       summary?: string | null;
+      evidenceRef?: string | null;
     }>().catch(() => ({} as never));
     if (!body.fromSession) return c.json({ error: "fromSession is required" }, 400);
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
@@ -273,6 +295,7 @@ export function queueRoutes(): Hono {
         tags: body.tags,
         targetRepo: body.targetRepo,
         summary: body.summary,
+        evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
       });
       return c.json(result, 201);
@@ -297,6 +320,7 @@ export function queueRoutes(): Hono {
       nudge?: boolean;
       targetRepo?: string;
       summary?: string | null;
+      evidenceRef?: string | null;
     }>().catch(() => ({} as never));
     if (!body.fromSession) return c.json({ error: "fromSession is required" }, 400);
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
@@ -318,6 +342,7 @@ export function queueRoutes(): Hono {
         tags: body.tags,
         targetRepo: body.targetRepo,
         summary: body.summary,
+        evidenceRef: body.evidenceRef,
         nudge: body.nudge,
       });
       return c.json(result, 201);
@@ -362,6 +387,29 @@ export function queueRoutes(): Hono {
   // to pending|in-progress|blocked (callers can still override via
   // `state=...`). Composable with destinationSession/sourceSession/
   // targetRepo/limit.
+  // OPR.0.4.4.15 FR-1 — the aggregated attention read: ONE payload in the
+  // shared P4 fanout contract ({items, hosts}), local always included,
+  // subscribed remote hosts fanned out DAEMON-SIDE (bearer never in the
+  // browser). A NEW sibling endpoint by arch ruling 3 — the existing
+  // /list?attention=1 wire below stays byte-preserved (the strongest form
+  // of the zero-config negative AC).
+  app.get("/attention-aggregate", async (c) => {
+    const repo = getRepo(c);
+    const store = c.get("settingsStore" as never) as SettingsStore | undefined;
+    // Same DI style as every other context dep — tests/QA inject a loader;
+    // production falls back to the shared S11 reader over the operator's
+    // real hosts.yaml.
+    const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? loadHostRegistry;
+    const payload = await aggregateAttention({
+      // The SAME repo query the /list attention path runs, same open-state
+      // default — invoked, not duplicated.
+      listLocalAttention: () => repo.listAttention({ state: ["pending", "in-progress", "blocked"] }) as unknown as AttentionItem[],
+      listSubscriptions: () => (store ? store.listFeedHostSubscriptions() : []),
+      loadRegistry: registryLoader,
+    });
+    return c.json(payload);
+  });
+
   app.get("/list", (c) => {
     const destinationSession = c.req.query("destinationSession") || undefined;
     const sourceSession = c.req.query("sourceSession") || undefined;

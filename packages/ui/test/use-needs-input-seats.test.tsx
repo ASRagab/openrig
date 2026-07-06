@@ -29,7 +29,7 @@ describe("useNeedsInputSeats", () => {
       if (url === "/api/rigs/rig-stale/nodes") {
         throw new Error("resource exhausted");
       }
-      if (url === "/api/rigs/product-team/nodes") {
+      if (url === "/api/rigs/product-team/nodes?full=true") {
         return new Response(JSON.stringify([
           {
             rigId: "product-team",

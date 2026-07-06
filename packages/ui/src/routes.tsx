@@ -62,6 +62,7 @@ import {
   MissionScopePage,
   SliceScopePage,
 } from "./components/project/ScopePages.js";
+import { RigAgentsPage } from "./components/review/RigAgentsPage.js";
 import { ProjectGraphicsPreview } from "./components/lab/ProjectGraphicsPreview.js";
 import { CardPreviewsLab } from "./components/lab/CardPreviewsLab.js";
 import { VellumLab } from "./components/lab/VellumLab.js";
@@ -144,6 +145,17 @@ const projectSliceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/project/slice/$sliceId",
   component: SliceScopePage,
+});
+
+// OPR.0.4.4.22 — the AGENTS altitude (rig-scope standalone panel). The
+// route exists for ADDRESSING, not nav chrome: reached by ZOOM only
+// (board/host agent-count chips, slice-region anchored zoom, breadcrumb
+// up) — deliberately NOT added to any nav rail (arch ruling, drift-killer
+// 4). Anchored/filter state rides query params (?slice=, ?group=).
+const rigAgentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/agents",
+  component: RigAgentsPage,
 });
 
 const specsLibraryRoute = createRoute({
@@ -494,6 +506,7 @@ export const routeTree = rootRoute.addChildren([
   projectRoute,
   projectMissionRoute,
   projectSliceRoute,
+  rigAgentsRoute,
   specsLibraryRoute,
   specsApplicationsRoute,
   specsSkillsIndexRoute,

@@ -163,7 +163,7 @@ export const sessionPreviewByName: Record<string, NodePreviewResponse> = {
       "coordinator@acme-build $ # routing the follow-up to builder2",
       "Sent to builder2@acme-build",
       "  Verified: yes  Delivery: rendered",
-      "coordinator@acme-build $ rig ps --nodes",
+      "coordinator@acme-build $ rig ps --nodes --rig acme-build",
       "  acme-build   11 nodes   6 active   3 has-work",
       "  lead.coordinator  running   builders.builder2  building   builders.reviewer1  idle",
       "coordinator@acme-build $ _",

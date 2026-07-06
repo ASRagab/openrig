@@ -10,6 +10,11 @@ import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import { assessCurrentStateRehydrateEligibility } from "../domain/rehydrate-eligibility.js";
 import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
+import { loadTopologyManifest } from "../domain/topology/topology-manifest.js";
+import { MultiRigLauncher } from "../domain/topology/multi-rig-launcher.js";
+import { remoteUpLeaf } from "../domain/topology/remote-up-leaf.js";
+import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
+import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
 
 export const upRoutes = new Hono();
 
@@ -214,6 +219,95 @@ upRoutes.post("/", async (c) => {
     resolvedSourceRef = nodePath.resolve(sourceRef);
   } catch (err) {
     return c.json({ error: (err as Error).message }, 400);
+  }
+
+  // ── OPR.0.4.4.11 — topology branch (FR-2..FR-5) ──────────────────────────
+  if (sourceKind === "topology") {
+    // R11-2 daemon side (arch ruling 4 — enforcement on the public write
+    // path so every client inherits): a placement flag combined with a
+    // topology source is rejected; per-entry `host:` is the ONLY topology
+    // placement mechanism.
+    if (typeof body["host"] === "string" && (body["host"] as string).trim() !== "") {
+      return c.json(
+        {
+          error:
+            "a topology source cannot take a host placement flag: per-entry 'host:' in the manifest is the ONLY placement mechanism for topologies (two placement mechanisms must not coexist). Put 'host: <id>' on the entries to place remotely.",
+          code: "host_flag_topology",
+        },
+        400,
+      );
+    }
+    if (plan) {
+      return c.json({ error: "plan mode is not supported for topology sources in v0 — validate the manifest with a dry read or run the up directly", code: "topology_plan_unsupported" }, 400);
+    }
+
+    const manifestRes = loadTopologyManifest(resolvedSourceRef);
+    if (!manifestRes.ok) {
+      return c.json({ error: manifestRes.errors.join("\n"), errors: manifestRes.errors, code: "invalid_topology_manifest" }, 400);
+    }
+
+    // Path-form entry sources resolve against the MANIFEST's directory — the
+    // manifest is the portable artifact (FR-1: same file, second
+    // environment, same topology). Bare names pass through untouched.
+    const manifestDir = nodePath.dirname(resolvedSourceRef);
+    const resolveEntrySource = (source: string): string =>
+      source.includes("/") || /\.(ya?ml|rigbundle|rigtopology)$/i.test(source)
+        ? nodePath.resolve(manifestDir, source)
+        : source;
+
+    const launcher = new MultiRigLauncher({
+      // The SAME public lock pair this route uses for single-rig ups
+      // (guard G-2): the launcher participates in the route-side lock set.
+      // resolveLocalRef makes the lock key IDENTICAL to the launch ref
+      // (guard F1) — launchLocal receives the already-resolved ref.
+      resolveLocalRef: resolveEntrySource,
+      tryAcquire: (ref) => bootstrapOrchestrator.tryAcquire(ref),
+      release: (ref) => bootstrapOrchestrator.release(ref),
+      launchLocal: async (entryRef) => {
+        let entryKind: string;
+        try {
+          entryKind = upRouter.route(entryRef).sourceKind;
+        } catch (err) {
+          return { ok: false, error: (err as Error).message };
+        }
+        // Defense-in-depth only: the parse-time v0 source-form boundary in
+        // the manifest validator (spec paths ONLY) rejects these before the
+        // walk starts; these guards keep the leaf honest if a future caller
+        // bypasses validation.
+        if (entryKind === "topology") {
+          return { ok: false, error: `entry '${entryRef}' is itself a topology — nested topologies are not supported; entries must be single-rig spec paths` };
+        }
+        if (entryKind === "rig_name") {
+          return {
+            ok: false,
+            error: `entry '${entryRef}' resolves as an existing-rig name; v0 topology entries are spec paths only — restore existing rigs directly with 'rig up ${entryRef}'`,
+          };
+        }
+        // The EXISTING single-rig leaf: the same public bootstrap() entry
+        // this route calls — stages/locks/provenance untouched (FR-3).
+        const result = await bootstrapOrchestrator.bootstrap({
+          mode: "apply",
+          sourceRef: entryRef,
+          sourceKind: entryKind as "rig_spec" | "rig_bundle",
+          autoApprove,
+        });
+        if (result.status === "completed") {
+          eventBus.emit({ type: "bootstrap.completed", runId: result.runId, rigId: result.rigId!, sourceRef: entryRef });
+          return { ok: true };
+        }
+        eventBus.emit({ type: "bootstrap.failed", runId: result.runId, sourceRef: entryRef, error: result.errors[0] ?? result.status });
+        return { ok: false, error: result.errors[0] ?? `bootstrap ${result.status}` };
+      },
+      // The SHIPPED remote single-rig leaf (POST {host}/api/up). Path-form
+      // refs resolve on the REMOTE daemon's filesystem — the shipped
+      // remote-up semantics, unchanged.
+      launchRemote: (source, host) => remoteUpLeaf({ sourceRef: source, autoApprove }, host as HttpHostEntry),
+      loadRegistry: () => loadHostRegistry(),
+    });
+
+    const aggregate = await launcher.launch(manifestRes.manifest);
+    // Honest aggregate either way: 200 only when EVERY entry is ok (FR-5).
+    return c.json({ topology: sourceRef, ...aggregate }, aggregate.ok ? 200 : 500);
   }
 
   // Bundle apply requires targetRoot

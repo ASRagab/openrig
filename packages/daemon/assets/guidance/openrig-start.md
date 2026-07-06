@@ -17,6 +17,12 @@ That skill covers the broader surface, including chatroom, discovery, adopt/bind
 Your per-session startup guidance may also name additional packaged skills for your role and pod.
 Load those too. This shared overlay is only the common bootstrap floor, not the full operating manual for your seat.
 
+## Working missions and slices (the SDLC)
+
+If your seat works missions or slices, load the packaged `mission-slice-sop` skill BEFORE authoring or building — it teaches the flow the Living Notes UI projects: intent → mini-requirements + proof contract (→ mockups for UI slices) → plan-lock (`rig scope slice approve --scope spec`) → build the locked set → QA visual compare → `rig proof add … --media` drops (the C1 drop verb — never hand-place proof files) → proof-lock (`--scope delivery`).
+
+The conventions themselves (section names, proof-contract format, the two locks, C1 proof headers) live in ONE shipped document: `docs/reference/sdlc-conventions.md` (in the CLI package). `rig scope slice create` scaffolds the convention sections for every template kind; `rig scope audit` is the advisory backstop — it records and advises, it never blocks your work.
+
 ## Identity
 
 Run this first after launch or compaction to recover your identity:

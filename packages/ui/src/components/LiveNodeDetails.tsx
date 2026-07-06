@@ -288,7 +288,7 @@ function StatusSection({ data }: { data: NodeDetailData }) {
             {data.startupStatus === "attention_required"
               ? `Use rig capture ${data.canonicalSessionName ?? "<session>"} to inspect the prompt, then rig send ${data.canonicalSessionName ?? "<session>"} to clear it.`
               : data.startupStatus === "failed"
-                ? "Check logs with: rig ps --nodes, or restart with: rig up"
+                ? "Check logs with: rig ps --nodes --rig <name>, or restart with: rig up"
                 : "Try: rig restore <snapshotId>"}
           </div>
           {data.recoveryGuidance && (

@@ -156,6 +156,44 @@ describe("mission-control routes Phase B (PL-005)", () => {
     });
   });
 
+  describe("POST /action client-error mapping", () => {
+    it("resolve without decision returns 400 decision_required", async () => {
+      const { app } = buildApp({ bus, queueRepo, bearerToken: null, withDispatcher: false });
+      const created = await queueRepo.create({ sourceSession: "s@r", destinationSession: "d@r", body: "x" });
+      const res = await app.request("/api/mission-control/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verb: "resolve",
+          qitemId: created.qitemId,
+          actorSession: "human@kernel",
+          decision: "   ",
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("decision_required");
+    });
+
+    it("resolve against a non-leg-1-parked qitem returns 409 qitem_not_leg1_parked", async () => {
+      const { app } = buildApp({ bus, queueRepo, bearerToken: null, withDispatcher: false });
+      const created = await queueRepo.create({ sourceSession: "s@r", destinationSession: "d@r", body: "x" });
+      const res = await app.request("/api/mission-control/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verb: "resolve",
+          qitemId: created.qitemId,
+          actorSession: "human@kernel",
+          decision: "approved",
+        }),
+      });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("qitem_not_leg1_parked");
+    });
+  });
+
   describe("GET /audit", () => {
     it("returns rows + pagination metadata", async () => {
       const { app, actionLog } = buildApp({ bus, queueRepo, bearerToken: null, withDispatcher: false });
@@ -253,6 +291,8 @@ describe("mission-control routes Phase B (PL-005)", () => {
         destinationSession: "human-operator@kernel",
         body: "x",
         tier: "human-gate",
+        summary: "test summary (FR-4 human-routed fixture)",
+        evidenceRef: "proof/test-evidence.md",
       });
 
       const res = await app.request("/api/mission-control/destinations");

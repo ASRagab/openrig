@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { ArrowRight, CalendarDays, CircleAlert, Clock, History, PackageCheck, X } from "lucide-react";
 
 import { CornerBracket } from "../dashboard/vellum/index.js";
@@ -10,6 +11,8 @@ import type { QueueItemDetail } from "../../hooks/useSlices.js";
 import type { FeedCard as FeedCardModel, FeedCardKind } from "../../lib/feed-classifier.js";
 import { isSyntheticFeedCard } from "../../lib/attention-feed.js";
 import { VerbActions } from "../mission-control/components/VerbActions.js";
+import { ProgressiveTerminal } from "../terminal/ProgressiveTerminal.js";
+import { buildChatPreamble } from "../review/chat.js";
 import {
   ProofPacketHeader,
   ProofThumbnailGrid,
@@ -57,7 +60,12 @@ const KIND_TESTID: Record<FeedCardKind, string> = {
 };
 
 const KIND_TOKEN: Record<FeedCardKind, ProjectToken> = {
-  "action-required": { label: "Your turn", tone: "danger", icon: CircleAlert },
+  // CORRECTIVE §7.1 guard fixback (2026-07-06): the kind tag is a STATUS
+  // label like its siblings, never instruction chrome — "Your turn" is gone
+  // from the surface (founder N-1); the kind's canonical name matches the
+  // approved frame's subscription vocabulary ("Action required · Items the
+  // human must act on").
+  "action-required": { label: "Action required", tone: "danger", icon: CircleAlert },
   approval: { label: "Needs approval", tone: "warning", icon: CircleAlert },
   shipped: { label: "Shipped", tone: "success", icon: PackageCheck },
   progress: { label: "Progress", tone: "info", icon: History },
@@ -368,6 +376,8 @@ export function FeedCard({
   onOptimisticOutcome?: (qitemId: string, outcome: FeedActionOutcome) => void;
 }) {
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
+  // CORRECTIVE §7.1 — CHAT quick-action state (the shared terminal, per BR-12).
+  const [chatOpen, setChatOpen] = useState(false);
   const dragStateRef = useRef<{ startX: number; pointerId: number; isTouch: boolean } | null>(null);
 
   const handleKeyDown: React.KeyboardEventHandler<HTMLElement> = (event) => {
@@ -468,6 +478,17 @@ export function FeedCard({
                   title already carry the meaning. */}
               {!isSyntheticFeedCard(card) ? <InlineMetaMark token={eventToken(card.source.type)} /> : null}
               {qitemViewerData?.state ? <InlineMetaMark token={queueStateToken(qitemViewerData.state)} /> : null}
+              {/* OPR.0.4.4.15 — origin host chip on aggregated remote items
+                  only ('local'/absent renders nothing: zero-config DOM is
+                  byte-identical to today). */}
+              {card.hostId && card.hostId !== "local" ? (
+                <span
+                  data-testid="feed-card-host-chip"
+                  className="px-1 border border-outline-variant font-mono text-[9px] uppercase tracking-wide text-on-surface-variant"
+                >
+                  {card.hostId}
+                </span>
+              ) : null}
             </div>
             {/* Title — legibility north star: 16px headline bold. */}
             <h3 className="font-headline text-[16px] font-bold leading-tight text-on-surface truncate">
@@ -528,31 +549,45 @@ export function FeedCard({
             data-testid={`feed-card-actions-${card.id}`}
             className="mt-3 bg-background/40 p-3"
           >
-            <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-on-surface">
-                  <span aria-hidden="true" className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0", TONE_DOT.danger)} />
-                  Your turn
-                </div>
-                <p className="mt-1 max-w-xl font-body text-[12px] leading-relaxed text-on-surface">
-                  Review the context, then approve, deny, or route this queue item.
-                </p>
-              </div>
+            {/* CORRECTIVE §7.1 + founder live-review 2026-07-05: JUST the two
+                buttons — APPROVE (one-tap, the existing verb + write path) and
+                CHAT (the shared terminal, preamble per BR-12). No "Your turn"
+                prose, no "Choose response" chrome (VerbActions `bare`) —
+                buttons are self-evident. Deny/route stay retired. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <VerbActions
+                qitemId={qitemViewerData.qitemId}
+                actorSession={actorSession}
+                bare
+                hostId={card.hostId}
+                enabledVerbs={["approve"]}
+                oneClickVerbs={["approve"]}
+                onOptimisticOutcome={
+                  onOptimisticOutcome
+                    ? (outcome) => onOptimisticOutcome(qitemViewerData.qitemId, outcome)
+                    : undefined
+                }
+              />
+              <button
+                type="button"
+                data-testid={`feed-card-chat-${card.id}`}
+                disabled={!terminalSession}
+                title={terminalSession ? `Chat with ${terminalSession}` : "No owning agent resolves for this card"}
+                onClick={() => setChatOpen((v) => !v)}
+                className="border border-outline px-3 py-1 font-mono text-[11px] uppercase hover:bg-surface-variant disabled:opacity-50"
+              >
+                ⌨ Chat
+              </button>
             </div>
-            <VerbActions
-              qitemId={qitemViewerData.qitemId}
-              actorSession={actorSession}
-              enabledVerbs={["approve", "deny", "route"]}
-              // OPR.0.3.3.20 — manage-by-exception: approve records in ONE
-              // click (no select+confirm step), firing the same instant
-              // receipt. approve ONLY — deny/route stay controlled.
-              oneClickVerbs={["approve"]}
-              onOptimisticOutcome={
-                onOptimisticOutcome
-                  ? (outcome) => onOptimisticOutcome(qitemViewerData.qitemId, outcome)
-                  : undefined
-              }
-            />
+            {chatOpen && terminalSession ? (
+              <div className="mt-2 border border-outline-variant">
+                <ProgressiveTerminal
+                  sessionName={terminalSession}
+                  terminalKey={`feed-chat:${card.id}`}
+                  initialText={buildChatPreamble({ sessionName: terminalSession, itemRef: qitemViewerData.qitemId })}
+                />
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[10px] text-on-surface-variant">
@@ -579,6 +614,32 @@ export function FeedCard({
                 agent-owned cards (sender-or-owner resolver). Session-name keyed;
                 honest disabled state when no session resolves. */}
             <FeedCardTerminalDrill cardId={card.id} sessionName={terminalSession} />
+            {/* OPR.0.4.4.20 FR-9 win #2: the evidence_ref judge-this pointer is
+                visible on the card itself — the human sees WHAT to judge before
+                drilling anywhere. */}
+            {card.evidenceRef ? (
+              <span
+                data-testid={`feed-card-evidence-${card.id}`}
+                title={card.evidenceRef}
+                className="max-w-48 truncate font-mono text-[10px] text-on-surface-variant"
+              >
+                evidence: {card.evidenceRef}
+              </span>
+            ) : null}
+            {/* OPR.0.4.4.20 FR-9 win #1: living-notes cards deep-link into the
+                slice Review tab anchored at this NEEDS-YOU item. Non-living-notes
+                cards keep the existing drills unchanged (additive routing). */}
+            {card.reviewSlice ? (
+              <Link
+                to="/project/slice/$sliceId"
+                params={{ sliceId: card.reviewSlice }}
+                hash={card.reviewAnchor ? `needs-you-${card.reviewAnchor}` : undefined}
+                data-testid={`feed-card-review-link-${card.id}`}
+                className="font-mono text-[10px] uppercase tracking-wide underline text-on-surface hover:text-on-surface-variant"
+              >
+                review →
+              </Link>
+            ) : null}
           </div>
         </div>
       </div>

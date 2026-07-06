@@ -1,7 +1,8 @@
 // Token / Context Usage Surface v0 (PL-012) — fleet-wide context view.
 //
 // Fetches /api/ps then per-rig /api/rigs/:id/nodes (matching how
-// rig ps --nodes assembles the cross-rig list), enriches each node with
+// rig ps --nodes -A assembles the cross-rig list — daemon API, unaffected
+// by the v0.4.4 CLI default flip), enriches each node with
 // the existing contextUsage block, and projects a flat per-seat list
 // for the /context dashboard.
 //

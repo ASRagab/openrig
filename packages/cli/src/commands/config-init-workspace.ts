@@ -463,7 +463,17 @@ slice: ${slice.id}
 
 # ${slice.title}
 
+## Intent
+
 ${slice.objective}
+
+## Mini-requirements
+
+1. The work is visible in the Project slice and its queue items link back to \`${slice.id}\`.
+
+## Proof contract
+
+- [ ] The work is visible in the Project slice — captured (see IMPLEMENTATION-PRD.md).
 
 ## Queue Mapping
 
@@ -511,15 +521,21 @@ slice: ${slice.id}
 
 # ${slice.title} Implementation Notes
 
-## Goal
+## Intent
 
 ${slice.objective}
 
-## Acceptance
+## Mini-requirements
 
-- [ ] The work is visible in the Project slice.
+1. The work is visible in the Project slice and its queue items link back to \`${slice.id}\`.
+
+## Proof contract
+
+- [ ] The work is visible in the Project slice — captured.
 - [ ] Queue items include enough body or tag context to link back to \`${slice.id}\`.
-- [ ] Any proof artifacts are referenced from the slice before closure.
+- [ ] Proof artifacts are referenced from the slice before closure (drop via \`rig proof add\`).
+
+> Conventions SSOT: \`docs/reference/sdlc-conventions.md\` — section names, proof-contract format, the two locks, C1 headers. For a small slice the mini-requirements may BE the whole PRD.
 `;
 }
 

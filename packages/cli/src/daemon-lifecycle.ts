@@ -143,7 +143,10 @@ export const LEGACY_LOG_FILE = path.join(LEGACY_RIGGED_HOME, "daemon.log");
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 7433;
 const DEFAULT_DB = "openrig.sqlite";
-const HEALTHZ_RETRIES = 20;
+// Fresh Linux hosts can take longer than a warmed dev machine to load native
+// modules, run startup reconciliation, and bind healthz. Keep the retry loop
+// bounded, but do not kill a healthy daemon during first-boot slack.
+const HEALTHZ_RETRIES = 80;
 const HEALTHZ_DELAY_MS = 250;
 const HEALTHZ_PROBE_TIMEOUT_MS = 250;
 // OPR.0.4.2.1 — status-probe bounded settle: a single /healthz fetch loses to the post-restart

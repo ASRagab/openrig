@@ -323,3 +323,44 @@ describe("PL-slice-story-view-v1 TopologyTab", () => {
     await waitFor(() => expect(screen.getByTestId("topology-empty")).toBeDefined());
   });
 });
+
+// OPR.0.4.4.19 FR-2 — timeline labels prefer the qitem's summary; body
+// remains the drill-in payload.
+describe("OPR.0.4.4.19 FR-2 TimelineTab summary-first labels", () => {
+  function qitem(overrides: Partial<QueueItemDetail>): QueueItemDetail {
+    return {
+      qitemId: "q-1",
+      tsCreated: "2026-07-04T00:00:00Z",
+      tsUpdated: "2026-07-04T00:00:00Z",
+      sourceSession: "a@rig",
+      destinationSession: "b@rig",
+      state: "pending",
+      priority: "routine",
+      tier: null,
+      tags: null,
+      body: "agent-speak body, long and detailed",
+      summary: null,
+      ...overrides,
+    } as QueueItemDetail;
+  }
+
+  it("with both summary and body, the summary is the rendered label", () => {
+    const events = [event({ kind: "queue.created", qitemId: "q-1" })];
+    const byId = new Map([["q-1", qitem({ summary: "Approve the 0.4.4 cut" })]]);
+    renderStory(<TimelineTab events={events} phaseDefinitions={SPEC_PHASES} queueItemsById={byId} />);
+    const body = screen.getByTestId("story-row-body-queue.created");
+    expect(body.textContent).toContain("Approve the 0.4.4 cut");
+    expect(body.textContent).not.toContain("agent-speak body");
+  });
+
+  it("with no summary, degrades to qitem body, then to the event summary", () => {
+    const events = [event({ kind: "queue.created", qitemId: "q-1", summary: "event-level summary" })];
+    const byId = new Map([["q-1", qitem({ summary: null })]]);
+    renderStory(<TimelineTab events={events} phaseDefinitions={SPEC_PHASES} queueItemsById={byId} />);
+    expect(screen.getByTestId("story-row-body-queue.created").textContent).toContain("agent-speak body");
+    cleanup();
+    // No qitem at all → the event summary fallback (existing behavior preserved).
+    renderStory(<TimelineTab events={events} phaseDefinitions={SPEC_PHASES} />);
+    expect(screen.getByTestId("story-row-body-queue.created").textContent).toContain("event-level summary");
+  });
+});

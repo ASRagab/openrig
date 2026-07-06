@@ -61,7 +61,7 @@ Default posture on this host now:
 
 Most work in OpenRig reduces to this loop:
 - recover identity: `rig whoami --json`
-- inspect inventory: `rig ps --nodes --json`
+- inspect inventory: `rig ps` (fleet map) / `rig ps --nodes -A --json` (fleet nodes)
 - read context: `rig transcript ...`, `rig ask ...`, `rig chatroom history ...`
 - act: `rig send`, `rig capture`, `rig broadcast`, lifecycle commands
 
@@ -90,13 +90,13 @@ If the daemon is unreachable but identity can still be inferred, `--json` may re
 ## Inventory and Monitoring
 
 ```bash
-rig ps
-rig ps --json
-rig ps --nodes
-rig ps --nodes --json
+rig ps                      # ALL active rigs, one compact row each (v0.4.4 default)
+rig ps --json               # bare array, all non-archived rigs
+rig ps --nodes              # current rig's nodes (session default, local only)
+rig ps --nodes -A --json    # fleet node inventory (explicit)
 ```
 
-Use `rig ps --nodes --json` for the current node inventory across rigs. It is the best machine-readable operator surface for:
+Use `rig ps --nodes -A --json` for the current node inventory across rigs (v0.4.4: `--nodes` needs an explicit scope outside a managed session). It is the best machine-readable operator surface for:
 - session name
 - runtime
 - session/startup status
@@ -386,7 +386,7 @@ rig whoami --json
 
 Notes:
 - for tmux-backed self-attach, `rig whoami --json` is the right verification
-- for raw/external self-attach, `rig ps --nodes --json` is currently the more reliable verification surface
+- for raw/external self-attach, `rig ps --nodes -A --json` is currently the more reliable verification surface
 - if the current shell is outside tmux, pass `--display-name <name>` when you want a stable human session label recorded
 
 ### Adopt a topology and bind live sessions
@@ -453,13 +453,13 @@ Verification loop:
 ```bash
 rig discover --json
 rig adopt <fragment.yaml> --bindings-file <bindings.yaml> --target-rig <rigId>
-rig ps --nodes --json
+rig ps --nodes -A --json
 rig export <rigId> -o rig.yaml
 ```
 
 Success looks like:
 - the new sessions stop appearing in `rig discover`
-- the new logical IDs appear in `rig ps --nodes --json`
+- the new logical IDs appear in `rig ps --nodes -A --json`
 - `rig export` includes the new pod
 
 ### Mixed-origin rigs are allowed
@@ -477,7 +477,7 @@ Current safety rule:
 The proven operator pattern is:
 - keep one OpenRig manager session outside the rig it manages
 - address the target by rig name, not cached rig ID
-- resolve the current owner from fresh `rig ps --nodes --json`
+- resolve the current owner from fresh `rig ps --nodes -A --json`
 - send the manager the spec path, bindings path, and verification steps with `rig send`
 
 This lets ordinary agents ask the manager for OpenRig help instead of every agent needing to be an OpenRig expert.
@@ -548,7 +548,7 @@ When the CLI behaves strangely, use the smallest truthful check first:
 ```bash
 rig whoami --json
 rig daemon status
-rig ps --nodes --json
+rig ps --nodes -A --json
 ```
 
 Specific operator rules:
@@ -584,7 +584,7 @@ Design assumptions that hold in the shipped CLI:
 
 1. `rig whoami --json`
 2. `rig transcript <your-session> --tail 100`
-3. `rig ps --nodes --json`
+3. `rig ps --nodes -A --json`
 4. `rig chatroom history <rig> --limit 50`
 
 ## Commands That Do Not Exist

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { fileURLToPath } from "node:url";
+import { stampFields } from "./build-info.js";
 import type { RigRepository } from "./domain/rig-repository.js";
 import type { SessionRegistry } from "./domain/session-registry.js";
 import type { EventBus } from "./domain/event-bus.js";
@@ -84,6 +85,7 @@ import { watchdogRoutes } from "./routes/watchdog.js";
 import { workflowRoutes } from "./routes/workflow.js";
 import { missionControlRoutes } from "./routes/mission-control.js";
 import { slicesRoutes } from "./routes/slices.js";
+import { reviewRoutes } from "./routes/review.js";
 import { rigPolicyRoutes } from "./routes/rig-policy.js";
 import { missionsRoutes } from "./routes/missions.js";
 import { rigCmuxRoutes } from "./routes/rig-cmux.js";
@@ -92,6 +94,7 @@ import { getNodeInventory } from "./domain/node-inventory.js";
 import { filesRoutes } from "./routes/files.js";
 import { progressRoutes } from "./routes/progress.js";
 import { scopeAuditRoutes } from "./routes/scope-audit.js";
+import { scopeApproveRoutes } from "./routes/scope-approve.js";
 import { registerTerminalWs } from "./routes/terminal-ws.js";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { steeringRoutes } from "./routes/steering.js";
@@ -199,6 +202,7 @@ export interface AppDeps {
   // optional: when slicesRoot is unset, the routes return a clear
   // "slices_root_not_configured" 503 so the UI can surface a setup hint.
   sliceIndexer?: import("./domain/slices/slice-indexer.js").SliceIndexer;
+  reviewGatherer?: import("./domain/review/gather.js").ReviewGatherer;
   sliceDetailProjector?: import("./domain/slices/slice-detail-projector.js").SliceDetailProjector;
   /** User Settings v0 — daemon-side settings store (env > file > default). */
   settingsStore?: import("./domain/user-settings/settings-store.js").SettingsStore;
@@ -470,6 +474,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("missionControlFleetCliCapability" as never, deps.missionControlFleetCliCapability);
     c.set("sliceIndexer" as never, deps.sliceIndexer);
     c.set("sliceDetailProjector" as never, deps.sliceDetailProjector);
+    c.set("reviewGatherer" as never, deps.reviewGatherer);
     c.set("filesAllowlist" as never, deps.filesAllowlist);
     c.set("settingsStore" as never, deps.settingsStore);
     c.set("previewRateLimiter" as never, deps.previewRateLimiter);
@@ -519,13 +524,18 @@ export function createApp(deps: AppDeps): Hono {
     // OPR.0.4.3.21 — enrich the health surface with event-loop wedge evidence
     // when the monitor is wired. Absent monitor keeps the exact legacy body so
     // existing probes / tests that assert `{ status: "ok" }` are unchanged.
+    // OPR.0.4.4.11 FR-7 — a STAMPED build additionally carries
+    // {semver, commit, dirty, builtAt}; dev runs add NOTHING (stampFields is
+    // {} without a stamp — no invented identity, legacy bodies preserved).
+    const stamp = stampFields();
     const monitor = deps.eventLoopMonitor;
     if (!monitor) {
-      return c.json({ status: "ok" });
+      return c.json({ status: "ok", ...stamp });
     }
     const eventLoop = monitor.snapshot();
     return c.json({
       status: "ok",
+      ...stamp,
       eventLoop,
       routeTimings: deps.routeTimingRecorder?.snapshot() ?? {},
     });
@@ -595,6 +605,8 @@ export function createApp(deps: AppDeps): Hono {
   );
   // Slice Story View v0 — slice indexer + per-tab payload routes.
   app.route("/api/slices", slicesRoutes());
+  // Living Notes Packet 2 (OPR.0.4.4.20) — composed-review read contract.
+  app.route("/api/review", reviewRoutes());
   // V0.3.1 slice 12 walk-item 1 — mission scope data layer
   // (aggregated mission metadata + slices filter; pairs with
   // useScopeMarkdown for README / PROGRESS content via /api/files/read).
@@ -603,6 +615,8 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/files", filesRoutes());
   app.route("/api/progress", progressRoutes());
   app.route("/api/scope/audit", scopeAuditRoutes());
+  // OPR.0.4.4.19 FR-9 — scope approve: frontmatter stamp + audit row.
+  app.route("/api/scope/approve", scopeApproveRoutes());
   // Operator Surface Reconciliation v0 — steering composition + health summary.
   app.route("/api/steering", steeringRoutes());
   app.route("/api/health-summary", healthSummaryRoutes());

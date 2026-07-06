@@ -17,6 +17,8 @@ import { workspaceRoutes } from "../src/routes/workspace.js";
 let dir: string;
 let app: Hono;
 
+const CONVENTION_BODY = "# S\n## Intent\nx\n## Mini-requirements\n1. y\n## Proof contract\n- [ ] z\n";
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "pl007-route-"));
   app = new Hono();
@@ -92,7 +94,7 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
     fs.mkdirSync(path.join(doctorDir, "missions", "getting-started"), { recursive: true });
     fs.writeFileSync(path.join(doctorDir, "missions", "getting-started", "MISSION_NOTES.md"), "");
     fs.mkdirSync(path.join(doctorDir, "missions", "getting-started", "slices", "s1"), { recursive: true });
-    fs.writeFileSync(path.join(doctorDir, "missions", "getting-started", "slices", "s1", "README.md"), "");
+    fs.writeFileSync(path.join(doctorDir, "missions", "getting-started", "slices", "s1", "README.md"), CONVENTION_BODY);
 
     // Stub SettingsStore-shaped object — we only need the surface the
     // doctor route uses: resolveOne + configPath. SettingsStore's
@@ -137,7 +139,7 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
     try { fs.rmSync(doctorDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it("POST /doctor returns 200 with a 7-check DoctorReport on a healthy workspace", async () => {
+  it("POST /doctor returns 200 with an 8-check DoctorReport on a healthy workspace", async () => {
     const res = await doctorApp.request("/api/workspace/doctor", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -151,8 +153,8 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
       daemonResolvedAt: string;
     };
     expect(body.workspaceRoot).toBe(doctorDir);
-    expect(body.checks).toHaveLength(7);
-    expect(body.summary.ok).toBe(7);
+    expect(body.checks).toHaveLength(8);
+    expect(body.summary.ok).toBe(8);
     expect(body.summary.warn).toBe(0);
     expect(body.summary.fail).toBe(0);
     expect(body.daemonResolvedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -265,7 +267,7 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
   // GUARD BLOCKER-1 (qitem-20260602042720-e27ec982) determinism
   // discriminator: even under a long process.uptime() (simulating a
   // long-running Vitest worker), the healthy fixture must still
-  // return summary {ok:7, warn:0, fail:0}. A regression where the
+  // return summary {ok:8, warn:0, fail:0}. A regression where the
   // route-test config mtime was set relative to Date.now() instead
   // of an absolute-old epoch would flip check #5 to warn under any
   // worker uptime greater than the relative offset.
@@ -290,7 +292,7 @@ describe("workspace doctor HTTP route (slice-21 FR-5)", () => {
         summary: { ok: number; warn: number; fail: number };
         checks: Array<{ check: string; status: string }>;
       };
-      expect(body.summary).toEqual({ ok: 7, warn: 0, fail: 0 });
+      expect(body.summary).toEqual({ ok: 8, warn: 0, fail: 0 });
       const reload = body.checks.find((c) => c.check === "daemon_reload_needed");
       expect(reload?.status).toBe("ok");
     } finally {

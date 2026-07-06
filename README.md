@@ -27,7 +27,7 @@ rig up conveyor
 
 ## First Run
 
-After `product-team` boots, `rig ps --nodes` shows the running pods and seats. When you're ready to shut the team down and bring it back, use the same rig name:
+After `product-team` boots, `rig ps` shows the fleet map and `rig ps --nodes --rig product-team` shows the running pods and seats. When you're ready to shut the team down and bring it back, use the same rig name:
 
 ```bash
 rig ps

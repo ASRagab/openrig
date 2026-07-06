@@ -379,3 +379,201 @@ describe("scope-audit classifier", () => {
     expect(result.findings.some((f) => f.kind === "progress_not_updated_on_commit")).toBe(false);
   });
 });
+
+// OPR.0.4.4.23 — SDLC convention-section advisories. Structurally
+// fail-open: the audit exit code flips on HIGH findings only, and every
+// finding below asserts a low/info severity; the checks are inert when the
+// caller provides no content context.
+describe("OPR.0.4.4.23 convention-section advisories", () => {
+  const CONVENTION_README = [
+    "# Slice 05 — Probe",
+    "## Intent", "the recorded intent",
+    "## Mini-requirements", "1. one",
+    "## Proof contract", "- [ ] a deliverable — captured",
+  ].join("\n");
+
+  function sliceInput(overrides: Partial<ScopeAuditInput>): ScopeAuditInput {
+    return {
+      id: null,
+      path: "/w/missions/release-x/slices/05-probe",
+      readmeFrontmatterRaw: "id: OPR.0.4.4.5\nstatus: wip",
+      progressFileExists: true,
+      readmeOnlyMarker: false,
+      isActiveRelease: true,
+      level: "slice",
+      ...overrides,
+    };
+  }
+
+  it("inert when no content context is provided (undefined inputs)", () => {
+    const result = classifyScopeItem(sliceInput({}));
+    expect(result.findings.some((f) =>
+      f.kind === "missing_intent_section"
+      || f.kind === "mini_requirements_missing_or_malformed"
+      || f.kind === "proof_contract_missing_or_malformed"
+      || f.kind === "ui_slice_missing_mockup",
+    )).toBe(false);
+  });
+
+  it("clean convention README yields no section findings", () => {
+    const result = classifyScopeItem(sliceInput({ readmeContent: CONVENTION_README, implementationPrdContent: null }));
+    expect(result.findings.some((f) =>
+      f.kind === "missing_intent_section"
+      || f.kind === "mini_requirements_missing_or_malformed"
+      || f.kind === "proof_contract_missing_or_malformed",
+    )).toBe(false);
+  });
+
+  it("README without ## Intent -> missing_intent_section at LOW (never high)", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Goal\nold shape\n## Proof contract\n- [ ] x\n",
+      implementationPrdContent: null,
+    }));
+    const finding = result.findings.find((f) => f.kind === "missing_intent_section");
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("low");
+  });
+
+  it("## Intent visual does NOT satisfy ## Intent (exact-heading match)", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent visual\n![x](./x.png)\n## Proof contract\n- [ ] x\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "missing_intent_section")).toBe(true);
+  });
+
+  it("PRD provided: proof contract is checked on the PRD path", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: CONVENTION_README,
+      implementationPrdContent: "# PRD\n## Intent\nx\n## Mini-requirements\n1. y\n",
+    }));
+    const finding = result.findings.find((f) => f.kind === "proof_contract_missing_or_malformed");
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("low");
+    expect(finding!.path.endsWith("IMPLEMENTATION-PRD.md")).toBe(true);
+  });
+
+  it("PRD absent (null): proof contract falls back to the README", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent\nx\n",
+      implementationPrdContent: null,
+    }));
+    const finding = result.findings.find((f) => f.kind === "proof_contract_missing_or_malformed");
+    expect(finding).toBeDefined();
+    expect(finding!.path.endsWith("README.md")).toBe(true);
+  });
+
+  it("## Proof contract heading with no checkbox items is malformed", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent\nx\n## Proof contract\nprose only, no checkboxes\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "proof_contract_missing_or_malformed")).toBe(true);
+  });
+
+  it("visual slice without any mockup ref -> ui_slice_missing_mockup at INFO", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent\nx\n## Proof contract\n- [ ] the panel renders\n## Intent visual\nwill add later\n",
+      implementationPrdContent: null,
+    }));
+    const finding = result.findings.find((f) => f.kind === "ui_slice_missing_mockup");
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("info");
+  });
+
+  it("visual slice with an image ref (or N/A marking) does not fire the mockup advisory", () => {
+    const withImage = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent\nx\n## Proof contract\n- [ ] y\n## Intent visual\n![Intent visual](./intent.png)\n",
+      implementationPrdContent: null,
+    }));
+    expect(withImage.findings.some((f) => f.kind === "ui_slice_missing_mockup")).toBe(false);
+    const nonVisual = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\n## Intent\nx\n## Proof contract\n- [ ] y\n## Intent visual\nN/A\n",
+      implementationPrdContent: null,
+    }));
+    expect(nonVisual.findings.some((f) => f.kind === "ui_slice_missing_mockup")).toBe(false);
+  });
+
+  it("FAIL-OPEN PIN: planted section violations never produce a HIGH finding (exit semantics unchanged)", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# Slice\nno sections at all\n## Intent visual\nno image\n",
+      implementationPrdContent: null,
+    }));
+    const sectionFindings = result.findings.filter((f) =>
+      f.kind === "missing_intent_section"
+      || f.kind === "mini_requirements_missing_or_malformed"
+      || f.kind === "proof_contract_missing_or_malformed"
+      || f.kind === "ui_slice_missing_mockup",
+    );
+    expect(sectionFindings.length).toBeGreaterThan(0);
+    expect(sectionFindings.every((f) => f.severity === "low" || f.severity === "info")).toBe(true);
+  });
+});
+
+// OPR.0.4.4.23 rev1-r2 fixback — B1 (PRD L34 guard F-3: well-formed
+// ## Mini-requirements) + B2 (generic "mockup" prose is not a mockup ref).
+describe("OPR.0.4.4.23 rev1-r2 fixback — mini-requirements + mockup-ref tightening", () => {
+  function sliceInput(overrides: Partial<ScopeAuditInput>): ScopeAuditInput {
+    return {
+      id: null,
+      path: "/w/missions/release-x/slices/07-r2fix",
+      readmeFrontmatterRaw: "id: OPR.0.4.4.7\nstatus: wip",
+      progressFileExists: true,
+      readmeOnlyMarker: false,
+      isActiveRelease: true,
+      level: "slice",
+      ...overrides,
+    };
+  }
+
+  it("B1: Intent + Proof contract but NO ## Mini-requirements -> mini_requirements_missing_or_malformed at LOW (the r2 false-green probe)", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Proof contract\n- [ ] y\n",
+      implementationPrdContent: "# PRD\n## Intent\nx\n## Proof contract\n- [ ] y\n",
+    }));
+    const finding = result.findings.find((f) => f.kind === "mini_requirements_missing_or_malformed");
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("low");
+    expect(finding!.path.endsWith("IMPLEMENTATION-PRD.md")).toBe(true);
+  });
+
+  it("B1: ## Mini-requirements heading with prose-only body (no numbered item) is malformed", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Mini-requirements\njust prose, no list\n## Proof contract\n- [ ] y\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "mini_requirements_missing_or_malformed")).toBe(true);
+  });
+
+  it("B1: a numbered mini-requirements list is clean; PRD absent falls back to README", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Mini-requirements\n1. one observable outcome\n## Proof contract\n- [ ] y\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "mini_requirements_missing_or_malformed")).toBe(false);
+  });
+
+  it("B2 REGRESSION: generic proof-contract prose containing the word 'mockup' does NOT suppress ui_slice_missing_mockup (the scaffold-placeholder false-green)", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Mini-requirements\n1. y\n## Proof contract\n- [ ] UI deliverables name their planned mockup\n## Intent visual\nwill add later\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "ui_slice_missing_mockup")).toBe(true);
+  });
+
+  it("B2: an explicit plannedRef token in the proof contract IS a mockup ref", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Mini-requirements\n1. y\n## Proof contract\n- [ ] the panel renders (plannedRef: mockups/panel.png)\n## Intent visual\nwill add later\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "ui_slice_missing_mockup")).toBe(false);
+  });
+
+  it("B2: a markdown image ref inside the proof contract IS a mockup ref", () => {
+    const result = classifyScopeItem(sliceInput({
+      readmeContent: "# S\n## Intent\nx\n## Mini-requirements\n1. y\n## Proof contract\n- [ ] the panel renders ![planned](mockups/panel.png)\n## Intent visual\nwill add later\n",
+      implementationPrdContent: null,
+    }));
+    expect(result.findings.some((f) => f.kind === "ui_slice_missing_mockup")).toBe(false);
+  });
+});
