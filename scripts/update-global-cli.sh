@@ -150,6 +150,7 @@ rig_bin="$(command -v rig || true)"
 [ -n "$rig_bin" ] || fail "rig not found on PATH; add $npm_prefix/bin"
 
 actual_version="$(rig --version)"
-[ "$actual_version" = "$expected_version" ] || fail "rig --version returned $actual_version, expected $expected_version"
+actual_semver="${actual_version%% *}"
+[ "$actual_semver" = "$expected_version" ] || fail "rig --version returned $actual_version, expected $expected_version"
 
 printf '\nOpenRig CLI installed globally: rig %s (%s)\n' "$actual_version" "$rig_bin"
